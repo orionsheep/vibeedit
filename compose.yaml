@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: autoedit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: autoedit
+      POSTGRES_USER: autoedit
+      POSTGRES_PASSWORD: autoedit
+    ports:
+      - "5432:5432"
+    volumes:
+      - autoedit_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoedit -d autoedit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  autoedit_postgres_data:

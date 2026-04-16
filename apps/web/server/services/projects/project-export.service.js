@@ -1,0 +1,293 @@
+import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import ffmpeg from 'fluent-ffmpeg';
+import { v4 as uuidv4 } from 'uuid';
+import { ensureStorageDirs } from '../editor/config.js';
+import { withDatabase } from '../core/database.service.js';
+import { completeJob, createJob, failJob, markJobRunning, updateJobProgress } from '../core/job.service.js';
+import { createTimelineSnapshot } from './timeline.service.js';
+import { getProjectEditState, loadProjectEditSource } from './project-edit-state.service.js';
+
+function roundTime(value) {
+  return Number(Number(value || 0).toFixed(3));
+}
+
+function sanitizeFilename(value, fallback = 'autoedit-project') {
+  const safe = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return safe || fallback;
+}
+
+function exportClipSegment(sourcePath, clip, outputPath) {
+  return new Promise((resolve, reject) => {
+    const duration = Math.max(0.05, Number(clip.sourceEndSeconds) - Number(clip.sourceStartSeconds));
+
+    ffmpeg(sourcePath)
+      .setStartTime(Number(clip.sourceStartSeconds))
+      .setDuration(duration)
+      .videoCodec('libx264')
+      .audioCodec('aac')
+      .outputOptions(['-movflags', '+faststart'])
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+async function loadProjectExportData(projectId) {
+  return withDatabase(async (db) => {
+    const project = await db.project.findUnique({
+      where: { id: projectId },
+      include: {
+        category: true,
+        projectAssets: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            asset: {
+              include: {
+                files: true,
+                captions: {
+                  orderBy: { createdAt: 'desc' },
+                  take: 1
+                }
+              }
+            }
+          }
+        },
+        timelines: {
+          where: { isPrimary: true },
+          include: {
+            clips: {
+              orderBy: { sortOrder: 'asc' },
+              include: {
+                asset: {
+                  include: { files: true }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!project) {
+      throw new Error('Project not found');
+    }
+
+    return project;
+  });
+}
+
+export async function exportProjectTimelineVideo(projectId) {
+  const job = await createJob({
+    type: 'export.video',
+    payload: { projectId },
+    projectId,
+    message: 'Queued project video export'
+  });
+
+  const project = await loadProjectExportData(projectId);
+  const timeline = project.timelines[0];
+  if (!timeline || !timeline.clips.length) {
+    await failJob(job.id, new Error('Project timeline is empty'));
+    throw new Error('Project timeline is empty');
+  }
+
+  const { exportsDir } = ensureStorageDirs();
+  const exportId = uuidv4().substring(0, 8);
+  const outputPath = path.join(exportsDir, `${sanitizeFilename(project.name)}_${exportId}.mp4`);
+  const concatListPath = path.join(exportsDir, `concat_${exportId}.txt`);
+  const tempSegments = [];
+
+  try {
+    await markJobRunning(job.id, 'Rendering timeline clips');
+    for (const clip of timeline.clips) {
+      const sourcePath = clip.asset.files?.find((file) => file.role === 'original')?.uri;
+      if (!sourcePath) {
+        throw new Error(`Original file missing for asset ${clip.assetId}`);
+      }
+      const tempSegment = path.join(exportsDir, `segment_${uuidv4().substring(0, 8)}.mp4`);
+      tempSegments.push(tempSegment);
+      await exportClipSegment(sourcePath, clip, tempSegment);
+      await updateJobProgress(job.id, Math.round((tempSegments.length / Math.max(timeline.clips.length, 1)) * 70), `Rendered ${tempSegments.length}/${timeline.clips.length} clips`);
+    }
+
+    const concatContent = tempSegments
+      .map((segmentPath) => `file '${segmentPath.replace(/'/g, "'\\''")}'`)
+      .join('\n');
+    await fs.promises.writeFile(concatListPath, concatContent, 'utf-8');
+
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatListPath)
+        .inputOptions(['-f', 'concat', '-safe', '0'])
+        .outputOptions(['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart'])
+        .output(outputPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    await completeJob(job.id, { outputPath }, 'Project video export completed');
+
+    return {
+      success: true,
+      outputPath
+    };
+  } catch (error) {
+    await failJob(job.id, error);
+    throw error;
+  } finally {
+    for (const segmentPath of tempSegments) {
+      if (fs.existsSync(segmentPath)) {
+        await fs.promises.unlink(segmentPath).catch(() => {});
+      }
+    }
+    if (fs.existsSync(concatListPath)) {
+      await fs.promises.unlink(concatListPath).catch(() => {});
+    }
+  }
+}
+
+export async function exportProjectPackage(projectId, { includeSourceMedia = true } = {}) {
+  const job = await createJob({
+    type: 'export.project_package',
+    payload: { projectId, includeSourceMedia },
+    projectId,
+    message: 'Queued project package export'
+  });
+
+  const project = await loadProjectExportData(projectId);
+  try {
+    await markJobRunning(job.id, 'Creating OTIO snapshot');
+    const snapshot = await createTimelineSnapshot(projectId, {
+      source: 'package_export',
+      note: 'Project package export'
+    });
+    const editState = await getProjectEditState(projectId);
+    const sourceState = await loadProjectEditSource(projectId);
+
+    const { packagesDir } = ensureStorageDirs();
+    const packageId = uuidv4().substring(0, 8);
+    const baseName = `${sanitizeFilename(project.name)}_${packageId}`;
+    const packageDir = path.join(packagesDir, baseName);
+    const projectDir = path.join(packageDir, 'project');
+    const mediaDir = path.join(packageDir, 'media');
+    const captionsDir = path.join(projectDir, 'captions');
+
+    await fs.promises.mkdir(projectDir, { recursive: true });
+    await fs.promises.mkdir(mediaDir, { recursive: true });
+    await fs.promises.mkdir(captionsDir, { recursive: true });
+
+    const manifest = {
+      project_id: project.id,
+      name: project.name,
+      category: project.category?.name || '',
+      exported_at: new Date().toISOString(),
+      include_source_media: includeSourceMedia,
+      asset_count: project.projectAssets.length,
+      clip_count: project.timelines[0]?.clips?.length || 0
+    };
+
+    await fs.promises.writeFile(
+      path.join(projectDir, 'project.json'),
+      JSON.stringify({
+        id: project.id,
+        name: project.name,
+        description: project.description || '',
+        category: project.category?.name || ''
+      }, null, 2),
+      'utf-8'
+    );
+
+    await fs.promises.writeFile(
+      path.join(projectDir, 'assets.json'),
+      JSON.stringify(project.projectAssets.map((relation) => ({
+        asset_id: relation.asset.id,
+        title: relation.asset.title,
+        original_filename: relation.asset.originalFilename,
+        mime_type: relation.asset.mimeType || '',
+        duration_seconds: relation.asset.durationSeconds,
+        media_filename: relation.asset.files?.find((file) => file.role === 'original')?.uri
+          ? path.basename(relation.asset.files.find((file) => file.role === 'original').uri)
+          : null,
+        caption_filename: `${relation.asset.id}.json`
+      })), null, 2),
+      'utf-8'
+    );
+
+    await fs.promises.writeFile(
+      path.join(projectDir, 'edit-state.json'),
+      JSON.stringify(editState, null, 2),
+      'utf-8'
+    );
+
+    await fs.promises.writeFile(
+      path.join(projectDir, 'source-state.json'),
+      JSON.stringify(sourceState, null, 2),
+      'utf-8'
+    );
+
+    await fs.promises.writeFile(
+      path.join(projectDir, 'timeline.otio'),
+      JSON.stringify(snapshot.otio, null, 2),
+      'utf-8'
+    );
+
+    for (const relation of project.projectAssets) {
+      await fs.promises.writeFile(
+        path.join(captionsDir, `${relation.asset.id}.json`),
+        JSON.stringify({
+          asset_id: relation.asset.id,
+          title: relation.asset.title,
+          transcript_text: relation.asset.transcriptText || relation.asset.captions?.[0]?.text || '',
+          payload: relation.asset.captions?.[0]?.payload || {}
+        }, null, 2),
+        'utf-8'
+      );
+    }
+
+    await fs.promises.writeFile(
+      path.join(packageDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2),
+      'utf-8'
+    );
+
+    await updateJobProgress(job.id, includeSourceMedia ? 45 : 70, 'Packaging project files');
+
+    if (includeSourceMedia) {
+      let copied = 0;
+      for (const relation of project.projectAssets) {
+        const sourcePath = relation.asset.files?.find((file) => file.role === 'original')?.uri;
+        if (!sourcePath || !fs.existsSync(sourcePath)) {
+          continue;
+        }
+        await fs.promises.copyFile(sourcePath, path.join(mediaDir, path.basename(sourcePath)));
+        copied += 1;
+        await updateJobProgress(job.id, Math.min(85, 45 + Math.round((copied / Math.max(project.projectAssets.length, 1)) * 40)), `Copied ${copied}/${project.projectAssets.length} source files`);
+      }
+    }
+
+    const zipPath = `${packageDir}.zip`;
+    execFileSync('zip', ['-r', zipPath, '.'], {
+      cwd: packageDir
+    });
+
+    await completeJob(job.id, { packageDir, zipPath }, 'Project package export completed');
+
+    return {
+      success: true,
+      packageDir,
+      zipPath
+    };
+  } catch (error) {
+    await failJob(job.id, error);
+    throw error;
+  }
+}

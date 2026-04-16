@@ -1,0 +1,48 @@
+[project]
+name = "autoedit"
+version = "0.3.0"
+description = "Local AI editing tool focused on agent-based video cutting and subtitle generation"
+requires-python = ">=3.10, <3.14"
+dependencies = [
+    "rich",
+    "soundfile",
+    "numpy",
+    "modelscope",
+    "huggingface_hub",
+
+    "torch>=2.5.0,<2.10.0; sys_platform == 'linux'",
+    "torchaudio>=2.5.0,<2.10.0; sys_platform == 'linux'",
+    "qwen-asr; sys_platform == 'linux'",
+
+    "mlx-audio[stt]>=0.4.0; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+autoedit = "scripts.cli:main"
+opc = "scripts.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["scripts"]
+
+[tool.setuptools.exclude-package-data]
+"scripts.asr" = ["test_*.py"]
+
+[tool.uv]
+extra-index-url = ["https://pypi.org/simple"]
+override-dependencies = [
+    "transformers>=4.57.0",
+]
+
+# Force PyTorch CUDA 12.4 index (Linux only)
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch", marker = "sys_platform == 'linux'" }
+torchaudio = { index = "pytorch", marker = "sys_platform == 'linux'" }

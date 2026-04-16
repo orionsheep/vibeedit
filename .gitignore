@@ -1,0 +1,42 @@
+# Virtual env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.vite/
+
+# Test files (do not release)
+test_*.py
+
+# Local runtime and secrets
+!.autoedit/
+.autoedit/*
+!.autoedit/CLAUDE.md
+!.autoedit/config.example.json
+.claude-test/
+.claude-test2/
+.claude-test-glm5/
+.autoedit/config.json
+.autoedit/claude-runtime/
+.autoedit/claude-runtime-test/
+.autoedit/claude-runtime-test-sf/
+
+# OS/editor noise
+.DS_Store
+
+# Local workspace / generated data
+storage/
+workspace/
+uploads/
+tmp/
+*.log

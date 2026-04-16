@@ -1,0 +1,526 @@
+import {
+  appendAgentEvent,
+  appendAgentMessage,
+  createAgentRunRecord,
+  getAgentRunRecord,
+  getProjectAgentSession,
+  touchAgentSession,
+  updateAgentRunRecord
+} from './agent-session.service.js';
+import { runClaudeAgentSession } from './claude-agent-runtime.service.js';
+import {
+  PROJECT_AGENT_MODEL,
+  PROJECT_AGENT_PROVIDER
+} from './glm-claude-rotation.service.js';
+import { getProjectTimeline } from '../projects/timeline.service.js';
+import { getProjectEditState } from '../projects/project-edit-state.service.js';
+
+const activeRunAbortControllers = new Map();
+const cancellationRequestedRuns = new Set();
+const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
+const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿)/i;
+
+class AgentRunCancelledError extends Error {
+  constructor(message = 'Agent run cancelled') {
+    super(message);
+    this.name = 'AgentRunCancelledError';
+  }
+}
+
+function normalizeMode(mode) {
+  const value = String(mode || 'custom').trim().toLowerCase() || 'custom';
+  if (!SUPPORTED_PROJECT_AGENT_MODES.has(value)) {
+    throw new Error(`Unsupported project agent mode: ${value}. Only custom and assemble_script are supported.`);
+  }
+  return value;
+}
+
+function inferEffectiveMode(mode, prompt = '', topic = '') {
+  const normalizedMode = normalizeMode(mode);
+  if (normalizedMode === 'assemble_script') return normalizedMode;
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
+  if (ASSEMBLE_SCRIPT_INTENT_PATTERN.test(text)) {
+    return 'assemble_script';
+  }
+  return normalizedMode;
+}
+
+function summarizeTimelineSignature(timeline = null) {
+  const clips = Array.isArray(timeline?.clips) ? timeline.clips : [];
+  return JSON.stringify({
+    clip_count: clips.length,
+    total_duration: Number(timeline?.total_duration || 0),
+    clips: clips.map((clip) => [
+      String(clip.asset_id || ''),
+      Number(clip.source_start || 0),
+      Number(clip.source_end || 0),
+      Number(clip.timeline_start || 0),
+      Number(clip.timeline_end || 0),
+      Number(clip.sort_order || 0),
+      String(clip.label || '')
+    ])
+  });
+}
+
+async function readProjectMutationSignature(projectId) {
+  const [timeline, editState] = await Promise.all([
+    getProjectTimeline(projectId),
+    getProjectEditState(projectId)
+  ]);
+  return JSON.stringify({
+    timeline: JSON.parse(summarizeTimelineSignature(timeline)),
+    edit_state_version: Number(editState?.version || 0),
+    deleted_word_count: Array.isArray(editState?.deleted_word_keys) ? editState.deleted_word_keys.length : 0,
+    deleted_gap_count: Array.isArray(editState?.deleted_gap_keys) ? editState.deleted_gap_keys.length : 0
+  });
+}
+
+function mergeSessionSummary(previousSummary, userMessage, assistantReply, appliedChanges = []) {
+  const lines = [String(previousSummary || '').trim()].filter(Boolean);
+  lines.push([
+    `用户要求：${String(userMessage || '').trim()}`,
+    appliedChanges.length ? `执行动作：${appliedChanges.map((item) => item.change || item.type || '修改').join('、')}` : '',
+    `结果：${String(assistantReply || '').trim()}`
+  ].filter(Boolean).join(' | '));
+  return lines.join('\n').split('\n').slice(-8).join('\n');
+}
+
+async function finalizeCancelledRun(projectId, sessionId, runId, message = '已停止本次 Agent 执行，当前项目保持在停止前的状态。') {
+  const run = await getAgentRunRecord(projectId, runId);
+  if (!run) {
+    return {
+      success: true,
+      status: 'cancelled',
+      run_id: runId
+    };
+  }
+
+  const alreadyFinal = ['cancelled', 'completed', 'failed'].includes(String(run.status || ''));
+  if (alreadyFinal) {
+    return {
+      success: true,
+      status: run.status,
+      run_id: runId,
+      result: run.result || null
+    };
+  }
+
+  await updateAgentRunRecord(runId, {
+    status: 'cancelled',
+    result: {
+      ...(run.result || {}),
+      reply: message,
+      summary: message
+    },
+    requiresConfirmation: false,
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'cancelled',
+    step: 'cancel',
+    message,
+    payload: {}
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content: message,
+    metadata: {
+      status: 'cancelled'
+    }
+  });
+
+  return {
+    success: true,
+    status: 'cancelled',
+    run_id: runId,
+    reply: message
+  };
+}
+
+function resultRequiresMutation(mode, result = {}) {
+  if (mode === 'assemble_script') return true;
+  const changes = Array.isArray(result?.applied_changes) ? result.applied_changes : [];
+  return changes.some((change) => Boolean(change?.mutates_project || change?.timeline || change?.removed_asset_title || change?.reordered_asset_titles || change?.replacement_text));
+}
+
+function isNoMutationError(error) {
+  const message = String(error?.message || '');
+  return message.includes('没有产生任何实际修改') || message.includes('没有真正调用需要的工具');
+}
+
+async function runProjectAgentInternal({
+  projectId,
+  sessionId,
+  mode = 'custom',
+  prompt = '',
+  topic = '',
+  target_minutes: targetMinutes = 0,
+  preference_prompt: preferencePrompt = '',
+  provider = '',
+  model = '',
+  onEvent = () => {}
+}) {
+  const session = await getProjectAgentSession(projectId, sessionId);
+  if (!session) {
+    throw new Error('Agent session not found');
+  }
+
+  const requestedMode = normalizeMode(mode);
+  const normalizedMode = inferEffectiveMode(requestedMode, prompt, topic);
+  const requestedProvider = PROJECT_AGENT_PROVIDER;
+  const requestedModel = PROJECT_AGENT_MODEL;
+  let forcedRetryUsed = false;
+  const userPrompt = String(prompt || '').trim() || `执行 ${normalizedMode}`;
+
+  await appendAgentMessage({
+    sessionId,
+    role: 'user',
+    content: userPrompt,
+    metadata: {
+      mode: normalizedMode,
+      requested_mode: requestedMode
+    }
+  });
+
+  const run = await createAgentRunRecord({
+    projectId,
+    sessionId,
+    mode: normalizedMode,
+    prompt: userPrompt,
+    provider: requestedProvider,
+    model: requestedModel,
+    input: {
+      topic: String(topic || '').trim(),
+      target_minutes: Number(targetMinutes || 0),
+      preference_prompt: String(preferencePrompt || '').trim(),
+      requested_provider: String(provider || '').trim(),
+      requested_model: String(model || '').trim(),
+      requested_mode: requestedMode
+    }
+  });
+
+  const mutationSignatureBefore = await readProjectMutationSignature(projectId);
+  const abortController = new AbortController();
+  activeRunAbortControllers.set(run.id, abortController);
+  cancellationRequestedRuns.delete(run.id);
+
+  try {
+    if (requestedMode !== normalizedMode) {
+      await appendAgentEvent({
+        sessionId,
+        runId: run.id,
+        type: 'stage',
+        step: 'mode_routed',
+        message: `检测到口播剪辑意图，已自动切换到口播拼稿主链。`,
+        payload: {
+          requested_mode: requestedMode,
+          effective_mode: normalizedMode
+        }
+      });
+    }
+
+    let result;
+    try {
+      result = await runClaudeAgentSession({
+        projectId,
+        sessionId,
+        runId: run.id,
+        mode: normalizedMode,
+        prompt: userPrompt,
+        topic: String(topic || '').trim(),
+        targetMinutes: Number(targetMinutes || 0),
+        preferencePrompt: String(preferencePrompt || '').trim(),
+        preferredProvider: requestedProvider,
+        preferredModel: requestedModel,
+        signal: abortController.signal,
+        onEvent
+      });
+    } catch (error) {
+      if (normalizedMode === 'assemble_script' && !forcedRetryUsed && isNoMutationError(error)) {
+        forcedRetryUsed = true;
+        await appendAgentEvent({
+          sessionId,
+          runId: run.id,
+          type: 'stage',
+          step: 'retry_with_context',
+          message: '上一轮没有真正修改项目，正在自动发起第二轮执行。',
+          payload: {}
+        });
+        result = await runClaudeAgentSession({
+          projectId,
+          sessionId,
+          runId: run.id,
+          mode: normalizedMode,
+          prompt: userPrompt,
+          topic: String(topic || '').trim(),
+          targetMinutes: Number(targetMinutes || 0),
+          preferencePrompt: String(preferencePrompt || '').trim(),
+          preferredProvider: requestedProvider,
+          preferredModel: requestedModel,
+          signal: abortController.signal,
+          onEvent
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    const latestRun = await getAgentRunRecord(projectId, run.id);
+    const assistantReply = String(result.reply || latestRun?.result?.reply || '').trim();
+    const mutationSignatureAfter = await readProjectMutationSignature(projectId);
+    const requiresMutation = resultRequiresMutation(normalizedMode, latestRun?.result || result);
+
+    if (requiresMutation && mutationSignatureAfter === mutationSignatureBefore) {
+      if (normalizedMode === 'assemble_script' && !forcedRetryUsed) {
+        forcedRetryUsed = true;
+        await appendAgentEvent({
+          sessionId,
+          runId: run.id,
+          type: 'stage',
+          step: 'retry_with_context',
+          message: '检测到上一轮没有真正改到项目，正在自动发起第二轮执行。',
+          payload: {}
+        });
+        const retriedResult = await runClaudeAgentSession({
+          projectId,
+          sessionId,
+          runId: run.id,
+          mode: normalizedMode,
+          prompt: userPrompt,
+          topic: String(topic || '').trim(),
+          targetMinutes: Number(targetMinutes || 0),
+          preferencePrompt: String(preferencePrompt || '').trim(),
+          preferredProvider: requestedProvider,
+          preferredModel: requestedModel,
+          signal: abortController.signal,
+          onEvent
+        });
+        const retriedRun = await getAgentRunRecord(projectId, run.id);
+        const retriedMutationSignature = await readProjectMutationSignature(projectId);
+        if (resultRequiresMutation(normalizedMode, retriedRun?.result || retriedResult) && retriedMutationSignature === mutationSignatureBefore) {
+          throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+        }
+        const retriedReply = String(retriedResult.reply || retriedRun?.result?.reply || '').trim();
+        await touchAgentSession(sessionId, {
+          summary: mergeSessionSummary(session.summary, userPrompt, retriedReply, retriedRun?.applied_changes || [])
+        });
+        return {
+          success: true,
+          session_id: sessionId,
+          run_id: run.id,
+          reply: retriedReply,
+          status: retriedRun?.status || retriedResult.status,
+          requires_confirmation: Boolean(retriedRun?.requires_confirmation),
+          applied_changes: retriedRun?.applied_changes || retriedResult.applied_changes || [],
+          result: retriedRun?.result || retriedResult
+        };
+      }
+      throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+    }
+
+    await touchAgentSession(sessionId, {
+      summary: mergeSessionSummary(session.summary, userPrompt, assistantReply, latestRun?.applied_changes || [])
+    });
+
+    return {
+      success: true,
+      session_id: sessionId,
+      run_id: run.id,
+      reply: assistantReply,
+      status: latestRun?.status || result.status,
+      requires_confirmation: Boolean(latestRun?.requires_confirmation),
+      applied_changes: latestRun?.applied_changes || result.applied_changes || [],
+      result: latestRun?.result || result
+    };
+  } catch (error) {
+    if (abortController.signal.aborted || cancellationRequestedRuns.has(run.id) || String(error?.name || '') === 'AbortError') {
+      return finalizeCancelledRun(projectId, sessionId, run.id);
+    }
+
+    const failureMessage = String(error?.message || 'Project agent failed');
+    await updateAgentRunRecord(run.id, {
+      status: 'failed',
+      result: {
+        reply: `执行失败：${failureMessage}`,
+        summary: failureMessage
+      },
+      requiresConfirmation: false,
+      finished: true
+    });
+    await appendAgentEvent({
+      sessionId,
+      runId: run.id,
+      type: 'error',
+      step: 'runtime',
+      message: failureMessage,
+      payload: {}
+    });
+    await appendAgentMessage({
+      sessionId,
+      runId: run.id,
+      role: 'assistant',
+      content: `执行失败：${failureMessage}`,
+      metadata: {
+        status: 'failed'
+      }
+    });
+    throw error;
+  } finally {
+    activeRunAbortControllers.delete(run.id);
+    cancellationRequestedRuns.delete(run.id);
+  }
+}
+
+export async function runProjectAgentSessionWorkflow({
+  projectId,
+  sessionId,
+  mode = 'custom',
+  prompt = '',
+  topic = '',
+  target_minutes: targetMinutes = 0,
+  preference_prompt: preferencePrompt = '',
+  provider = '',
+  model = '',
+  onEvent = () => {}
+}) {
+  return runProjectAgentInternal({
+    projectId,
+    sessionId,
+    mode,
+    prompt,
+    topic,
+    target_minutes: targetMinutes,
+    preference_prompt: preferencePrompt,
+    provider,
+    model,
+    onEvent
+  });
+}
+
+export async function confirmProjectAgentRun({ projectId, runId, approved = true }) {
+  const run = await getAgentRunRecord(projectId, runId);
+  if (!run) {
+    throw new Error('Agent run not found');
+  }
+
+  if (String(run.status || '') !== 'waiting_confirmation') {
+    return {
+      success: true,
+      run_id: runId,
+      status: run.status,
+      result: run.result || null
+    };
+  }
+
+  const session = await getProjectAgentSession(projectId, run.session_id);
+  if (!session) {
+    throw new Error('Agent session not found');
+  }
+
+  const pendingTool = run.result?.pending_tool || null;
+  if (!pendingTool?.tool) {
+    throw new Error('No pending high-risk tool found for confirmation');
+  }
+
+  if (!approved) {
+    return finalizeCancelledRun(projectId, run.session_id, runId, '你已取消本次高风险操作，项目保持在原状态。');
+  }
+
+  const result = await executeProjectAgentToolDirect(projectId, pendingTool.tool, pendingTool.args || {}, {
+    approvedHighRisk: true
+  });
+  const appliedChanges = [...(run.applied_changes || []), result];
+  const reply = String(result?.summary || '高风险操作已确认并执行。').trim();
+
+  await updateAgentRunRecord(runId, {
+    status: 'completed',
+    result: {
+      reply,
+      summary: reply,
+      applied_changes: appliedChanges
+    },
+    requiresConfirmation: false,
+    appliedChanges,
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId: run.session_id,
+    runId,
+    type: 'tool_result',
+    step: pendingTool.tool,
+    message: reply,
+    payload: {
+      tool: pendingTool.tool,
+      result
+    }
+  });
+  await appendAgentEvent({
+    sessionId: run.session_id,
+    runId,
+    type: 'complete',
+    step: 'complete',
+    message: '确认后的操作已执行完成。',
+    payload: {}
+  });
+  await appendAgentMessage({
+    sessionId: run.session_id,
+    runId,
+    role: 'assistant',
+    content: reply,
+    metadata: {
+      status: 'completed'
+    }
+  });
+  await touchAgentSession(run.session_id, {
+    summary: mergeSessionSummary(session.summary, run.prompt, reply, appliedChanges)
+  });
+
+  return {
+    success: true,
+    run_id: runId,
+    status: 'completed',
+    reply,
+    applied_changes: appliedChanges
+  };
+}
+
+export async function cancelProjectAgentRun({ projectId, runId }) {
+  const run = await getAgentRunRecord(projectId, runId);
+  if (!run) {
+    throw new Error('Agent run not found');
+  }
+
+  if (['cancelled', 'completed', 'failed'].includes(String(run.status || ''))) {
+    return {
+      success: true,
+      run_id: runId,
+      status: run.status,
+      result: run.result || null
+    };
+  }
+
+  cancellationRequestedRuns.add(runId);
+  const controller = activeRunAbortControllers.get(runId);
+  if (controller && !controller.signal.aborted) {
+    controller.abort(new AgentRunCancelledError());
+  }
+
+  await updateAgentRunRecord(runId, {
+    status: 'cancelling',
+    result: {
+      ...(run.result || {}),
+      reply: '已请求停止本次 Agent 执行。',
+      summary: '已请求停止本次 Agent 执行。'
+    }
+  });
+
+  return {
+    success: true,
+    run_id: runId,
+    status: 'cancelling'
+  };
+}

@@ -1,0 +1,317 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ProjectCategory {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+}
+
+model Project {
+  id              String             @id @default(cuid())
+  name            String
+  description     String?
+  categoryId      String?
+  coverAssetId    String?
+  status          String             @default("active")
+  defaultSettings Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  lastOpenedAt    DateTime?
+  category        ProjectCategory?   @relation(fields: [categoryId], references: [id])
+  projectAssets   ProjectAsset[]
+  timelines       Timeline[]
+  agentSessions   AgentSession[]
+  agentRuns       AgentRun[]
+  exports         ExportRecord[]
+  snapshots       TimelineSnapshot[]
+  captionOverrides ProjectCaptionOverride[]
+  editState       ProjectEditState?
+
+  @@index([categoryId])
+  @@index([lastOpenedAt])
+}
+
+model ProjectEditState {
+  id              String    @id @default(cuid())
+  projectId       String    @unique
+  assetOrder      Json
+  deletedWordKeys Json
+  deletedGapKeys  Json
+  textReplacements Json
+  version         Int       @default(1)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([updatedAt])
+}
+
+model Asset {
+  id              String         @id @default(cuid())
+  kind            String         @default("video")
+  status          String         @default("ready")
+  title           String
+  originalFilename String
+  mimeType        String?
+  durationSeconds Float?
+  width           Int?
+  height          Int?
+  frameRate       Float?
+  transcriptText  String?
+  asrStatus       String         @default("pending")
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  files           AssetFile[]
+  projectAssets   ProjectAsset[]
+  captions        Caption[]
+  captionOverrides ProjectCaptionOverride[]
+  timelineClips   TimelineClip[]
+  jobs            Job[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AssetFile {
+  id         String   @id @default(cuid())
+  assetId     String
+  role        String
+  storageKey  String
+  uri         String
+  mimeType    String?
+  sizeBytes   BigInt?
+  checksum    String?
+  createdAt   DateTime @default(now())
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, role])
+}
+
+model ProjectAsset {
+  id         String   @id @default(cuid())
+  projectId   String
+  assetId     String
+  sortOrder   Int      @default(0)
+  addedAt     DateTime @default(now())
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, assetId])
+  @@index([projectId, sortOrder])
+}
+
+model Timeline {
+  id          String            @id @default(cuid())
+  projectId    String
+  name        String
+  isPrimary   Boolean           @default(false)
+  settings    Json?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  project     Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tracks      TimelineTrack[]
+  clips       TimelineClip[]
+  snapshots   TimelineSnapshot[]
+
+  @@index([projectId, isPrimary])
+}
+
+model TimelineTrack {
+  id         String         @id @default(cuid())
+  timelineId  String
+  kind       String
+  name       String
+  sortOrder  Int            @default(0)
+  settings   Json?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  timeline   Timeline       @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  clips      TimelineClip[]
+
+  @@index([timelineId, sortOrder])
+}
+
+model TimelineClip {
+  id               String       @id @default(cuid())
+  timelineId        String
+  trackId           String
+  assetId           String
+  label            String?
+  sourceStartSeconds Float
+  sourceEndSeconds   Float
+  timelineStartSeconds Float
+  timelineEndSeconds   Float
+  sortOrder        Int          @default(0)
+  metadata         Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  timeline         Timeline     @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  track            TimelineTrack @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  asset            Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([timelineId, trackId, sortOrder])
+  @@index([assetId])
+}
+
+model Caption {
+  id         String   @id @default(cuid())
+  assetId     String
+  kind       String   @default("word_timeline")
+  language   String?
+  text       String?
+  payload    Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, kind])
+}
+
+model Job {
+  id         String   @id @default(cuid())
+  type       String
+  status     String   @default("queued")
+  progress   Int      @default(0)
+  message    String?
+  payload    Json
+  result     Json?
+  assetId     String?
+  projectId   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  startedAt  DateTime?
+  finishedAt DateTime?
+  asset      Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([type, status])
+  @@index([assetId])
+  @@index([projectId])
+}
+
+model AgentRun {
+  id         String   @id @default(cuid())
+  projectId   String
+  sessionId   String?
+  mode       String
+  status     String   @default("queued")
+  prompt     String
+  provider   String?
+  model      String?
+  input      Json
+  plan       Json?
+  result     Json?
+  requiresConfirmation Boolean @default(false)
+  appliedChanges Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  finishedAt DateTime?
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  session    AgentSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  events     AgentEvent[]
+
+  @@index([projectId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+model ProjectCaptionOverride {
+  id            String   @id @default(cuid())
+  projectId      String
+  assetId        String
+  transcriptText String?
+  payload        Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, assetId])
+  @@index([projectId, updatedAt])
+  @@index([assetId, updatedAt])
+}
+
+model AgentSession {
+  id            String         @id @default(cuid())
+  projectId      String
+  title         String?
+  status        String         @default("active")
+  summary       String?
+  memory        Json?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  lastActiveAt  DateTime?
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages      AgentMessage[]
+  runs          AgentRun[]
+  events        AgentEvent[]
+
+  @@index([projectId, createdAt])
+  @@index([projectId, lastActiveAt])
+}
+
+model AgentMessage {
+  id         String       @id @default(cuid())
+  sessionId   String
+  runId       String?
+  role       String
+  content    String
+  metadata   Json?
+  createdAt  DateTime     @default(now())
+  session    AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model AgentEvent {
+  id         String        @id @default(cuid())
+  sessionId   String
+  runId       String?
+  type       String
+  step       String?
+  message    String?
+  payload    Json?
+  createdAt  DateTime      @default(now())
+  session    AgentSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  run        AgentRun?     @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([runId, createdAt])
+}
+
+model TimelineSnapshot {
+  id         String   @id @default(cuid())
+  projectId   String
+  timelineId  String
+  source     String   @default("system")
+  note       String?
+  otio       Json
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  timeline   Timeline @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([timelineId, createdAt])
+}
+
+model ExportRecord {
+  id         String   @id @default(cuid())
+  projectId   String
+  type       String
+  status     String   @default("queued")
+  outputUri  String?
+  payload    Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}

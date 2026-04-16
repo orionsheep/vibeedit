@@ -1,0 +1,215 @@
+import axios from 'axios';
+
+const API_BASE = '/api/projects';
+
+export async function listProjects() {
+  const response = await axios.get(API_BASE);
+  return response.data.projects || [];
+}
+
+export async function listProjectCategories() {
+  const response = await axios.get(`${API_BASE}/categories`);
+  return response.data.categories || [];
+}
+
+export async function createProject(payload) {
+  const response = await axios.post(API_BASE, payload);
+  return response.data.project;
+}
+
+export async function getProject(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}`);
+  return response.data.project;
+}
+
+export async function deleteProject(projectId) {
+  const response = await axios.delete(`${API_BASE}/${projectId}`);
+  return response.data.project;
+}
+
+export async function addAssetToProject(projectId, assetId) {
+  const response = await axios.post(`${API_BASE}/${projectId}/assets`, { assetId });
+  return response.data;
+}
+
+export async function uploadProjectAssets(projectId, formData, onUploadProgress) {
+  const response = await axios.post(`${API_BASE}/${projectId}/assets/upload`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    onUploadProgress
+  });
+  return {
+    assets: response.data.assets || [],
+    edit_state: response.data.edit_state,
+    timeline: response.data.timeline
+  };
+}
+
+export async function reorderProjectAssets(projectId, assetIds) {
+  const response = await axios.put(`${API_BASE}/${projectId}/assets/order`, { assetIds });
+  return response.data.project;
+}
+
+export async function removeProjectAsset(projectId, assetId) {
+  const response = await axios.delete(`${API_BASE}/${projectId}/assets/${assetId}`);
+  return response.data.project;
+}
+
+export async function getProjectTimeline(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/timeline`);
+  return response.data.timeline;
+}
+
+export async function getProjectEditState(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/edit-state`);
+  return response.data.edit_state;
+}
+
+export async function updateProjectEditState(projectId, payload) {
+  const response = await axios.put(`${API_BASE}/${projectId}/edit-state`, payload);
+  return {
+    edit_state: response.data.edit_state,
+    timeline: response.data.timeline
+  };
+}
+
+export async function listProjectSnapshots(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/timeline/snapshots`);
+  return response.data.snapshots || [];
+}
+
+export async function createProjectSnapshot(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/timeline/snapshot`, payload);
+  return response.data.snapshot;
+}
+
+export async function appendTimelineClip(projectId, payload) {
+  const response = await axios.post(`${API_BASE}/${projectId}/timeline/clips`, payload);
+  return response.data.clip;
+}
+
+export async function updateProjectTimeline(projectId, clips) {
+  const response = await axios.put(`${API_BASE}/${projectId}/timeline`, { clips });
+  return response.data.timeline;
+}
+
+export async function deleteTimelineClip(projectId, clipId) {
+  const response = await axios.delete(`${API_BASE}/${projectId}/timeline/clips/${clipId}`);
+  return response.data.timeline;
+}
+
+export async function listProjectAgentSessions(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/agent/sessions`);
+  return response.data.sessions || [];
+}
+
+export async function createProjectAgentSession(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/agent/sessions`, payload);
+  return response.data.session;
+}
+
+export async function getProjectAgentSession(projectId, sessionId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/agent/sessions/${sessionId}`);
+  return response.data.session;
+}
+
+export async function runProjectAgentWithProgress(projectId, sessionId, payload, onProgress, signal) {
+  const response = await fetch(`${API_BASE}/${projectId}/agent/sessions/${sessionId}/runs/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload),
+    signal
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Project agent failed' }));
+    throw new Error(error.error || 'Project agent failed');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result = null;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        const lines = event.split('\n');
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = JSON.parse(line.slice(6));
+          if (onProgress) {
+            onProgress(data);
+          }
+          if (data.type === 'result') {
+            result = data.result;
+          }
+          if (data.type === 'error') {
+            throw new Error(data.message || 'Project agent failed');
+          }
+        }
+      }
+    }
+  } finally {
+    reader.cancel();
+  }
+
+  return result;
+}
+
+export async function confirmProjectAgentRun(projectId, runId, approved = true) {
+  const response = await axios.post(`${API_BASE}/${projectId}/agent/runs/${runId}/confirm`, {
+    approved
+  });
+  return response.data;
+}
+
+export async function cancelProjectAgentRun(projectId, runId) {
+  const response = await axios.post(`${API_BASE}/${projectId}/agent/runs/${runId}/cancel`);
+  return response.data;
+}
+
+export async function listProjectAgentRunEvents(projectId, runId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/agent/runs/${runId}/events`);
+  return response.data.events || [];
+}
+
+export async function listProjectJobs(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/jobs`);
+  return response.data.jobs || [];
+}
+
+export async function exportProjectVideo(projectId) {
+  const response = await axios.post(`${API_BASE}/${projectId}/exports/video`);
+  return response.data;
+}
+
+export async function exportProjectPackage(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/exports/package`, payload);
+  return response.data;
+}
+
+export async function exportProjectInterchange(projectId, format) {
+  const response = await axios.post(`${API_BASE}/${projectId}/exports/interchange`, { format });
+  return response.data;
+}
+
+export async function importProjectPackage(formData, onUploadProgress) {
+  const response = await axios.post(`${API_BASE}/imports/package`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    onUploadProgress
+  });
+  return response.data.project;
+}

@@ -1,0 +1,6 @@
+{
+  "watch": ["api-server.js", "server/"],
+  "ext": "js,json",
+  "ignore": ["node_modules", "dist"],
+  "delay": "1000"
+}

@@ -1,0 +1,22 @@
+{
+  "workspace_dir": "/Users/yourname/.autoedit/workspace",
+  "dashboard_host": "0.0.0.0",
+  "dashboard_port": 12080,
+  "api_port": 12081,
+  "asr_provider": "siliconflow",
+  "siliconflow_api_key": "sk-...",
+  "siliconflow_base_url": "https://api.siliconflow.cn/v1",
+  "siliconflow_asr_model": "FunAudioLLM/SenseVoiceSmall",
+  "agent_llm_provider": "glm_claude_sdk",
+  "agent_llm_model": "Pro/zai-org/GLM-5.1",
+  "agent_llm_keys": [
+    "glm-official-key"
+  ],
+  "agent_llm_base_url": "https://open.bigmodel.cn/api/anthropic",
+  "agent_llm_siliconflow_model": "Pro/zai-org/GLM-5.1",
+  "agent_llm_siliconflow_keys": [
+    "sk-..."
+  ],
+  "agent_llm_siliconflow_base_url": "https://api.siliconflow.cn/",
+  "claude_runtime_dir": "/absolute/path/to/project/.autoedit/claude-runtime"
+}
