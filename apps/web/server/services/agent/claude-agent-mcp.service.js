@@ -213,7 +213,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolGetDeletedSubtitleBlocks(projectId, args)
   },
   get_assemble_candidates: {
-    description: '读取口播拼稿候选，返回重复 take 候选组和重复句候选组。它只是辅助参考，不是主观察来源；默认先直接读取 get_script_blocks 和 get_subtitle_blocks，再在确实需要比对候选时使用它。',
+    description: '读取口播拼稿候选，返回重复 take 候选组和重复句候选组。它不是主观察来源，但口播拼稿在读完整个 get_script_blocks 和 get_subtitle_blocks 之后，必须再调用它复查一次；决定 no-op 前不能跳过这一步。',
     schema: {
       take_limit: z.number().optional(),
       sentence_limit: z.number().optional()
