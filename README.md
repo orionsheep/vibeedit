@@ -1,8 +1,8 @@
-# AutoEdit
+# VibeEdit
 
 在线体验：`https://vibeedit.orionsheep.shop/`
 
-`AutoEdit` 不是一个“全功能复杂视频剪辑软件”。
+`VibeEdit` 不是一个“全功能复杂视频剪辑软件”。
 
 它解决的是视频剪辑工作里的**第一步**：
 
