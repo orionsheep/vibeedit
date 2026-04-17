@@ -152,6 +152,91 @@ function isNoMutationError(error) {
   return message.includes('没有产生任何实际修改') || message.includes('没有真正调用需要的工具');
 }
 
+function buildAssembleNoopReply() {
+  return [
+    '本轮已复查当前口播稿，但没有发现需要继续落地的明显删减项，所以保持当前时间线不变。',
+    '',
+    '顺序：保持当前顺序，未做调整。',
+    '通顺：当前保留内容未新增切口，整体可直接连读。',
+    '逻辑：未发现必须删除的重复段影响主线表达。',
+    '断句：本轮未新增剪切点，现有衔接保持不变。',
+    '重复：未识别到可以安全删除的明确重复 take 或重复句。',
+    '停顿：未检测到必须立即处理的明显长停顿；如果你想更紧，可以继续指定段落或目标时长。',
+    '误删：本轮未执行删除，因此没有新增误删风险。',
+    '改进：如果你希望继续压缩，请直接说明想压哪一段，或给出更明确的删减标准。'
+  ].join('\n');
+}
+
+async function finalizeAssembleNoopRun({
+  projectId,
+  session,
+  sessionId,
+  runId,
+  userPrompt,
+  existingRun = null,
+  existingResult = null
+}) {
+  const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
+  const appliedChanges = Array.isArray(runRecord?.applied_changes)
+    ? runRecord.applied_changes
+    : Array.isArray(existingResult?.applied_changes)
+      ? existingResult.applied_changes
+      : [];
+  const reply = buildAssembleNoopReply();
+  const summary = '本轮复查后未发现需要继续执行的口播拼稿修改，已保持当前时间线不变。';
+  const result = {
+    ...(runRecord?.result || existingResult || {}),
+    reply,
+    summary,
+    noop: true,
+    noop_reason: 'assemble-script-noop',
+    applied_changes: appliedChanges
+  };
+
+  await updateAgentRunRecord(runId, {
+    status: 'completed',
+    result,
+    requiresConfirmation: false,
+    appliedChanges,
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'complete',
+    step: 'noop_complete',
+    message: summary,
+    payload: {
+      noop: true,
+      mode: 'assemble_script'
+    }
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content: reply,
+    metadata: {
+      status: 'completed',
+      noop: true
+    }
+  });
+  await touchAgentSession(sessionId, {
+    summary: mergeSessionSummary(session.summary, userPrompt, reply, appliedChanges)
+  });
+
+  return {
+    success: true,
+    session_id: sessionId,
+    run_id: runId,
+    reply,
+    status: 'completed',
+    requires_confirmation: false,
+    applied_changes: appliedChanges,
+    result
+  };
+}
+
 async function runProjectAgentInternal({
   projectId,
   sessionId,
@@ -250,20 +335,33 @@ async function runProjectAgentInternal({
           message: '上一轮没有真正修改项目，正在自动发起第二轮执行。',
           payload: {}
         });
-        result = await runClaudeAgentSession({
-          projectId,
-          sessionId,
-          runId: run.id,
-          mode: normalizedMode,
-          prompt: userPrompt,
-          topic: String(topic || '').trim(),
-          targetMinutes: Number(targetMinutes || 0),
-          preferencePrompt: String(preferencePrompt || '').trim(),
-          preferredProvider: requestedProvider,
-          preferredModel: requestedModel,
-          signal: abortController.signal,
-          onEvent
-        });
+        try {
+          result = await runClaudeAgentSession({
+            projectId,
+            sessionId,
+            runId: run.id,
+            mode: normalizedMode,
+            prompt: userPrompt,
+            topic: String(topic || '').trim(),
+            targetMinutes: Number(targetMinutes || 0),
+            preferencePrompt: String(preferencePrompt || '').trim(),
+            preferredProvider: requestedProvider,
+            preferredModel: requestedModel,
+            signal: abortController.signal,
+            onEvent
+          });
+        } catch (retryError) {
+          if (isNoMutationError(retryError)) {
+            return finalizeAssembleNoopRun({
+              projectId,
+              session,
+              sessionId,
+              runId: run.id,
+              userPrompt
+            });
+          }
+          throw retryError;
+        }
       } else {
         throw error;
       }
@@ -302,7 +400,15 @@ async function runProjectAgentInternal({
         const retriedRun = await getAgentRunRecord(projectId, run.id);
         const retriedMutationSignature = await readProjectMutationSignature(projectId);
         if (resultRequiresMutation(normalizedMode, retriedRun?.result || retriedResult) && retriedMutationSignature === mutationSignatureBefore) {
-          throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+          return finalizeAssembleNoopRun({
+            projectId,
+            session,
+            sessionId,
+            runId: run.id,
+            userPrompt,
+            existingRun: retriedRun,
+            existingResult: retriedResult
+          });
         }
         const retriedReply = String(retriedResult.reply || retriedRun?.result?.reply || '').trim();
         await touchAgentSession(sessionId, {
@@ -318,6 +424,17 @@ async function runProjectAgentInternal({
           applied_changes: retriedRun?.applied_changes || retriedResult.applied_changes || [],
           result: retriedRun?.result || retriedResult
         };
+      }
+      if (normalizedMode === 'assemble_script') {
+        return finalizeAssembleNoopRun({
+          projectId,
+          session,
+          sessionId,
+          runId: run.id,
+          userPrompt,
+          existingRun: latestRun,
+          existingResult: result
+        });
       }
       throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
     }

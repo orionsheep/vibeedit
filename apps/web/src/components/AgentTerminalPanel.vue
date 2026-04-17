@@ -1,11 +1,11 @@
 <template>
   <div class="agent-terminal">
-    <div ref="scrollRef" class="terminal-scroll">
-      <div class="terminal-toolbar">
-        <button class="terminal-link" :disabled="runningAgent" @click="$emit('new-session')">新会话</button>
-        <button class="terminal-link" title="隐藏 Agent 栏" @click="$emit('toggle-collapse')">&gt;&gt;</button>
-      </div>
+    <div class="terminal-toolbar">
+      <button class="terminal-link" :disabled="runningAgent" @click="$emit('new-session')">新会话</button>
+      <button class="terminal-link" title="隐藏 Agent 栏" @click="$emit('toggle-collapse')">&gt;&gt;</button>
+    </div>
 
+    <div ref="scrollRef" class="terminal-scroll">
       <template v-if="pendingConfirmationRun">
         <div class="terminal-entry">
           <div class="entry-label system">$ CONFIRMATION</div>
@@ -246,23 +246,25 @@ function handlePromptKeydown(event) {
 .agent-terminal {
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   background: #0a0f14;
   color: #d6e3ef;
   font-family: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
-}
-
-.terminal-scroll {
-  min-height: 0;
-  overflow: auto;
-  padding: 10px 12px 14px;
 }
 
 .terminal-toolbar {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #16232d;
+  background: #0a0f14;
+}
+
+.terminal-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 14px;
 }
 
 .terminal-link,
