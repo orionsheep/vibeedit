@@ -287,6 +287,14 @@ function buildAssembleReviewFollowupPrompt() {
   ].join('\n');
 }
 
+function getAssembleReviewReserveMs(timeoutMs, config = loadConfig()) {
+  const configured = Number(config.agent_llm_assemble_review_reserve_ms || 0);
+  const fallback = 25000;
+  const raw = configured > 0 ? configured : fallback;
+  const cappedUpperBound = Math.max(5000, Number(timeoutMs || 0) - 5000);
+  return Math.min(Math.max(5000, raw), cappedUpperBound);
+}
+
 export async function runClaudeAgentSession({
   projectId,
   sessionId,
@@ -335,10 +343,14 @@ export async function runClaudeAgentSession({
   let bumpProgress = () => {};
 
   for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
+    const config = loadConfig();
     const candidate = getHealthyGlmCandidate(requestedModel, requestedProvider);
     const abortController = new AbortController();
-    const timeoutMs = Number(loadConfig().agent_llm_timeout_ms || 90000);
-    const inactivityTimeoutMs = Number(loadConfig().agent_llm_inactivity_timeout_ms || (normalizedMode === 'assemble_script' ? 45000 : 20000));
+    const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
+    const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || (normalizedMode === 'assemble_script' ? 45000 : 20000));
+    const assembleReviewReserveMs = normalizedMode === 'assemble_script'
+      ? getAssembleReviewReserveMs(timeoutMs, config)
+      : 0;
     let timeoutId = null;
     let inactivityId = null;
     const activeStreamRef = { current: null };
@@ -354,8 +366,10 @@ export async function runClaudeAgentSession({
     const mutatedProject = { current: false };
     let claudeSessionId = assembleRetryPass ? '' : resumeSessionId;
     let finalResultText = '';
+    let forcedReviewHandoff = false;
     const mcpToolNames = selectToolNames({ mode: normalizedMode, prompt, assembleRetryPass });
     const runtimeDir = candidate.runtimeDir;
+    const attemptStartedAt = Date.now();
     let stream = null;
     const closeCurrentStream = () => {
       try {
@@ -369,15 +383,23 @@ export async function runClaudeAgentSession({
         throw abortController.signal.reason || new Error('Agent run cancelled');
       }
     };
+    const shouldForceReviewHandoff = () => {
+      if (normalizedMode !== 'assemble_script' || forcedReviewHandoff) return false;
+      if (!appliedChanges.some(isTimelineEditingChange)) return false;
+      return Date.now() - attemptStartedAt >= Math.max(0, timeoutMs - assembleReviewReserveMs);
+    };
     const runAssembleReviewPass = async (mcpServer) => {
       if (normalizedMode !== 'assemble_script') return '';
       await emit({
         type: 'stage',
         step: 'review',
-        message: '第一轮未输出完整自审清单，正在强制发起最终自审。',
+        message: forcedReviewHandoff
+          ? '已完成主要修改，正在提前切换到最终自审，避免总结阶段超时。'
+          : '第一轮未输出完整自审清单，正在强制发起最终自审。',
         payload: {
           model: candidate.model,
-          provider: candidate.provider
+          provider: candidate.provider,
+          forced_handoff: forcedReviewHandoff
         }
       });
       let reviewText = '';
@@ -575,6 +597,21 @@ export async function runClaudeAgentSession({
                 throw new Error((message.errors || []).join('\n') || `Claude SDK execution failed: ${message.subtype}`);
               }
               finalResultText = String(message.result || '').trim();
+            }
+
+            if (shouldForceReviewHandoff()) {
+              forcedReviewHandoff = true;
+              await emit({
+                type: 'stage',
+                step: 'review_handoff',
+                message: '主要修改已完成，正在切换到短版最终自审。',
+                payload: {
+                  model: candidate.model,
+                  provider: candidate.provider,
+                  reserve_ms: assembleReviewReserveMs
+                }
+              });
+              closeCurrentStream();
             }
           }
         } finally {
