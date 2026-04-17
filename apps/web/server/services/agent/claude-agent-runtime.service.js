@@ -42,7 +42,7 @@ function inferEffectiveMode(mode = 'custom', prompt = '', topic = '') {
   return normalizedMode;
 }
 
-function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRetryPass = false } = {}) {
+function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRetryPass = false, pauseOnlyRequest = false } = {}) {
   const normalizedMode = String(mode || 'custom').trim();
   const claudeMd = loadClaudeMdInstructions();
   const modeInstruction = normalizedMode === 'assemble_script'
@@ -58,10 +58,13 @@ function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRet
         '在你读完整个脚本块和字幕块之后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选；尤其是空白项目、初次拼稿或用户要求压时长时，不能跳过这一步。',
         '优先一次性读取完整脚本块和完整字幕块，再尽量用少量、成组的删改工具完成修改；不要删一点就反复回头分页检查，除非你明确需要验证结果。',
         '默认高保留率，主要删除重复 take、明显重复句、口头禅和停顿；不要为了“更顺”而重写表达。',
-        '删除整句、半句、重复 take、重复表达时，优先使用 delete_subtitle_blocks / restore_subtitle_blocks 做块级删改；不要为了省事在句子中间掏词。',
+        pauseOnlyRequest
+          ? '当前这轮用户主要是在清理停顿/间隙，不是在重做拼稿。除非是极少量独立口头禅，否则不要删除整句、整段或重复块；优先只做 gap 清理。'
+          : '删除整句、半句、重复 take、重复表达时，优先使用 delete_subtitle_blocks / restore_subtitle_blocks 做块级删改；不要为了省事在句子中间掏词。',
         'delete_words_by_phrase / restore_words_by_phrase 只用于独立短口头禅和语气词，例如“嗯”“啊”“呃”“就是”“那个”；不允许用它删除句中实词、主谓宾、连接逻辑或半句结构。',
         '如果用户要求去口气词、口头禅、停顿、间隙或压紧节奏，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、get_pause_candidates、remove_pauses 等工具落地，而不是只在总结里声称处理过。',
-        '处理停顿时，优先先读 get_pause_candidates 或 get_assemble_candidates 里的停顿候选，再把 gap_keys 传给 remove_pauses 做定点删除；不要只靠大阈值全局扫一遍就结束。',
+        '处理停顿时，必须先读 get_pause_candidates 或 get_assemble_candidates 里的停顿候选；口播拼稿里，remove_pauses 默认应传 gap_keys 做 3-8 个间隙的小批量定点删除，不要用 2 秒/3 秒阈值整批扫停顿。',
+        '参考成熟人工剪法：先删整块重复，再分两到三轮切掉 0.35-1.2 秒的明显间隙；如果拿不准，就宁可少删一轮，也不要整段硬砍。',
         '好的口播成片应尽量保持句义单元完整，主要通过删除重复块和 gap 来压紧节奏，而不是在句子中间抠几个字假装顺畅。',
         '即使用户没有单独强调停顿，口播拼稿在完成主要语义删减后，也必须检查一次当前结果里是否还残留明显长停顿；若有，就调用 remove_pauses 做收尾清理，并确认 deleted_gap_count 真的增加。',
         '在你认为编辑完成后，必须做一次强制自我审查，而且不能只凭记忆判断；必须再次调用 get_script_blocks、必要时再调用 get_subtitle_blocks / get_timeline_detail，基于最新结果逐项复查。',
@@ -113,7 +116,7 @@ function buildConversationMemory(sessionDetail, currentPrompt = '') {
   ].filter(Boolean).join('\n\n');
 }
 
-function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0, sessionDetail = null, assembleRetryPass = false }) {
+function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0, sessionDetail = null, assembleRetryPass = false, pauseOnlyRequest = false }) {
   const lines = [];
   lines.push(`当前模式：${mode}`);
   if (topic) lines.push(`主题：${topic}`);
@@ -121,7 +124,10 @@ function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinut
   lines.push(`用户要求：${String(prompt || '').trim() || `执行 ${mode}`}`);
   const memoryText = buildConversationMemory(sessionDetail, String(prompt || '').trim());
   if (memoryText) lines.push(memoryText);
-  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，优先再调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，并把 gap_keys 传给 remove_pauses 做定点删除；不要只靠一句“我已经删了停顿”就结束。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  if (pauseOnlyRequest) {
+    lines.push('这轮目标只是在当前结果上清理停顿/间隙并少量清理独立口头禅，不要顺手删整句、删整段、去重整块或重做口播结构。');
+  }
+  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
   if (assembleRetryPass && String(mode || '').trim() === 'assemble_script') {
     lines.push('上一轮没有真正修改项目或没有完成自审清单。这一轮禁止只读取候选摘要后结束，必须自己读完整脚本块、读完整字幕块，再调用一次 get_assemble_candidates，然后真正调用删改工具。');
   }
@@ -283,6 +289,28 @@ function requestRequiresMutation({ mode = 'custom', prompt = '', topic = '', tar
   return /(拼稿|删除|恢复|导出|快照|去重|删掉|移除|改写|替换|调整|排序|口播|停顿|间隙|空白|节奏|改成|清理|压缩|精简|去掉|重写|修改)/.test(text);
 }
 
+function requestExplicitPauseCleanup({ prompt = '', topic = '' } = {}) {
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
+  if (!text) return false;
+  const mentionsPause = /(停顿|间隙|空白|节奏)/.test(text);
+  const mentionsCleanup = /(删|删除|去掉|切掉|清理|压紧|收紧|去除|处理)/.test(text);
+  return mentionsPause && mentionsCleanup;
+}
+
+function requestIsPauseOnly({ prompt = '', topic = '' } = {}) {
+  if (!requestExplicitPauseCleanup({ prompt, topic })) return false;
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
+  return !/(拼稿|去重|重复|重做|重剪|精简内容|删整句|删整段|大幅删减|压缩时长|目标分钟|整理口播|多版本)/.test(text);
+}
+
+function hasAppliedPauseCleanup(appliedChanges = []) {
+  return appliedChanges.some((change) => (
+    didChangeApply(change) &&
+    String(change.tool || change.change || '').trim() === 'remove_pauses' &&
+    Number(change.deleted_gap_count || 0) > 0
+  ));
+}
+
 function selectToolNames({ mode = 'custom' } = {}) {
   return Object.keys(TOOL_DEFINITIONS);
 }
@@ -293,6 +321,7 @@ function buildAssembleReviewFollowupPrompt() {
     '现在禁止重来，也不要重新从头做一版；必须基于当前项目最新状态执行最终自审。',
     '先调用一次 get_script_blocks；只有在你确实需要补充确认时，才再调用 get_subtitle_blocks 或 get_timeline_detail。',
     '除非你明确发现严重问题，否则不要继续大改，也不要重排单个视频素材内部顺序。',
+    '如果当前任务包含“删停顿 / 删间隙 / 压紧节奏”，必须确认本轮真的通过 remove_pauses 切掉了 gap，而不是只删了字词。',
     '最后只输出 8 行清单，不要写额外前言或总结；每行必须以对应关键词开头：顺序、通顺、逻辑、断句、重复、停顿、误删、改进。',
     '如果本轮涉及调序，必须明确说明只改了素材/文件之间的顺序，没有改单个素材内部顺序。',
     '如果你没有发现新增问题，就直接给出 8 行检查结论并结束。'
@@ -352,6 +381,7 @@ export async function runClaudeAgentSession({
   let resumeSessionId = sessionDetail.memory?.claude_sdk_session_id || '';
   const requestedProvider = getProjectAgentProvider();
   const requestedModel = getProjectAgentModel();
+  const pauseOnlyRequest = requestIsPauseOnly({ prompt, topic });
   let bumpProgress = () => {};
 
   for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
@@ -425,7 +455,7 @@ export async function runClaudeAgentSession({
           maxTurns: 24,
           resume: claudeSessionId || undefined,
           abortController,
-          systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass }),
+          systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest }),
           mcpServers: {
             autoedit: mcpServer
           },
@@ -556,7 +586,7 @@ export async function runClaudeAgentSession({
 
         fs.mkdirSync(runtimeDir, { recursive: true });
         stream = query({
-          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass }),
+          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest }),
           options: {
             cwd: getProjectRoot(),
             permissionMode: 'bypassPermissions',
@@ -565,7 +595,7 @@ export async function runClaudeAgentSession({
             maxTurns: 120,
             resume: claudeSessionId || undefined,
             abortController,
-            systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass }),
+            systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest }),
             mcpServers: {
               autoedit: mcpServer
             },
@@ -714,6 +744,8 @@ export async function runClaudeAgentSession({
         let reviewResult = null;
         const requiresToolUse = requestRequiresToolUse({ mode: normalizedMode, prompt, topic, targetMinutes });
         const requiresMutation = requestRequiresMutation({ mode: normalizedMode, prompt, topic, targetMinutes });
+        const requiresPauseCleanup = requestExplicitPauseCleanup({ prompt, topic });
+        const pauseOnlyCleanup = requestIsPauseOnly({ prompt, topic });
         if (requiresToolUse && !appliedChanges.length) {
           throw new Error('本次 Agent 没有真正调用需要的工具，请重试。');
         }
@@ -722,6 +754,15 @@ export async function runClaudeAgentSession({
           : appliedChanges.some(isMutatingChange);
         if (requiresMutation && !mutationSatisfied) {
           throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+        }
+        if (requiresPauseCleanup && !hasAppliedPauseCleanup(appliedChanges)) {
+          throw new Error('本次请求明确要求处理停顿/间隙，但 Agent 没有真正切掉任何 gap。请先读取停顿候选，再用 gap_keys 定点调用 remove_pauses。');
+        }
+        if (pauseOnlyCleanup && appliedChanges.some((change) => (
+          didChangeApply(change) &&
+          ['delete_subtitle_blocks', 'restore_subtitle_blocks', 'remove_project_asset', 'reorder_project_assets', 'clear_deleted'].includes(String(change.tool || change.change || '').trim())
+        ))) {
+          throw new Error('本轮请求只要求清理停顿/间隙，不应删除整句或整段内容。请仅使用停顿候选和定点 gap 删除，必要时最多只清理独立口头禅。');
         }
         if (normalizedMode === 'assemble_script') {
           reviewResult = buildAssembleReviewResult(finalResultText);

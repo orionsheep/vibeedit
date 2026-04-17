@@ -48,7 +48,12 @@ function formatPauseCandidates(candidates = []) {
       const asset = candidate.asset_title ? `[${candidate.asset_title}] ` : '';
       const left = String(candidate.left_preview || '').trim();
       const right = String(candidate.right_preview || '').trim();
-      return `${index + 1}. ${asset}${formatTime(candidate.start)}-${formatTime(candidate.end)} gap ${formatTime(candidate.gap_seconds)}s | ${left} ⇢ ${right}`;
+      const tags = [
+        candidate.recommended ? '推荐' : '',
+        candidate.safety_level ? `安全:${candidate.safety_level}` : '',
+        ...(Array.isArray(candidate.suggestion_reasons) ? candidate.suggestion_reasons.slice(0, 2) : [])
+      ].filter(Boolean);
+      return `${index + 1}. ${asset}${formatTime(candidate.start)}-${formatTime(candidate.end)} gap ${formatTime(candidate.gap_seconds)}s${tags.length ? ` [${tags.join(' / ')}]` : ''} | gap_key=${candidate.gap_key} | ${left} ⇢ ${right}`;
     })
     .join('\n');
 }
@@ -91,13 +96,15 @@ function compactResultPayload(toolName, result = {}) {
         block_count: Number(result.script_block_count || 0) || (Array.isArray(result.blocks) ? result.blocks.length : 0),
         take_group_count: result.take_group_count,
         sentence_group_count: result.sentence_group_count,
-        pause_candidate_count: result.pause_candidate_count
+        pause_candidate_count: result.pause_candidate_count,
+        recommended_pause_candidate_count: result.recommended_pause_candidate_count
       };
     case 'get_pause_candidates':
       return {
         total: result.total,
         min_gap_seconds: result.min_gap_seconds,
-        candidate_count: Array.isArray(result.candidates) ? result.candidates.length : 0
+        candidate_count: Array.isArray(result.candidates) ? result.candidates.length : 0,
+        recommended_count: result.recommended_count
       };
     case 'search_project_subtitles':
       return {
@@ -114,7 +121,10 @@ function compactResultPayload(toolName, result = {}) {
         restored_match_count: result?.restored_match_count,
         replaced_match_count: result?.replaced_match_count,
         deleted_gap_count: result?.deleted_gap_count,
+        deleted_gap_keys: Array.isArray(result?.deleted_gap_keys) ? result.deleted_gap_keys : undefined,
         removed_seconds: result?.removed_seconds,
+        targeted: result?.targeted,
+        requested_gap_key_count: result?.requested_gap_key_count,
         removed_asset_title: result?.removed_asset_title || undefined,
         ordered_asset_ids: Array.isArray(result?.ordered_asset_ids) ? result.ordered_asset_ids : undefined,
         reordered_asset_titles: Array.isArray(result?.ordered_asset_titles) ? result.ordered_asset_titles : undefined,
@@ -255,7 +265,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolGetAssembleCandidates(projectId, args)
   },
   get_pause_candidates: {
-    description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。',
+    description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。优先看带“推荐”标签的候选。',
     schema: {
       min_gap_seconds: z.number().optional(),
       limit: z.number().optional(),
@@ -329,7 +339,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolRestoreWordsByPhrase(projectId, args)
   },
   remove_pauses: {
-    description: '切掉明显停顿。优先先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做定点删除；如果没有指定 gap_keys，才会按阈值批量清理。',
+    description: '切掉明显停顿。口播拼稿模式下优先先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做 3-8 个间隙的小批量定点删除；不要直接用大阈值整批扫停顿。',
     schema: {
       min_gap_seconds: z.number().optional(),
       gap_keys: z.array(z.string()).optional(),

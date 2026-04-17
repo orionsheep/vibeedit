@@ -1441,6 +1441,11 @@ function buildPausePreview(words = [], startIndex = 0, endIndex = 0, { trimStart
   return text;
 }
 
+function buildPauseCandidateAlias(candidate = {}) {
+  const assetPart = String(candidate.asset_title || candidate.asset_id || 'gap').trim() || 'gap';
+  return `${assetPart}::${roundTime(candidate.start)}-${roundTime(candidate.end)}`;
+}
+
 function buildPauseCandidates(state, {
   minGapSeconds = 0.35,
   assetTitle = '',
@@ -1473,12 +1478,16 @@ function buildPauseCandidates(state, {
     const alreadyDeleted = deletedGapKeys.has(gapKey);
     if (alreadyDeleted && !includeDeleted) continue;
 
-    const gapSeconds = roundTime(Math.max(0, Number(right.start_time || 0) - Number(left.end_time || 0)));
-    if (gapSeconds < safeMinGap) continue;
-
     const leftSentenceBoundary = /[。！？!?；;]/.test(String(left.text || ''));
     const rightStartsWithFiller = isSafeInlineFillerPhrase(right.text || '');
     const leftEndsWithFiller = isSafeInlineFillerPhrase(left.text || '');
+    const gapSeconds = roundTime(Math.max(0, Number(right.start_time || 0) - Number(left.end_time || 0)));
+    const effectiveMinGap = safeMinGap <= 0.35 && (leftSentenceBoundary || rightStartsWithFiller || leftEndsWithFiller)
+      ? 0.25
+      : safeMinGap;
+    if (gapSeconds < effectiveMinGap) continue;
+
+    const suggestionReasons = [];
     let priorityScore = gapSeconds * 10;
     if (gapSeconds >= 0.9) priorityScore += 3;
     if (gapSeconds >= 0.6) priorityScore += 1;
@@ -1486,7 +1495,25 @@ function buildPauseCandidates(state, {
     if (leftEndsWithFiller) priorityScore += 0.5;
     if (leftSentenceBoundary && gapSeconds < 0.45) priorityScore -= 1;
 
-    candidates.push({
+    if (gapSeconds >= 1.2) suggestionReasons.push('长停顿');
+    else if (gapSeconds >= 0.75) suggestionReasons.push('明显停顿');
+    else if (gapSeconds >= 0.35) suggestionReasons.push('微停顿');
+    if (leftSentenceBoundary) suggestionReasons.push('句间停顿');
+    if (rightStartsWithFiller || leftEndsWithFiller) suggestionReasons.push('口头禅边界');
+
+    let safetyLevel = 'low';
+    let recommended = false;
+    if (gapSeconds >= 0.9 || ((rightStartsWithFiller || leftEndsWithFiller) && gapSeconds >= 0.25)) {
+      safetyLevel = 'high';
+      recommended = true;
+      priorityScore += 3;
+    } else if (gapSeconds >= 0.45 || (leftSentenceBoundary && gapSeconds >= 0.35)) {
+      safetyLevel = 'medium';
+      recommended = true;
+      priorityScore += 1.5;
+    }
+
+    const candidate = {
       gap_key: gapKey,
       asset_id: left.asset_id,
       asset_title: left.asset_title,
@@ -1500,11 +1527,19 @@ function buildPauseCandidates(state, {
       left_sentence_boundary: leftSentenceBoundary,
       right_starts_with_filler: rightStartsWithFiller,
       already_deleted: alreadyDeleted,
+      safety_level: safetyLevel,
+      recommended,
+      suggestion_reasons: suggestionReasons,
       priority_score: roundTime(priorityScore)
-    });
+    };
+    candidate.gap_alias = buildPauseCandidateAlias(candidate);
+    candidates.push(candidate);
   }
 
   const sorted = candidates.sort((left, right) => {
+    if (Boolean(right.recommended) !== Boolean(left.recommended)) {
+      return Number(Boolean(right.recommended)) - Number(Boolean(left.recommended));
+    }
     const priorityGap = Number(right.priority_score || 0) - Number(left.priority_score || 0);
     if (priorityGap !== 0) return priorityGap;
     const durationGap = Number(right.gap_seconds || 0) - Number(left.gap_seconds || 0);
@@ -1641,11 +1676,12 @@ export async function toolGetAssembleCandidates(
   return {
     success: true,
     change: 'get_assemble_candidates',
-    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawSentenceGroups.length} 组重复句候选、${pauseCandidates.length} 个明显停顿候选。`,
+    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawSentenceGroups.length} 组重复句候选、${pauseCandidates.length} 个明显停顿候选（其中 ${pauseCandidates.filter((candidate) => candidate.recommended).length} 个推荐优先处理）。`,
     script_block_count: scriptBlocks.length,
     take_group_count: rawTakeGroups.length,
     sentence_group_count: rawSentenceGroups.length,
     pause_candidate_count: pauseCandidates.length,
+    recommended_pause_candidate_count: pauseCandidates.filter((candidate) => candidate.recommended).length,
     take_groups: rawTakeGroups,
     sentence_groups: rawSentenceGroups,
     pause_candidates: pauseCandidates
@@ -1664,10 +1700,11 @@ export async function toolGetPauseCandidates(projectId, { min_gap_seconds: minGa
     success: true,
     change: 'get_pause_candidates',
     summary: candidates.length
-      ? `识别到 ${candidates.length} 个明显停顿候选。`
+      ? `识别到 ${candidates.length} 个明显停顿候选，其中 ${candidates.filter((candidate) => candidate.recommended).length} 个推荐优先处理。`
       : '当前没有达到阈值的明显停顿候选。',
     total: candidates.length,
     min_gap_seconds: Number(minGapSeconds || 0.35),
+    recommended_count: candidates.filter((candidate) => candidate.recommended).length,
     candidates
   };
 }
@@ -2214,17 +2251,37 @@ export async function toolRemovePauses(
 ) {
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
+  const strictAssemble = String(context?.requestContext?.mode || '') === 'assemble_script';
 
   const requestedGapKeys = (Array.isArray(gapKeys) ? gapKeys : []).map((value) => String(value || '').trim()).filter(Boolean);
+  if (strictAssemble && !requestedGapKeys.length) {
+    const suggestedCandidates = buildPauseCandidates(state, {
+      minGapSeconds: Number(minGapSeconds || 0.35),
+      assetTitle,
+      limit: 8
+    });
+    return {
+      success: false,
+      changed: false,
+      change: 'remove_pauses',
+      summary: '口播拼稿模式下不要直接按阈值整批扫停顿。请先调用 get_pause_candidates / get_assemble_candidates，挑具体 gap_keys 后再定点删除。',
+      deleted_gap_count: 0,
+      removed_seconds: 0,
+      suggested_gap_keys: suggestedCandidates.filter((candidate) => candidate.recommended).map((candidate) => candidate.gap_key),
+      suggested_candidates: suggestedCandidates.slice(0, 8)
+    };
+  }
+  const requestedGapKeySet = new Set(requestedGapKeys);
   const selectedCandidates = buildPauseCandidates(state, {
     minGapSeconds: requestedGapKeys.length ? 0 : Number(minGapSeconds || 0.4),
     assetTitle,
     limit: requestedGapKeys.length
       ? Math.max(1, requestedGapKeys.length)
       : (limit == null ? null : Math.min(200, Math.max(1, Number(limit || 1)))),
-    gapKeys: requestedGapKeys
+    gapKeys: []
   }).filter((candidate) => (
-    !requestedGapKeys.length || Number(candidate.gap_seconds || 0) >= Number(minGapSeconds || 0.4)
+    (!requestedGapKeys.length || requestedGapKeySet.has(candidate.gap_key) || requestedGapKeySet.has(buildPauseCandidateAlias(candidate))) &&
+    (!requestedGapKeys.length || Number(candidate.gap_seconds || 0) >= Number(minGapSeconds || 0.4))
   ));
 
   if (!selectedCandidates.length) {
@@ -2263,6 +2320,8 @@ export async function toolRemovePauses(
     changed: true,
     change: 'remove_pauses',
     summary: `已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
+    targeted: requestedGapKeys.length > 0,
+    requested_gap_key_count: requestedGapKeys.length,
     deleted_gap_count: selectedCandidates.length,
     deleted_gap_keys: selectedCandidates.map((candidate) => candidate.gap_key),
     removed_seconds: roundTime(removedSeconds),
