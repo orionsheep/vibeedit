@@ -85,6 +85,27 @@ function mergeSessionSummary(previousSummary, userMessage, assistantReply, appli
   return lines.join('\n').split('\n').slice(-8).join('\n');
 }
 
+async function appendAcceptedAssistantReply({ sessionId, runId, reply, run = null }) {
+  const content = String(reply || '').trim();
+  if (!content) return null;
+  const result = run?.result || {};
+  return appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content,
+    metadata: {
+      status: String(run?.status || 'completed'),
+      model: result.actual_model || run?.model || null,
+      provider: result.actual_provider || run?.provider || null,
+      fallback_run: Boolean(result.fallback_run),
+      noop: Boolean(result.noop),
+      recovered_from_stall: Boolean(result.recovered_from_stall),
+      recovered_from_review_failure: Boolean(result.recovered_from_review_failure)
+    }
+  });
+}
+
 async function finalizeCancelledRun(projectId, sessionId, runId, message = '已停止本次 Agent 执行，当前项目保持在停止前的状态。') {
   const run = await getAgentRunRecord(projectId, runId);
   if (!run) {
@@ -322,7 +343,8 @@ async function runProjectAgentInternal({
         preferredProvider: requestedProvider,
         preferredModel: requestedModel,
         signal: abortController.signal,
-        onEvent
+        onEvent,
+        persistAssistantMessage: false
       });
     } catch (error) {
       if (normalizedMode === 'assemble_script' && !forcedRetryUsed && isNoMutationError(error)) {
@@ -348,7 +370,8 @@ async function runProjectAgentInternal({
             preferredProvider: requestedProvider,
             preferredModel: requestedModel,
             signal: abortController.signal,
-            onEvent
+            onEvent,
+            persistAssistantMessage: false
           });
         } catch (retryError) {
           if (isNoMutationError(retryError)) {
@@ -395,7 +418,8 @@ async function runProjectAgentInternal({
           preferredProvider: requestedProvider,
           preferredModel: requestedModel,
           signal: abortController.signal,
-          onEvent
+          onEvent,
+          persistAssistantMessage: false
         });
         const retriedRun = await getAgentRunRecord(projectId, run.id);
         const retriedMutationSignature = await readProjectMutationSignature(projectId);
@@ -411,6 +435,19 @@ async function runProjectAgentInternal({
           });
         }
         const retriedReply = String(retriedResult.reply || retriedRun?.result?.reply || '').trim();
+        if (String(retriedRun?.status || retriedResult.status || '') === 'completed') {
+          await appendAcceptedAssistantReply({
+            sessionId,
+            runId: run.id,
+            reply: retriedReply,
+            run: retriedRun || {
+              status: retriedResult.status,
+              result: retriedResult,
+              model: requestedModel,
+              provider: requestedProvider
+            }
+          });
+        }
         await touchAgentSession(sessionId, {
           summary: mergeSessionSummary(session.summary, userPrompt, retriedReply, retriedRun?.applied_changes || [])
         });
@@ -439,6 +476,19 @@ async function runProjectAgentInternal({
       throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
     }
 
+    if (String(latestRun?.status || result.status || '') === 'completed') {
+      await appendAcceptedAssistantReply({
+        sessionId,
+        runId: run.id,
+        reply: assistantReply,
+        run: latestRun || {
+          status: result.status,
+          result,
+          model: requestedModel,
+          provider: requestedProvider
+        }
+      });
+    }
     await touchAgentSession(sessionId, {
       summary: mergeSessionSummary(session.summary, userPrompt, assistantReply, latestRun?.applied_changes || [])
     });

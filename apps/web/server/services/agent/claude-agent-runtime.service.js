@@ -349,7 +349,8 @@ export async function runClaudeAgentSession({
   preferredModel = '',
   onEvent = () => {},
   signal,
-  approvedHighRisk = true
+  approvedHighRisk = true,
+  persistAssistantMessage = true
 }) {
   const normalizedMode = inferEffectiveMode(mode, prompt, topic);
   if (!SUPPORTED_PROJECT_AGENT_MODES.has(normalizedMode)) {
@@ -717,15 +718,17 @@ export async function runClaudeAgentSession({
             requiresConfirmation: true,
             appliedChanges
           });
-          await appendAgentMessage({
-            sessionId,
-            runId,
-            role: 'assistant',
-            content: reply,
-            metadata: {
-              status: 'waiting_confirmation'
-            }
-          });
+          if (persistAssistantMessage) {
+            await appendAgentMessage({
+              sessionId,
+              runId,
+              role: 'assistant',
+              content: reply,
+              metadata: {
+                status: 'waiting_confirmation'
+              }
+            });
+          }
           return {
             success: true,
             run_id: runId,
@@ -809,18 +812,20 @@ export async function runClaudeAgentSession({
           appliedChanges,
           finished: true
         });
-        await appendAgentMessage({
-          sessionId,
-          runId,
-          role: 'assistant',
-          content: reply,
-          metadata: {
-            status: 'completed',
-            model: candidate.model,
-            provider: actualProvider,
-            fallback_run: fallbackRun
-          }
-        });
+        if (persistAssistantMessage) {
+          await appendAgentMessage({
+            sessionId,
+            runId,
+            role: 'assistant',
+            content: reply,
+            metadata: {
+              status: 'completed',
+              model: candidate.model,
+              provider: actualProvider,
+              fallback_run: fallbackRun
+            }
+          });
+        }
         await emit({
           type: 'complete',
           step: 'complete',
@@ -903,20 +908,22 @@ export async function runClaudeAgentSession({
           appliedChanges,
           finished: true
         });
-        await appendAgentMessage({
-          sessionId,
-          runId,
-          role: 'assistant',
-          content: reply,
-          metadata: {
-            status: 'completed',
-            model: candidate.model,
-            provider: actualProvider,
-            fallback_run: fallbackRun,
-            recovered_from_stall: isStallLikeError(error),
-            recovered_from_review_failure: isAssembleReviewFailure(error)
-          }
-        });
+        if (persistAssistantMessage) {
+          await appendAgentMessage({
+            sessionId,
+            runId,
+            role: 'assistant',
+            content: reply,
+            metadata: {
+              status: 'completed',
+              model: candidate.model,
+              provider: actualProvider,
+              fallback_run: fallbackRun,
+              recovered_from_stall: isStallLikeError(error),
+              recovered_from_review_failure: isAssembleReviewFailure(error)
+            }
+          });
+        }
         await emit({
           type: 'complete',
           step: 'complete',
