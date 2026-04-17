@@ -13,8 +13,15 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from scripts.shared.platform import get_backend
-from scripts.shared.model_path import resolve_model_path
+try:
+    from shared.platform import get_backend
+    from shared.model_path import resolve_model_path
+except ModuleNotFoundError:
+    SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, SCRIPTS_DIR)
+    from shared.platform import get_backend
+    from shared.model_path import resolve_model_path
 
 # ASR model mapping: size -> model_id
 ASR_MODELS = {

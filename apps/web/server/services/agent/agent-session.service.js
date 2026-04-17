@@ -1,4 +1,5 @@
 import { withDatabase } from '../core/database.service.js';
+import { loadConfig } from '../editor/config.js';
 
 function mapRun(run) {
   if (!run) return null;
@@ -59,6 +60,14 @@ function mapSession(session) {
     updated_at: session.updatedAt,
     last_active_at: session.lastActiveAt
   };
+}
+
+function getAgentRunStaleTimeoutMs(config = loadConfig()) {
+  const configured = Number(config.agent_run_stale_timeout_ms || 0);
+  if (configured > 0) return configured;
+  const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
+  const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 45000);
+  return Math.max(timeoutMs, inactivityTimeoutMs) + 120000;
 }
 
 export async function listProjectAgentSessions(projectId) {
@@ -161,7 +170,7 @@ export async function touchAgentSession(sessionId, patch = {}) {
 
 export async function createAgentRunRecord({ projectId, sessionId, mode, prompt, provider, model, input }) {
   return withDatabase(async (db) => {
-    const activeRun = await db.agentRun.findFirst({
+    let activeRun = await db.agentRun.findFirst({
       where: {
         sessionId,
         status: {
@@ -170,6 +179,25 @@ export async function createAgentRunRecord({ projectId, sessionId, mode, prompt,
       },
       orderBy: { createdAt: 'desc' }
     });
+
+    if (activeRun) {
+      const staleTimeoutMs = getAgentRunStaleTimeoutMs();
+      const ageMs = Date.now() - new Date(activeRun.updatedAt || activeRun.createdAt).getTime();
+      if (ageMs >= staleTimeoutMs) {
+        await db.agentRun.update({
+          where: { id: activeRun.id },
+          data: {
+            status: 'failed',
+            result: {
+              reply: '执行失败：上一轮 Agent 执行超时未收尾，系统已自动结束旧任务，请重试。',
+              summary: 'Stale agent run auto-failed'
+            },
+            finishedAt: new Date()
+          }
+        });
+        activeRun = null;
+      }
+    }
 
     if (activeRun) {
       throw new Error('This agent session already has an active run');

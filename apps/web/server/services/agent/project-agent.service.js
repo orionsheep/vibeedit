@@ -9,8 +9,8 @@ import {
 } from './agent-session.service.js';
 import { runClaudeAgentSession } from './claude-agent-runtime.service.js';
 import {
-  PROJECT_AGENT_MODEL,
-  PROJECT_AGENT_PROVIDER
+  getProjectAgentModel,
+  getProjectAgentProvider
 } from './glm-claude-rotation.service.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
 import { getProjectEditState } from '../projects/project-edit-state.service.js';
@@ -171,8 +171,8 @@ async function runProjectAgentInternal({
 
   const requestedMode = normalizeMode(mode);
   const normalizedMode = inferEffectiveMode(requestedMode, prompt, topic);
-  const requestedProvider = PROJECT_AGENT_PROVIDER;
-  const requestedModel = PROJECT_AGENT_MODEL;
+  const requestedProvider = getProjectAgentProvider();
+  const requestedModel = getProjectAgentModel();
   let forcedRetryUsed = false;
   const userPrompt = String(prompt || '').trim() || `执行 ${normalizedMode}`;
 

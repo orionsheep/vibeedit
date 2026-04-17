@@ -1,8 +1,8 @@
 import crypto from 'crypto';
 import { loadConfig, getProjectRoot } from '../editor/config.js';
 
-export const PROJECT_AGENT_PROVIDER = 'siliconflow_claude_sdk';
-export const PROJECT_AGENT_MODEL = 'Pro/zai-org/GLM-5';
+export const DEFAULT_PROJECT_AGENT_PROVIDER = 'siliconflow_claude_sdk';
+export const DEFAULT_PROJECT_AGENT_MODEL = 'Pro/zai-org/GLM-5.1';
 
 const healthMap = new Map();
 let roundRobinIndex = 0;
@@ -13,6 +13,18 @@ function hashKey(value = '') {
 
 function getRuntimeDir(config = loadConfig()) {
   return config.claude_runtime_dir || `${getProjectRoot()}/.autoedit/claude-runtime`;
+}
+
+export function getProjectAgentProvider(config = loadConfig()) {
+  return String(config.agent_llm_provider || DEFAULT_PROJECT_AGENT_PROVIDER).trim() || DEFAULT_PROJECT_AGENT_PROVIDER;
+}
+
+export function getProjectAgentModel(config = loadConfig()) {
+  return String(
+    config.agent_llm_siliconflow_model ||
+    config.agent_llm_model ||
+    DEFAULT_PROJECT_AGENT_MODEL
+  ).trim() || DEFAULT_PROJECT_AGENT_MODEL;
 }
 
 function buildProviderRuntimeDir(baseDir) {
@@ -43,8 +55,8 @@ export function getGlmClaudeSettings() {
   ]);
 
   return {
-    provider: PROJECT_AGENT_PROVIDER,
-    model: PROJECT_AGENT_MODEL,
+    provider: getProjectAgentProvider(config),
+    model: getProjectAgentModel(config),
     keys,
     disabledKeyHashes,
     baseUrl: String(config.agent_llm_siliconflow_base_url || config.siliconflow_base_url || 'https://api.siliconflow.cn/').trim(),
@@ -109,7 +121,7 @@ export function getHealthyGlmCandidate(_preferredModel = '', _preferredProvider 
   const settings = getGlmClaudeSettings();
   const allCandidates = buildCandidates(settings);
   if (!allCandidates.length) {
-    throw new Error('No SiliconFlow GLM-5 agent candidates configured in .autoedit/config.json');
+    throw new Error('No SiliconFlow Claude agent candidates configured in .autoedit/config.json');
   }
   const healthy = allCandidates.filter(isHealthy);
   const pool = healthy.length ? healthy : allCandidates;

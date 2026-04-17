@@ -281,6 +281,8 @@ def cmd_config(args):
         updates.append(("workspace_dir", args.set_workspace))
     if args.set_output_dir:
         updates.append(("output_dir", args.set_output_dir))
+    if args.set_public_base_url is not None:
+        updates.append(("public_base_url", args.set_public_base_url))
     if args.set_dashboard_host:
         updates.append(("dashboard_host", args.set_dashboard_host))
     if args.set_dashboard_port:
@@ -299,6 +301,20 @@ def cmd_config(args):
         updates.append(("siliconflow_asr_model", args.set_siliconflow_model))
     if args.set_siliconflow_base_url:
         updates.append(("siliconflow_base_url", args.set_siliconflow_base_url))
+    if args.set_deepgram_api_key is not None:
+        updates.append(("deepgram_api_key", args.set_deepgram_api_key))
+    if args.set_deepgram_model:
+        updates.append(("deepgram_asr_model", args.set_deepgram_model))
+    if args.set_deepgram_base_url:
+        updates.append(("deepgram_base_url", args.set_deepgram_base_url))
+    if args.set_dashscope_api_key is not None:
+        updates.append(("dashscope_api_key", args.set_dashscope_api_key))
+    if args.set_dashscope_model:
+        updates.append(("dashscope_asr_model", args.set_dashscope_model))
+    if args.set_dashscope_base_url:
+        updates.append(("dashscope_base_url", args.set_dashscope_base_url))
+    if args.set_dashscope_timeout_ms is not None:
+        updates.append(("dashscope_task_timeout_ms", args.set_dashscope_timeout_ms))
     if args.set_agent_provider:
         updates.append(("agent_llm_provider", args.set_agent_provider))
     if args.set_agent_model:
@@ -372,9 +388,10 @@ examples:
     p_conf.add_argument("--show", action="store_true")
     p_conf.add_argument("--set-asr-model-size", choices=["1.7B", "0.6B"])
     p_conf.add_argument("--set-asr-language", metavar="LANG")
-    p_conf.add_argument("--set-asr-provider", choices=["local", "siliconflow"])
+    p_conf.add_argument("--set-asr-provider", choices=["local", "siliconflow", "deepgram", "qwen_filetrans"])
     p_conf.add_argument("--set-workspace", metavar="PATH")
     p_conf.add_argument("--set-output-dir", metavar="PATH")
+    p_conf.add_argument("--set-public-base-url", metavar="URL")
     p_conf.add_argument("--set-dashboard-host", metavar="HOST")
     p_conf.add_argument("--set-dashboard-port", type=int, metavar="PORT")
     p_conf.add_argument("--set-api-port", type=int, metavar="PORT")
@@ -384,6 +401,13 @@ examples:
     p_conf.add_argument("--set-siliconflow-api-key", metavar="KEY")
     p_conf.add_argument("--set-siliconflow-model", metavar="MODEL")
     p_conf.add_argument("--set-siliconflow-base-url", metavar="URL")
+    p_conf.add_argument("--set-deepgram-api-key", metavar="KEY")
+    p_conf.add_argument("--set-deepgram-model", metavar="MODEL")
+    p_conf.add_argument("--set-deepgram-base-url", metavar="URL")
+    p_conf.add_argument("--set-dashscope-api-key", metavar="KEY")
+    p_conf.add_argument("--set-dashscope-model", metavar="MODEL")
+    p_conf.add_argument("--set-dashscope-base-url", metavar="URL")
+    p_conf.add_argument("--set-dashscope-timeout-ms", type=int, metavar="MS")
     p_conf.add_argument("--set-agent-provider", metavar="PROVIDER")
     p_conf.add_argument("--set-agent-model", metavar="MODEL")
 

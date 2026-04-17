@@ -4,8 +4,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { getProjectRoot, loadConfig } from '../editor/config.js';
 import {
   getHealthyGlmCandidate,
-  PROJECT_AGENT_MODEL,
-  PROJECT_AGENT_PROVIDER,
+  getProjectAgentModel,
+  getProjectAgentProvider,
   listGlmCandidateHealth,
   markGlmCandidateFailure,
   markGlmCandidateHealthy
@@ -140,7 +140,7 @@ function buildAssistantReply(resultText = '', appliedChanges = [], { mode = 'cus
 
 const ASSEMBLE_REVIEW_KEYWORDS = ['顺序', '通顺', '逻辑', '断句', '重复', '停顿', '误删', '改进'];
 
-function buildAssembleReviewResult(text = '') {
+function buildAssembleReviewResult(text = '', extra = {}) {
   const content = String(text || '').trim();
   const checklist = ASSEMBLE_REVIEW_KEYWORDS.map((keyword) => ({
     keyword,
@@ -148,7 +148,9 @@ function buildAssembleReviewResult(text = '') {
   }));
   return {
     complete: checklist.every((item) => item.present),
-    checklist
+    checklist,
+    synthesized: Boolean(extra.synthesized),
+    recovery_reason: extra.recoveryReason || ''
   };
 }
 
@@ -162,6 +164,60 @@ function isStallLikeError(error) {
     message.includes('socket hang up') ||
     message.includes('econnreset')
   );
+}
+
+function isAssembleReviewFailure(error) {
+  const message = String(error?.message || '');
+  return (
+    message.includes('自审清单') ||
+    message.includes('最终自审') ||
+    message.includes('最终回复') ||
+    message.includes('没有输出最终自审') ||
+    message.includes('没有完成强制自审')
+  );
+}
+
+function summarizeAssembleAppliedChanges(appliedChanges = []) {
+  const tools = appliedChanges.map((change) => String(change?.tool || '').trim()).filter(Boolean);
+  return {
+    savedSnapshot: tools.includes('save_snapshot'),
+    reorderedAssets: tools.includes('reorder_project_assets'),
+    removedPauses: tools.includes('remove_pauses'),
+    deletedWords: tools.includes('delete_words_by_phrase'),
+    deletedBlocks: tools.includes('delete_subtitle_blocks'),
+    restoredWords: tools.includes('restore_words_by_phrase'),
+    restoredBlocks: tools.includes('restore_subtitle_blocks'),
+    replacedText: tools.includes('replace_subtitle_text')
+  };
+}
+
+function buildAssembleRecoveryReply(appliedChanges = [], recoveryReason = '') {
+  const summary = getPrimaryAppliedSummary(appliedChanges) || '已按本轮工具操作完成口播时间线修改。';
+  const flags = summarizeAssembleAppliedChanges(appliedChanges);
+  const intro = recoveryReason
+    ? `系统保底收尾：模型已经实际改动项目，但最终自审阶段未稳定返回（${recoveryReason}）。以下清单基于本轮工具结果生成，建议你顺手抽查一遍预览。`
+    : '系统保底收尾：模型已经实际改动项目，但最终自审阶段未稳定返回。以下清单基于本轮工具结果生成，建议你顺手抽查一遍预览。';
+
+  const repeatedCleanupSummary = flags.deletedWords || flags.deletedBlocks
+    ? '本轮已执行删除类工具处理重复内容和冗余表达。'
+    : '本轮没有新的删除类工具记录，建议人工确认是否仍有重复段落残留。';
+
+  const pauseSummary = flags.removedPauses
+    ? '本轮已调用 remove_pauses 处理明显停顿。'
+    : '本轮未记录 remove_pauses，建议人工确认是否仍有明显长停顿。';
+
+  return [
+    intro,
+    `本轮结果：${summary}`,
+    `顺序：${flags.reorderedAssets ? '本轮涉及素材级调序；系统只允许素材/文件之间的顺序变化，不会自动改单个素材内部顺序。' : '本轮未调用调序工具，默认保持当前素材顺序不变。'}`,
+    `通顺：${flags.replacedText ? '本轮包含少量字幕纠错；请重点抽查修改处的语句通顺度。' : '本轮主要通过删除/恢复/去停顿处理，不靠改写原句；建议抽查衔接是否自然。'}`,
+    '逻辑：本轮是在当前已剪结果上继续增量修改，没有自动重置项目；建议人工确认关键信息仍然完整。',
+    `断句：${flags.deletedWords || flags.deletedBlocks || flags.restoredWords || flags.restoredBlocks ? '本轮做过删除或恢复，建议抽查删改交界处的断句和衔接。' : '本轮没有明显的断句级工具变动，请结合预览确认。'}`,
+    `重复：${repeatedCleanupSummary}`,
+    `停顿：${pauseSummary}`,
+    '误删：系统无法仅凭工具日志完全排除误删，建议重点复核本轮刚删除的短句和连接句。',
+    '改进：如果你听感上仍觉得不顺，建议再发一条更具体的局部指令继续细修，例如“把第二段再压紧一点”或“把口头禅继续清一轮”。'
+  ].join('\n');
 }
 
 function requestRequiresToolUse({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0 } = {}) {
@@ -223,10 +279,11 @@ function buildAssembleReviewFollowupPrompt() {
   return [
     '你刚刚已经完成了一轮口播剪辑。',
     '现在禁止重来，也不要重新从头做一版；必须基于当前项目最新状态执行最终自审。',
-    '先调用 get_script_blocks，必要时再调用 get_subtitle_blocks 或 get_timeline_detail，确认当前结果。',
-    '如果发现仍有明显问题，可以做少量、局部修正；不要重排单个视频素材内部顺序。',
-    '最后必须逐项输出这 8 项检查结果，每项单独一行，并且每一行都要包含对应关键词：顺序、通顺、逻辑、断句、重复、停顿、误删、改进。',
-    '如果本轮涉及调序，必须明确说明只改了素材/文件之间的顺序，没有改单个素材内部顺序。'
+    '先调用一次 get_script_blocks；只有在你确实需要补充确认时，才再调用 get_subtitle_blocks 或 get_timeline_detail。',
+    '除非你明确发现严重问题，否则不要继续大改，也不要重排单个视频素材内部顺序。',
+    '最后只输出 8 行清单，不要写额外前言或总结；每行必须以对应关键词开头：顺序、通顺、逻辑、断句、重复、停顿、误删、改进。',
+    '如果本轮涉及调序，必须明确说明只改了素材/文件之间的顺序，没有改单个素材内部顺序。',
+    '如果你没有发现新增问题，就直接给出 8 行检查结论并结束。'
   ].join('\n');
 }
 
@@ -273,8 +330,8 @@ export async function runClaudeAgentSession({
   const attemptCount = candidateCount * logicalAttempts;
   let lastError = null;
   let resumeSessionId = sessionDetail.memory?.claude_sdk_session_id || '';
-  const requestedProvider = PROJECT_AGENT_PROVIDER;
-  const requestedModel = PROJECT_AGENT_MODEL;
+  const requestedProvider = getProjectAgentProvider();
+  const requestedModel = getProjectAgentModel();
   let bumpProgress = () => {};
 
   for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
@@ -284,6 +341,7 @@ export async function runClaudeAgentSession({
     const inactivityTimeoutMs = Number(loadConfig().agent_llm_inactivity_timeout_ms || (normalizedMode === 'assemble_script' ? 45000 : 20000));
     let timeoutId = null;
     let inactivityId = null;
+    const activeStreamRef = { current: null };
     const onAbort = () => abortController.abort(new Error('Agent run cancelled'));
     if (signal) {
       if (signal.aborted) onAbort();
@@ -299,7 +357,18 @@ export async function runClaudeAgentSession({
     const mcpToolNames = selectToolNames({ mode: normalizedMode, prompt, assembleRetryPass });
     const runtimeDir = candidate.runtimeDir;
     let stream = null;
-    let closeStream = null;
+    const closeCurrentStream = () => {
+      try {
+        activeStreamRef.current?.close?.();
+      } catch {
+        // ignore close errors from provider SDK
+      }
+    };
+    const throwIfAborted = () => {
+      if (abortController.signal.aborted) {
+        throw abortController.signal.reason || new Error('Agent run cancelled');
+      }
+    };
     const runAssembleReviewPass = async (mcpServer) => {
       if (normalizedMode !== 'assemble_script') return '';
       await emit({
@@ -319,7 +388,7 @@ export async function runClaudeAgentSession({
           permissionMode: 'bypassPermissions',
           tools: [],
           model: candidate.model,
-          maxTurns: 60,
+          maxTurns: 24,
           resume: claudeSessionId || undefined,
           abortController,
           systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass }),
@@ -329,14 +398,17 @@ export async function runClaudeAgentSession({
           env: {
             ...process.env,
             ANTHROPIC_BASE_URL: candidate.baseUrl,
-            ANTHROPIC_API_KEY: candidate.key,
+            ANTHROPIC_API_KEY: '',
+            ANTHROPIC_AUTH_TOKEN: candidate.key,
             CLAUDE_CONFIG_DIR: runtimeDir,
             CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/claude-sdk'
           }
         }
       });
+      activeStreamRef.current = reviewStream;
       try {
         for await (const message of reviewStream) {
+          throwIfAborted();
           bumpProgress();
           if (message?.session_id) {
             claudeSessionId = message.session_id;
@@ -364,6 +436,9 @@ export async function runClaudeAgentSession({
           }
         }
       } finally {
+        if (activeStreamRef.current === reviewStream) {
+          activeStreamRef.current = null;
+        }
         try {
           reviewStream?.close?.();
         } catch {
@@ -372,175 +447,275 @@ export async function runClaudeAgentSession({
       }
       return reviewText;
     };
-    bumpProgress = () => {
-      if (inactivityId) clearTimeout(inactivityId);
-      inactivityId = setTimeout(() => {
-        abortController.abort(new Error(`Agent run stalled after ${inactivityTimeoutMs}ms without progress`));
-      }, inactivityTimeoutMs);
-    };
 
     try {
-      await emit({
-        type: 'start',
-        step: 'start',
-        message: `使用 ${candidate.model} 开始处理项目请求${assembleRetryPass ? '（强制重试）' : ''}`,
-        payload: {
-          requested_provider: requestedProvider,
-          requested_model: requestedModel,
-          model: candidate.model,
-          provider: candidate.provider,
-          key_hash: candidate.keyHash,
-          tools: mcpToolNames
-        }
+      let timeoutReject = () => {};
+      let inactivityReject = () => {};
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutReject = reject;
+        timeoutId = setTimeout(() => {
+          const error = new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`);
+          abortController.abort(error);
+          closeCurrentStream();
+          reject(error);
+        }, timeoutMs);
       });
-      bumpProgress();
-      if (assembleRetryPass) {
+      const inactivityPromise = new Promise((_, reject) => {
+        inactivityReject = reject;
+      });
+      bumpProgress = () => {
+        if (inactivityId) clearTimeout(inactivityId);
+        inactivityId = setTimeout(() => {
+          const error = new Error(`Agent run stalled after ${inactivityTimeoutMs}ms without progress`);
+          abortController.abort(error);
+          closeCurrentStream();
+          inactivityReject(error);
+        }, inactivityTimeoutMs);
+      };
+
+      const attemptPromise = (async () => {
         await emit({
-          type: 'stage',
-          step: 'retry',
-          message: '上一轮没有真正改到项目，正在强制重试：这次必须读完整脚本块并完成实际修改。',
+          type: 'start',
+          step: 'start',
+          message: `使用 ${candidate.model} 开始处理项目请求${assembleRetryPass ? '（强制重试）' : ''}`,
           payload: {
+            requested_provider: requestedProvider,
+            requested_model: requestedModel,
             model: candidate.model,
-            provider: candidate.provider
+            provider: candidate.provider,
+            key_hash: candidate.keyHash,
+            tools: mcpToolNames
           }
         });
-      }
-
-      const mcpServer = createProjectAgentMcpServer(projectId, {
-        signal: abortController.signal,
-        llmProvider: candidate.provider,
-        llmModel: candidate.model,
-        approvedHighRisk,
-        pendingConfirmation,
-        mutatedProject,
-        appliedChanges,
-        emit,
-        requestContext: {
-          mode: normalizedMode,
-          prompt,
-          topic,
-          targetMinutes,
-          preferencePrompt
+        bumpProgress();
+        if (assembleRetryPass) {
+          await emit({
+            type: 'stage',
+            step: 'retry',
+            message: '上一轮没有真正改到项目，正在强制重试：这次必须读完整脚本块并完成实际修改。',
+            payload: {
+              model: candidate.model,
+              provider: candidate.provider
+            }
+          });
         }
-      }, mcpToolNames);
 
-      fs.mkdirSync(runtimeDir, { recursive: true });
-      timeoutId = setTimeout(() => {
-        abortController.abort(new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      stream = query({
-        prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass }),
-        options: {
-          cwd: getProjectRoot(),
-          permissionMode: 'bypassPermissions',
-          tools: [],
-          model: candidate.model,
-          maxTurns: 120,
-          resume: claudeSessionId || undefined,
-          abortController,
-          systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass }),
-          mcpServers: {
-            autoedit: mcpServer
-          },
-          env: {
-            ...process.env,
-            ANTHROPIC_BASE_URL: candidate.baseUrl,
-            ANTHROPIC_API_KEY: candidate.key,
-            CLAUDE_CONFIG_DIR: runtimeDir,
-            CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/claude-sdk'
+        const mcpServer = createProjectAgentMcpServer(projectId, {
+          signal: abortController.signal,
+          llmProvider: candidate.provider,
+          llmModel: candidate.model,
+          approvedHighRisk,
+          pendingConfirmation,
+          mutatedProject,
+          appliedChanges,
+          emit,
+          requestContext: {
+            mode: normalizedMode,
+            prompt,
+            topic,
+            targetMinutes,
+            preferencePrompt
+          }
+        }, mcpToolNames);
+
+        fs.mkdirSync(runtimeDir, { recursive: true });
+        stream = query({
+          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass }),
+          options: {
+            cwd: getProjectRoot(),
+            permissionMode: 'bypassPermissions',
+            tools: [],
+            model: candidate.model,
+            maxTurns: 120,
+            resume: claudeSessionId || undefined,
+            abortController,
+            systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass }),
+            mcpServers: {
+              autoedit: mcpServer
+            },
+            env: {
+              ...process.env,
+              ANTHROPIC_BASE_URL: candidate.baseUrl,
+              ANTHROPIC_API_KEY: '',
+              ANTHROPIC_AUTH_TOKEN: candidate.key,
+              CLAUDE_CONFIG_DIR: runtimeDir,
+              CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/claude-sdk'
+            }
+          }
+        });
+        activeStreamRef.current = stream;
+        abortController.signal.addEventListener('abort', closeCurrentStream, { once: true });
+
+        try {
+          for await (const message of stream) {
+            throwIfAborted();
+            bumpProgress();
+            if (message?.session_id) {
+              claudeSessionId = message.session_id;
+            }
+
+            if (message?.type === 'assistant') {
+              const parts = Array.isArray(message.message?.content) ? message.message.content : [];
+              const thinking = parts.find((item) => item?.type === 'thinking');
+              if (thinking?.thinking) {
+                await emit({
+                  type: 'stage',
+                  step: 'thinking',
+                  message: '正在思考下一步操作...',
+                  payload: {
+                    model: candidate.model,
+                    preview: String(thinking.thinking).slice(0, 300)
+                  }
+                });
+              }
+            }
+
+            if (message?.type === 'result') {
+              if (message.subtype !== 'success') {
+                throw new Error((message.errors || []).join('\n') || `Claude SDK execution failed: ${message.subtype}`);
+              }
+              finalResultText = String(message.result || '').trim();
+            }
+          }
+        } finally {
+          if (activeStreamRef.current === stream) {
+            activeStreamRef.current = null;
           }
         }
-      });
-      closeStream = () => {
-        try {
-          stream?.close?.();
-        } catch {
-          // ignore close errors from provider SDK
-        }
-      };
-      abortController.signal.addEventListener('abort', closeStream, { once: true });
 
-      for await (const message of stream) {
-        bumpProgress();
-        if (message?.session_id) {
-          claudeSessionId = message.session_id;
+        throwIfAborted();
+        await touchAgentSession(sessionId, {
+          memory: {
+            ...(sessionDetail.memory || {}),
+            claude_sdk_session_id: claudeSessionId,
+            last_agent_model: candidate.model,
+            last_agent_key_hash: candidate.keyHash
+          }
+        });
+        resumeSessionId = claudeSessionId;
+        markGlmCandidateHealthy(candidate);
+        const actualProvider = String(candidate.provider || '').trim();
+        const fallbackRun =
+          requestedProvider.toLowerCase() !== actualProvider.toLowerCase() ||
+          requestedModel !== String(candidate.model || '').trim();
+
+        if (fallbackRun) {
+          await emit({
+            type: 'stage',
+            step: 'fallback',
+            message: `本次运行发生模型回退：请求 ${requestedProvider || 'auto'}/${requestedModel || 'auto'}，实际使用 ${actualProvider}/${candidate.model}`,
+            payload: {
+              requested_provider: requestedProvider || '',
+              requested_model: requestedModel || '',
+              actual_provider: actualProvider,
+              actual_model: candidate.model
+            }
+          });
         }
 
-        if (message?.type === 'assistant') {
-          const parts = Array.isArray(message.message?.content) ? message.message.content : [];
-          const thinking = parts.find((item) => item?.type === 'thinking');
-          if (thinking?.thinking) {
-            await emit({
-              type: 'stage',
-              step: 'thinking',
-              message: '正在思考下一步操作...',
-              payload: {
-                model: candidate.model,
-                preview: String(thinking.thinking).slice(0, 300)
-              }
+        if (pendingConfirmation.current) {
+          const reply = buildAssistantReply(finalResultText || pendingConfirmation.current.confirmation_prompt, appliedChanges, {
+            mode: normalizedMode
+          });
+          const result = {
+            reply,
+            summary: pendingConfirmation.current.confirmation_prompt,
+            confirmation_prompt: pendingConfirmation.current.confirmation_prompt,
+            actual_model: candidate.model,
+            actual_provider: actualProvider,
+            fallback_run: fallbackRun,
+            pending_tool: {
+              tool: pendingConfirmation.current.tool,
+              args: pendingConfirmation.current.args
+            }
+          };
+
+          await updateAgentRunRecord(runId, {
+            status: 'waiting_confirmation',
+            result,
+            requiresConfirmation: true,
+            appliedChanges
+          });
+          await appendAgentMessage({
+            sessionId,
+            runId,
+            role: 'assistant',
+            content: reply,
+            metadata: {
+              status: 'waiting_confirmation'
+            }
+          });
+          return {
+            success: true,
+            run_id: runId,
+            status: 'waiting_confirmation',
+            reply,
+            requires_confirmation: true,
+            confirmation_prompt: pendingConfirmation.current.confirmation_prompt,
+            applied_changes: appliedChanges,
+            model: candidate.model,
+            actual_model: candidate.model,
+            actual_provider: actualProvider,
+            fallback_run: fallbackRun
+          };
+        }
+
+        let reviewResult = null;
+        const requiresToolUse = requestRequiresToolUse({ mode: normalizedMode, prompt, topic, targetMinutes });
+        const requiresMutation = requestRequiresMutation({ mode: normalizedMode, prompt, topic, targetMinutes });
+        if (requiresToolUse && !appliedChanges.length) {
+          throw new Error('本次 Agent 没有真正调用需要的工具，请重试。');
+        }
+        const mutationSatisfied = normalizedMode === 'assemble_script'
+          ? appliedChanges.some(isTimelineEditingChange)
+          : appliedChanges.some(isMutatingChange);
+        if (requiresMutation && !mutationSatisfied) {
+          throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+        }
+        if (normalizedMode === 'assemble_script') {
+          reviewResult = buildAssembleReviewResult(finalResultText);
+          if (!String(finalResultText || '').trim() || !reviewResult.complete) {
+            const reviewFollowupText = await runAssembleReviewPass(mcpServer);
+            if (String(reviewFollowupText || '').trim()) {
+              finalResultText = reviewFollowupText;
+              reviewResult = buildAssembleReviewResult(finalResultText);
+            }
+          }
+          if (!String(finalResultText || '').trim()) {
+            finalResultText = buildAssembleRecoveryReply(appliedChanges, '模型没有返回最终自审清单');
+            reviewResult = buildAssembleReviewResult(finalResultText, {
+              synthesized: true,
+              recoveryReason: 'missing-final-review'
+            });
+          } else if (!reviewResult.complete) {
+            finalResultText = buildAssembleRecoveryReply(appliedChanges, '模型没有完整输出 8 项自审清单');
+            reviewResult = buildAssembleReviewResult(finalResultText, {
+              synthesized: true,
+              recoveryReason: 'incomplete-final-review'
             });
           }
         }
 
-        if (message?.type === 'result') {
-          if (message.subtype !== 'success') {
-            throw new Error((message.errors || []).join('\n') || `Claude SDK execution failed: ${message.subtype}`);
-          }
-          finalResultText = String(message.result || '').trim();
-        }
-      }
-
-      await touchAgentSession(sessionId, {
-        memory: {
-          ...(sessionDetail.memory || {}),
-          claude_sdk_session_id: claudeSessionId,
-          last_agent_model: candidate.model,
-          last_agent_key_hash: candidate.keyHash
-        }
-      });
-      resumeSessionId = claudeSessionId;
-      markGlmCandidateHealthy(candidate);
-      const actualProvider = String(candidate.provider || '').trim();
-      const fallbackRun =
-        requestedProvider.toLowerCase() !== actualProvider.toLowerCase() ||
-        requestedModel !== String(candidate.model || '').trim();
-
-      if (fallbackRun) {
-        await emit({
-          type: 'stage',
-          step: 'fallback',
-          message: `本次运行发生模型回退：请求 ${requestedProvider || 'auto'}/${requestedModel || 'auto'}，实际使用 ${actualProvider}/${candidate.model}`,
-          payload: {
-            requested_provider: requestedProvider || '',
-            requested_model: requestedModel || '',
-            actual_provider: actualProvider,
-            actual_model: candidate.model
-          }
-        });
-      }
-
-      if (pendingConfirmation.current) {
-        const reply = buildAssistantReply(finalResultText || pendingConfirmation.current.confirmation_prompt, appliedChanges, {
-          mode: normalizedMode
+        const reply = buildAssistantReply(finalResultText, appliedChanges, {
+          mode: normalizedMode,
+          reviewResult
         });
         const result = {
           reply,
-          summary: pendingConfirmation.current.confirmation_prompt,
-          confirmation_prompt: pendingConfirmation.current.confirmation_prompt,
+          summary: getPrimaryAppliedSummary(appliedChanges) || reply,
+          review: reviewResult,
+          applied_changes: appliedChanges,
           actual_model: candidate.model,
           actual_provider: actualProvider,
-          fallback_run: fallbackRun,
-          pending_tool: {
-            tool: pendingConfirmation.current.tool,
-            args: pendingConfirmation.current.args
-          }
+          fallback_run: fallbackRun
         };
 
         await updateAgentRunRecord(runId, {
-          status: 'waiting_confirmation',
+          status: 'completed',
           result,
-          requiresConfirmation: true,
-          appliedChanges
+          requiresConfirmation: false,
+          appliedChanges,
+          finished: true
         });
         await appendAgentMessage({
           sessionId,
@@ -548,109 +723,41 @@ export async function runClaudeAgentSession({
           role: 'assistant',
           content: reply,
           metadata: {
-            status: 'waiting_confirmation'
+            status: 'completed',
+            model: candidate.model,
+            provider: actualProvider,
+            fallback_run: fallbackRun
           }
         });
+        await emit({
+          type: 'complete',
+          step: 'complete',
+          message: '本次 Agent 执行已完成。',
+          payload: {
+            model: candidate.model,
+            provider: actualProvider,
+            fallback_run: fallbackRun
+          }
+        });
+
         return {
           success: true,
           run_id: runId,
-          status: 'waiting_confirmation',
+          status: 'completed',
           reply,
-          requires_confirmation: true,
-          confirmation_prompt: pendingConfirmation.current.confirmation_prompt,
           applied_changes: appliedChanges,
+          review: reviewResult,
           model: candidate.model,
           actual_model: candidate.model,
           actual_provider: actualProvider,
           fallback_run: fallbackRun
         };
-      }
+      })();
 
-      let reviewResult = null;
-      const requiresToolUse = requestRequiresToolUse({ mode: normalizedMode, prompt, topic, targetMinutes });
-      const requiresMutation = requestRequiresMutation({ mode: normalizedMode, prompt, topic, targetMinutes });
-      if (requiresToolUse && !appliedChanges.length) {
-        throw new Error('本次 Agent 没有真正调用需要的工具，请重试。');
-      }
-      const mutationSatisfied = normalizedMode === 'assemble_script'
-        ? appliedChanges.some(isTimelineEditingChange)
-        : appliedChanges.some(isMutatingChange);
-      if (requiresMutation && !mutationSatisfied) {
-        throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
-      }
-      if (normalizedMode === 'assemble_script') {
-        reviewResult = buildAssembleReviewResult(finalResultText);
-        if (!String(finalResultText || '').trim() || !reviewResult.complete) {
-          const reviewFollowupText = await runAssembleReviewPass(mcpServer);
-          if (String(reviewFollowupText || '').trim()) {
-            finalResultText = reviewFollowupText;
-            reviewResult = buildAssembleReviewResult(finalResultText);
-          }
-        }
-        if (!String(finalResultText || '').trim()) {
-          throw new Error('本次 Agent 没有输出最终自审清单，请重试。');
-        }
-        if (!reviewResult.complete) {
-          throw new Error('本次 Agent 没有完成强制自审清单，请重试。');
-        }
-      }
-
-      const reply = buildAssistantReply(finalResultText, appliedChanges, {
-        mode: normalizedMode,
-        reviewResult
-      });
-      const result = {
-        reply,
-        summary: getPrimaryAppliedSummary(appliedChanges) || reply,
-        review: reviewResult,
-        applied_changes: appliedChanges,
-        actual_model: candidate.model,
-        actual_provider: actualProvider,
-        fallback_run: fallbackRun
-      };
-
-      await updateAgentRunRecord(runId, {
-        status: 'completed',
-        result,
-        requiresConfirmation: false,
-        appliedChanges,
-        finished: true
-      });
-      await appendAgentMessage({
-        sessionId,
-        runId,
-        role: 'assistant',
-        content: reply,
-        metadata: {
-          status: 'completed',
-          model: candidate.model,
-          provider: actualProvider,
-          fallback_run: fallbackRun
-        }
-      });
-      await emit({
-        type: 'complete',
-        step: 'complete',
-        message: '本次 Agent 执行已完成。',
-        payload: {
-          model: candidate.model,
-          provider: actualProvider,
-          fallback_run: fallbackRun
-        }
-      });
-
-      return {
-        success: true,
-        run_id: runId,
-        status: 'completed',
-        reply,
-        applied_changes: appliedChanges,
-        review: reviewResult,
-        model: candidate.model,
-        actual_model: candidate.model,
-        actual_provider: actualProvider,
-        fallback_run: fallbackRun
-      };
+      const result = await Promise.race([attemptPromise, timeoutPromise, inactivityPromise]);
+      timeoutReject = () => {};
+      inactivityReject = () => {};
+      return result;
     } catch (error) {
       lastError = error;
       const message = String(error?.message || '');
@@ -671,24 +778,30 @@ export async function runClaudeAgentSession({
         continue;
       }
       markGlmCandidateFailure(candidate, error);
-      if (hasMutatedProject && isStallLikeError(error) && appliedChanges.length) {
-        if (normalizedMode === 'assemble_script') {
-          throw new Error('模型在完成口播剪辑后未能输出最终自审清单，请重试。');
-        }
+      if (hasMutatedProject && appliedChanges.length && (isStallLikeError(error) || isAssembleReviewFailure(error))) {
         const actualProvider = String(candidate.provider || '').trim();
         const fallbackRun =
           requestedProvider.toLowerCase() !== actualProvider.toLowerCase() ||
           requestedModel !== String(candidate.model || '').trim();
-        const reply = buildAssistantReply('', appliedChanges, { mode: normalizedMode });
+        const reply = normalizedMode === 'assemble_script'
+          ? buildAssembleRecoveryReply(appliedChanges, String(error?.message || '模型收尾阶段不稳定'))
+          : buildAssistantReply('', appliedChanges, { mode: normalizedMode });
+        const review = normalizedMode === 'assemble_script'
+          ? buildAssembleReviewResult(reply, {
+              synthesized: true,
+              recoveryReason: String(error?.message || 'assemble-review-recovery')
+            })
+          : null;
         const result = {
           reply,
-          summary: `${getPrimaryAppliedSummary(appliedChanges) || '已完成本次项目修改。'}（模型总结阶段超时，已按实际工具结果收尾）`,
-          review: null,
+          summary: `${getPrimaryAppliedSummary(appliedChanges) || '已完成本次项目修改。'}（模型收尾阶段不稳定，已按实际工具结果保底收尾）`,
+          review,
           applied_changes: appliedChanges,
           actual_model: candidate.model,
           actual_provider: actualProvider,
           fallback_run: fallbackRun,
-          recovered_from_stall: true
+          recovered_from_stall: isStallLikeError(error),
+          recovered_from_review_failure: isAssembleReviewFailure(error)
         };
 
         await updateAgentRunRecord(runId, {
@@ -708,18 +821,20 @@ export async function runClaudeAgentSession({
             model: candidate.model,
             provider: actualProvider,
             fallback_run: fallbackRun,
-            recovered_from_stall: true
+            recovered_from_stall: isStallLikeError(error),
+            recovered_from_review_failure: isAssembleReviewFailure(error)
           }
         });
         await emit({
           type: 'complete',
           step: 'complete',
-          message: '本次 Agent 执行已完成（模型总结阶段超时，已按工具结果收尾）。',
+          message: '本次 Agent 执行已完成（模型收尾阶段不稳定，已按工具结果保底收尾）。',
           payload: {
             model: candidate.model,
             provider: actualProvider,
             fallback_run: fallbackRun,
-            recovered_from_stall: true
+            recovered_from_stall: isStallLikeError(error),
+            recovered_from_review_failure: isAssembleReviewFailure(error)
           }
         });
 
@@ -729,12 +844,13 @@ export async function runClaudeAgentSession({
           status: 'completed',
           reply,
           applied_changes: appliedChanges,
-          review: null,
+          review,
           model: candidate.model,
           actual_model: candidate.model,
           actual_provider: actualProvider,
           fallback_run: fallbackRun,
-          recovered_from_stall: true
+          recovered_from_stall: isStallLikeError(error),
+          recovered_from_review_failure: isAssembleReviewFailure(error)
         };
       }
       if (String(error?.name || '') === 'AbortError' || String(error?.message || '').toLowerCase().includes('cancel')) {
@@ -749,7 +865,7 @@ export async function runClaudeAgentSession({
       if (signal) {
         signal.removeEventListener('abort', onAbort);
       }
-      try { closeStream?.(); } catch {}
+      try { closeCurrentStream(); } catch {}
     }
   }
 

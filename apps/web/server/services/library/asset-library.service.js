@@ -4,6 +4,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import { withDatabase } from '../core/database.service.js';
 import { createJob, markJobRunning, updateJobProgress, completeJob, failJob } from '../core/job.service.js';
 import { copyExternalAssetFile, moveUploadedAssetFile } from '../core/storage.service.js';
+import { loadConfig } from '../editor/config.js';
 import { runAsrPipeline } from '../editor/asr.service.js';
 
 function flattenWords(asrResult = {}) {
@@ -165,7 +166,8 @@ async function processAssetAsr(assetId, sourcePath, { language = 'Chinese', json
     await updateJobProgress(job.id, 25, 'Running ASR');
 
     const uploadedJson = await parseUploadedJson(jsonFile);
-    const asrResult = uploadedJson || await runAsrPipeline(sourcePath, language);
+    const asrInput = uploadedJson ? sourcePath : resolveAsrInput(assetId, sourcePath);
+    const asrResult = uploadedJson || await runAsrPipeline(asrInput, language);
 
     await updateJobProgress(job.id, 80, 'Persisting captions');
 
@@ -184,6 +186,20 @@ async function processAssetAsr(assetId, sourcePath, { language = 'Chinese', json
     }));
     throw error;
   }
+}
+
+function resolveAsrInput(assetId, sourcePath) {
+  const config = loadConfig();
+  if (String(config.asr_provider || '').trim().toLowerCase() !== 'qwen_filetrans') {
+    return sourcePath;
+  }
+
+  const publicBaseUrl = String(config.public_base_url || '').trim().replace(/\/+$/, '');
+  if (!publicBaseUrl) {
+    throw new Error('public_base_url is required when asr_provider is qwen_filetrans');
+  }
+
+  return `${publicBaseUrl}/api/library/assets/${encodeURIComponent(assetId)}/source`;
 }
 
 export async function createAssetFromUpload(file, { title = '', language = 'Chinese', jsonFile = null } = {}) {

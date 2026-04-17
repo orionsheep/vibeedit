@@ -325,6 +325,13 @@ router.post('/:projectId/agent/sessions/:sessionId/runs/stream', async (req, res
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(': keep-alive\n\n');
+    }
+  }, 10000);
 
   const sendEvent = (data) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -356,12 +363,13 @@ router.post('/:projectId/agent/sessions/:sessionId/runs/stream', async (req, res
       type: 'result',
       result
     });
-    res.end();
   } catch (error) {
     sendEvent({
       type: 'error',
       message: error.message
     });
+  } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });

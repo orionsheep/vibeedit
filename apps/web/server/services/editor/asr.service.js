@@ -16,10 +16,18 @@ const UV_CMD = 'uv';
 const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '../../../../../');
 const PROJECT_ROOT = resolveProjectRoot();
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm', '.ts', '.mts']);
+const QWEN_FILETRANS_PROVIDER = 'qwen_filetrans';
+const QWEN_FILETRANS_DEFAULT_MODEL = 'qwen3-asr-flash-filetrans-2025-11-17';
+const QWEN_FILETRANS_DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1';
+const QWEN_FILETRANS_POLL_INTERVAL_MS = 2000;
+const QWEN_FILETRANS_TIMEOUT_MS = 10 * 60 * 1000;
+const DEEPGRAM_PROVIDER = 'deepgram';
+const DEEPGRAM_DEFAULT_MODEL = 'nova-3';
 const SILICONFLOW_PROVIDER = 'siliconflow';
 const SILICONFLOW_DEFAULT_MODEL = 'FunAudioLLM/SenseVoiceSmall';
 const SILICONFLOW_CHUNK_SECONDS = 30;
 const SILICONFLOW_CONTEXT_SECONDS = 5;
+const PUNCTUATION_CHARS = new Set('，。、！？；：""\'\'《》【】（）,.!?;:\'"()[]{}·…—~ '.split(''));
 
 function resolveProjectRoot() {
   const candidates = [
@@ -45,6 +53,12 @@ function resolveProjectRoot() {
  */
 export async function runAsrPipeline(audioPath, language = 'Chinese') {
   const config = loadConfig();
+  if (String(config.asr_provider || '').trim().toLowerCase() === QWEN_FILETRANS_PROVIDER) {
+    return runQwenFiletransAsrPipeline(audioPath, language, config);
+  }
+  if (String(config.asr_provider || '').trim().toLowerCase() === DEEPGRAM_PROVIDER) {
+    return runDeepgramAsrPipeline(audioPath, language, config);
+  }
   if (String(config.asr_provider || '').trim().toLowerCase() === SILICONFLOW_PROVIDER) {
     return runSiliconFlowAsrPipeline(audioPath, language, config);
   }
@@ -161,6 +175,62 @@ async function runSiliconFlowAsrPipeline(audioPath, language = 'Chinese', config
   } finally {
     await prepared.cleanup();
   }
+}
+
+async function runDeepgramAsrPipeline(audioPath, language = 'Chinese', config = loadConfig()) {
+  const { outputsDir } = ensureWorkspaceDirs();
+  const prepared = await prepareAsrInput(audioPath, outputsDir);
+
+  try {
+    const [duration, result] = await Promise.all([
+      probeAudioDuration(prepared.inputPath),
+      transcribeWithDeepgram(prepared.inputPath, language, config)
+    ]);
+
+    return {
+      language: result.language || language || 'Chinese',
+      text: result.text || '',
+      duration,
+      words: result.words || []
+    };
+  } finally {
+    await prepared.cleanup();
+  }
+}
+
+async function runQwenFiletransAsrPipeline(audioPath, language = 'Chinese', config = loadConfig()) {
+  const apiKey = String(
+    config.dashscope_api_key
+      || process.env.DASHSCOPE_API_KEY
+      || process.env.BAILIAN_API_KEY
+      || process.env.MODEL_STUDIO_API_KEY
+      || ''
+  ).trim();
+
+  if (!apiKey) {
+    throw new Error('DashScope API key is not configured');
+  }
+
+  const fileUrl = resolveQwenFiletransFileUrl(audioPath);
+  const baseUrl = String(config.dashscope_base_url || QWEN_FILETRANS_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const model = String(config.dashscope_asr_model || QWEN_FILETRANS_DEFAULT_MODEL).trim() || QWEN_FILETRANS_DEFAULT_MODEL;
+  const timeoutMs = Number(config.dashscope_task_timeout_ms || QWEN_FILETRANS_TIMEOUT_MS);
+  const normalizedLanguage = normalizeQwenFiletransLanguage(language);
+  const taskId = await submitQwenFiletransTask({
+    apiKey,
+    baseUrl,
+    model,
+    fileUrl,
+    language: normalizedLanguage
+  });
+  const transcriptionUrl = await waitForQwenFiletransTask({
+    apiKey,
+    baseUrl,
+    taskId,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : QWEN_FILETRANS_TIMEOUT_MS
+  });
+  const rawResult = await fetchQwenFiletransResult(transcriptionUrl);
+  return parseQwenFiletransResult(rawResult, normalizedLanguage || language);
 }
 
 function isLikelyVideo(filePath) {
@@ -328,12 +398,482 @@ async function transcribeWithSiliconFlow(audioPath, language, config) {
   throw new Error(`Unexpected SiliconFlow ASR response: ${raw}`);
 }
 
+async function transcribeWithDeepgram(audioPath, language, config) {
+  const apiKey = String(config.deepgram_api_key || process.env.DEEPGRAM_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('Deepgram API key is not configured');
+  }
+
+  const baseUrl = String(config.deepgram_base_url || 'https://api.deepgram.com/v1').replace(/\/+$/, '');
+  const model = String(config.deepgram_asr_model || DEEPGRAM_DEFAULT_MODEL).trim() || DEEPGRAM_DEFAULT_MODEL;
+  const languageCode = normalizeDeepgramLanguage(language);
+  const params = new URLSearchParams({
+    model,
+    punctuate: 'true',
+    smart_format: 'true'
+  });
+
+  if (languageCode) {
+    params.set('language', languageCode);
+  }
+
+  const response = await fetch(`${baseUrl}/listen?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${apiKey}`,
+      'Content-Type': inferAudioMimeType(audioPath)
+    },
+    body: await fs.promises.readFile(audioPath)
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`Deepgram ASR failed (${response.status}): ${raw}`);
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error(`Unexpected Deepgram ASR response: ${raw}`);
+  }
+
+  return parseDeepgramAsrResponse(payload, languageCode || language);
+}
+
 function normalizeSiliconFlowLanguage(language) {
   const normalized = String(language || '').trim().toLowerCase();
   if (!normalized) return '';
   if (['chinese', 'zh', 'zh-cn', 'mandarin'].includes(normalized)) return 'zh';
   if (['english', 'en', 'en-us', 'en-gb'].includes(normalized)) return 'en';
   return '';
+}
+
+function normalizeQwenFiletransLanguage(language) {
+  const normalized = String(language || '').trim();
+  if (!normalized) return '';
+
+  const lower = normalized.toLowerCase();
+  const aliasMap = new Map([
+    ['chinese', 'zh'],
+    ['mandarin', 'zh'],
+    ['zh', 'zh'],
+    ['zh-cn', 'zh'],
+    ['zh-hans', 'zh'],
+    ['cantonese', 'yue'],
+    ['yue', 'yue'],
+    ['zh-hk', 'yue'],
+    ['english', 'en'],
+    ['en', 'en'],
+    ['japanese', 'ja'],
+    ['ja', 'ja'],
+    ['german', 'de'],
+    ['de', 'de'],
+    ['korean', 'ko'],
+    ['ko', 'ko'],
+    ['russian', 'ru'],
+    ['ru', 'ru'],
+    ['french', 'fr'],
+    ['fr', 'fr'],
+    ['portuguese', 'pt'],
+    ['pt', 'pt'],
+    ['arabic', 'ar'],
+    ['ar', 'ar'],
+    ['italian', 'it'],
+    ['it', 'it'],
+    ['spanish', 'es'],
+    ['es', 'es'],
+    ['hindi', 'hi'],
+    ['hi', 'hi'],
+    ['indonesian', 'id'],
+    ['id', 'id'],
+    ['thai', 'th'],
+    ['th', 'th'],
+    ['turkish', 'tr'],
+    ['tr', 'tr'],
+    ['ukrainian', 'uk'],
+    ['uk', 'uk'],
+    ['vietnamese', 'vi'],
+    ['vi', 'vi'],
+    ['czech', 'cs'],
+    ['cs', 'cs'],
+    ['danish', 'da'],
+    ['da', 'da'],
+    ['filipino', 'fil'],
+    ['fil', 'fil'],
+    ['finnish', 'fi'],
+    ['fi', 'fi'],
+    ['icelandic', 'is'],
+    ['is', 'is'],
+    ['malay', 'ms'],
+    ['ms', 'ms'],
+    ['norwegian', 'no'],
+    ['no', 'no'],
+    ['polish', 'pl'],
+    ['pl', 'pl'],
+    ['swedish', 'sv'],
+    ['sv', 'sv']
+  ]);
+
+  if (aliasMap.has(lower)) {
+    return aliasMap.get(lower);
+  }
+
+  return '';
+}
+
+function resolveQwenFiletransFileUrl(audioPath) {
+  if (isHttpUrl(audioPath)) {
+    return String(audioPath).trim();
+  }
+
+  throw new Error('Qwen Filetrans requires a publicly accessible file URL; local file paths cannot be sent directly');
+}
+
+async function submitQwenFiletransTask({ apiKey, baseUrl, model, fileUrl, language }) {
+  const payload = {
+    model,
+    input: {
+      file_url: fileUrl
+    },
+    parameters: {
+      channel_id: [0],
+      enable_itn: false,
+      enable_words: true
+    }
+  };
+
+  if (language) {
+    payload.parameters.language = language;
+  }
+
+  const response = await fetch(`${baseUrl}/services/audio/asr/transcription`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'X-DashScope-Async': 'enable'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`Qwen Filetrans submit failed (${response.status}): ${raw}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Unexpected Qwen Filetrans submit response: ${raw}`);
+  }
+
+  const taskId = data?.output?.task_id || data?.output?.taskId;
+  if (!taskId) {
+    throw new Error(`Qwen Filetrans submit returned no task_id: ${raw}`);
+  }
+
+  return String(taskId);
+}
+
+async function waitForQwenFiletransTask({ apiKey, baseUrl, taskId, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'X-DashScope-Async': 'enable'
+      }
+    });
+
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`Qwen Filetrans task polling failed (${response.status}): ${raw}`);
+    }
+
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`Unexpected Qwen Filetrans task polling response: ${raw}`);
+    }
+
+    const output = data?.output || {};
+    const status = String(output.task_status || output.taskStatus || '').trim().toUpperCase();
+
+    if (status === 'SUCCEEDED') {
+      const transcriptionUrl = output?.result?.transcription_url || output?.result?.transcriptionUrl;
+      if (!transcriptionUrl) {
+        throw new Error(`Qwen Filetrans task succeeded without transcription_url: ${raw}`);
+      }
+      return String(transcriptionUrl);
+    }
+
+    if (status === 'FAILED') {
+      const code = output?.code ? `${output.code}: ` : '';
+      throw new Error(`Qwen Filetrans task failed: ${code}${output?.message || raw}`);
+    }
+
+    if (!['PENDING', 'RUNNING', ''].includes(status)) {
+      throw new Error(`Qwen Filetrans task returned unexpected status "${status}": ${raw}`);
+    }
+
+    await sleep(QWEN_FILETRANS_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`Qwen Filetrans task timed out after ${Math.round(timeoutMs / 1000)}s`);
+}
+
+async function fetchQwenFiletransResult(transcriptionUrl) {
+  const response = await fetch(transcriptionUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`Qwen Filetrans result download failed (${response.status}): ${raw}`);
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Unexpected Qwen Filetrans result payload: ${raw}`);
+  }
+}
+
+function parseQwenFiletransResult(payload, fallbackLanguage) {
+  const transcripts = Array.isArray(payload?.transcripts) ? payload.transcripts : [];
+  const text = transcripts
+    .map((transcript) => String(transcript?.text || '').trim())
+    .filter(Boolean)
+    .join('\n');
+
+  const words = [];
+  let duration = 0;
+  let detectedLanguage = '';
+
+  for (const transcript of transcripts) {
+    const sentences = Array.isArray(transcript?.sentences) ? transcript.sentences : [];
+    for (const sentence of sentences) {
+      const beginTime = Number(sentence?.begin_time || 0) / 1000;
+      const endTime = Number(sentence?.end_time || sentence?.begin_time || 0) / 1000;
+      duration = Math.max(duration, endTime);
+      if (!detectedLanguage && sentence?.language) {
+        detectedLanguage = String(sentence.language);
+      }
+
+      const sentenceWords = Array.isArray(sentence?.words) ? sentence.words : [];
+      if (sentenceWords.length) {
+        for (const word of sentenceWords) {
+          const token = `${String(word?.text || '')}${String(word?.punctuation || '')}`;
+          if (!token) continue;
+          const start = Number(word?.begin_time || 0) / 1000;
+          const end = Number(word?.end_time || word?.begin_time || 0) / 1000;
+          duration = Math.max(duration, end);
+          words.push({
+            text: token,
+            start_time: start,
+            end_time: Math.max(start, end)
+          });
+        }
+        continue;
+      }
+
+      if (sentence?.text) {
+        words.push({
+          text: String(sentence.text),
+          start_time: beginTime,
+          end_time: Math.max(beginTime, endTime)
+        });
+      }
+    }
+  }
+
+  words.sort((left, right) => {
+    if (left.start_time !== right.start_time) return left.start_time - right.start_time;
+    if (left.end_time !== right.end_time) return left.end_time - right.end_time;
+    return String(left.text || '').localeCompare(String(right.text || ''));
+  });
+
+  return {
+    language: detectedLanguage || fallbackLanguage || 'Chinese',
+    text,
+    duration,
+    words
+  };
+}
+
+function isHttpUrl(value) {
+  const normalized = String(value || '').trim();
+  return /^https?:\/\//i.test(normalized);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function normalizeDeepgramLanguage(language) {
+  const normalized = String(language || '').trim();
+  if (!normalized) return '';
+
+  const lower = normalized.toLowerCase();
+  const aliasMap = new Map([
+    ['chinese', 'zh'],
+    ['mandarin', 'zh'],
+    ['zh', 'zh'],
+    ['zh-cn', 'zh'],
+    ['zh-hans', 'zh'],
+    ['english', 'en'],
+    ['en', 'en'],
+    ['en-us', 'en-US'],
+    ['en-gb', 'en-GB'],
+    ['japanese', 'ja'],
+    ['ja', 'ja'],
+    ['korean', 'ko'],
+    ['ko', 'ko'],
+    ['french', 'fr'],
+    ['fr', 'fr'],
+    ['german', 'de'],
+    ['de', 'de'],
+    ['spanish', 'es'],
+    ['es', 'es'],
+    ['portuguese', 'pt'],
+    ['pt', 'pt'],
+    ['russian', 'ru'],
+    ['ru', 'ru'],
+    ['arabic', 'ar'],
+    ['ar', 'ar'],
+    ['hindi', 'hi'],
+    ['hi', 'hi'],
+    ['indonesian', 'id'],
+    ['id', 'id'],
+    ['italian', 'it'],
+    ['it', 'it'],
+    ['thai', 'th'],
+    ['th', 'th'],
+    ['turkish', 'tr'],
+    ['tr', 'tr'],
+    ['vietnamese', 'vi'],
+    ['vi', 'vi'],
+    ['cantonese', 'zh-HK'],
+    ['zh-hk', 'zh-HK']
+  ]);
+
+  if (aliasMap.has(lower)) {
+    return aliasMap.get(lower);
+  }
+
+  if (/^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$/.test(normalized)) {
+    return normalized;
+  }
+
+  return '';
+}
+
+function inferAudioMimeType(filePath) {
+  const extension = path.extname(String(filePath || '')).toLowerCase();
+  const mimeTypes = {
+    '.aac': 'audio/aac',
+    '.aiff': 'audio/aiff',
+    '.amr': 'audio/amr',
+    '.avi': 'video/x-msvideo',
+    '.flac': 'audio/flac',
+    '.flv': 'video/x-flv',
+    '.m4a': 'audio/mp4',
+    '.m4v': 'video/x-m4v',
+    '.mkv': 'video/x-matroska',
+    '.mov': 'video/quicktime',
+    '.mp3': 'audio/mpeg',
+    '.mp4': 'video/mp4',
+    '.mpeg': 'video/mpeg',
+    '.ogg': 'audio/ogg',
+    '.opus': 'audio/opus',
+    '.ts': 'video/mp2t',
+    '.wav': 'audio/wav',
+    '.webm': 'video/webm',
+    '.wma': 'audio/x-ms-wma',
+    '.wmv': 'video/x-ms-wmv'
+  };
+
+  return mimeTypes[extension] || 'application/octet-stream';
+}
+
+function parseDeepgramAsrResponse(payload, fallbackLanguage) {
+  const alternatives = payload?.results?.channels?.[0]?.alternatives;
+  const bestAlternative = Array.isArray(alternatives) ? alternatives[0] : null;
+  const transcript = String(bestAlternative?.transcript || '').trim();
+  const words = Array.isArray(bestAlternative?.words) ? bestAlternative.words : [];
+  const restoredWords = restoreTranscriptPunctuation(words, transcript);
+  const detectedLanguage =
+    payload?.results?.channels?.[0]?.detected_language
+    || payload?.results?.channels?.[0]?.language
+    || fallbackLanguage
+    || '';
+
+  return {
+    language: detectedLanguage,
+    text: transcript,
+    words: restoredWords.map((word) => ({
+      text: word.text,
+      start_time: Number(word.start || 0),
+      end_time: Number(word.end || 0)
+    }))
+  };
+}
+
+function restoreTranscriptPunctuation(words, transcript) {
+  if (!Array.isArray(words) || !words.length || !transcript) {
+    return Array.isArray(words)
+      ? words.map((word) => ({
+          text: String(word.word || word.punctuated_word || ''),
+          start: Number(word.start || 0),
+          end: Number(word.end || 0)
+        }))
+      : [];
+  }
+
+  const restored = words.map((word) => ({
+    text: String(word.word || word.punctuated_word || ''),
+    start: Number(word.start || 0),
+    end: Number(word.end || 0)
+  }));
+
+  let position = 0;
+  for (let index = 0; index < restored.length; index += 1) {
+    const expected = restored[index].text;
+    const remaining = transcript.slice(position);
+    const matchIndex = remaining.indexOf(expected);
+
+    if (matchIndex < 0) {
+      continue;
+    }
+
+    if (index > 0) {
+      for (const char of remaining.slice(0, matchIndex)) {
+        if (PUNCTUATION_CHARS.has(char)) {
+          restored[index - 1].text += char;
+        }
+      }
+    }
+
+    position += matchIndex + expected.length;
+
+    while (position < transcript.length && PUNCTUATION_CHARS.has(transcript[position])) {
+      restored[index].text += transcript[position];
+      position += 1;
+    }
+  }
+
+  return restored;
 }
 
 async function runAlignmentPipeline(audioPath, transcriptText, language, outputsDir) {

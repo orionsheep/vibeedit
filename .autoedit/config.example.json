@@ -1,13 +1,15 @@
 {
   "workspace_dir": "/Users/yourname/.autoedit/workspace",
+  "public_base_url": "https://example.com",
   "dashboard_host": "0.0.0.0",
   "dashboard_port": 12080,
   "api_port": 12081,
-  "asr_provider": "siliconflow",
-  "siliconflow_api_key": "sk-...",
-  "siliconflow_base_url": "https://api.siliconflow.cn/v1",
-  "siliconflow_asr_model": "FunAudioLLM/SenseVoiceSmall",
-  "agent_llm_provider": "glm_claude_sdk",
+  "asr_provider": "local",
+  "asr_model_size": "0.6B",
+  "dashscope_api_key": "sk-...",
+  "dashscope_base_url": "https://dashscope.aliyuncs.com/api/v1",
+  "dashscope_asr_model": "qwen3-asr-flash-filetrans-2025-11-17",
+  "agent_llm_provider": "siliconflow_claude_sdk",
   "agent_llm_model": "Pro/zai-org/GLM-5.1",
   "agent_llm_keys": [
     "glm-official-key"
