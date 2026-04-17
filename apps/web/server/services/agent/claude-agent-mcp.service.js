@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   toolGetAssembleCandidates,
   toolGetDeletedSubtitleBlocks,
+  toolGetPauseCandidates,
   toolDeleteSubtitleBlocks,
   toolDeleteWordsByPhrase,
   toolExportPackage,
@@ -37,6 +38,17 @@ function formatSubtitleLikeBlocks(blocks = []) {
       const text = String(block.text || '').trim().replace(/\s+/g, ' ');
       const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
       return `${order} ${asset}${formatTime(block.start)}-${formatTime(block.end)} ${preview}`;
+    })
+    .join('\n');
+}
+
+function formatPauseCandidates(candidates = []) {
+  return (candidates || [])
+    .map((candidate, index) => {
+      const asset = candidate.asset_title ? `[${candidate.asset_title}] ` : '';
+      const left = String(candidate.left_preview || '').trim();
+      const right = String(candidate.right_preview || '').trim();
+      return `${index + 1}. ${asset}${formatTime(candidate.start)}-${formatTime(candidate.end)} gap ${formatTime(candidate.gap_seconds)}s | ${left} ⇢ ${right}`;
     })
     .join('\n');
 }
@@ -78,7 +90,14 @@ function compactResultPayload(toolName, result = {}) {
         next_offset: result.next_offset,
         block_count: Number(result.script_block_count || 0) || (Array.isArray(result.blocks) ? result.blocks.length : 0),
         take_group_count: result.take_group_count,
-        sentence_group_count: result.sentence_group_count
+        sentence_group_count: result.sentence_group_count,
+        pause_candidate_count: result.pause_candidate_count
+      };
+    case 'get_pause_candidates':
+      return {
+        total: result.total,
+        min_gap_seconds: result.min_gap_seconds,
+        candidate_count: Array.isArray(result.candidates) ? result.candidates.length : 0
       };
     case 'search_project_subtitles':
       return {
@@ -87,10 +106,17 @@ function compactResultPayload(toolName, result = {}) {
     default:
       return {
         success: result?.success !== false,
+        changed: result?.changed !== false,
         change: result?.change || toolName,
         deleted_block_count: Array.isArray(result?.deleted_block_ids) ? result.deleted_block_ids.length : undefined,
         restored_block_count: Array.isArray(result?.restored_block_ids) ? result.restored_block_ids.length : undefined,
+        deleted_match_count: result?.deleted_match_count,
+        restored_match_count: result?.restored_match_count,
+        replaced_match_count: result?.replaced_match_count,
+        deleted_gap_count: result?.deleted_gap_count,
+        removed_seconds: result?.removed_seconds,
         removed_asset_title: result?.removed_asset_title || undefined,
+        ordered_asset_ids: Array.isArray(result?.ordered_asset_ids) ? result.ordered_asset_ids : undefined,
         reordered_asset_titles: Array.isArray(result?.ordered_asset_titles) ? result.ordered_asset_titles : undefined,
         exported_path: result?.output_path || result?.zip_path || undefined,
         timeline: result?.timeline || undefined
@@ -145,9 +171,14 @@ function toolResultToText(result = {}, toolName = '') {
       return [
         result.summary || '',
         takeLines.length ? `重复 take 候选：\n${takeLines.join('\n')}` : '',
-        sentenceLines.length ? `重复句候选：\n${sentenceLines.join('\n')}` : ''
+        sentenceLines.length ? `重复句候选：\n${sentenceLines.join('\n')}` : '',
+        Array.isArray(result.pause_candidates) && result.pause_candidates.length
+          ? `停顿候选：\n${formatPauseCandidates(result.pause_candidates)}`
+          : ''
       ].filter(Boolean).join('\n\n');
     }
+    case 'get_pause_candidates':
+      return [result.summary || '', formatPauseCandidates(result.candidates || [])].filter(Boolean).join('\n\n');
     case 'search_project_subtitles': {
       const matches = Array.isArray(result.matches) ? result.matches : [];
       const lines = matches.map((match, index) => `${index + 1}. [${match.asset_title}] ${formatTime(match.start)}-${formatTime(match.end)} ${match.text}`);
@@ -216,10 +247,22 @@ export const TOOL_DEFINITIONS = {
     description: '读取口播拼稿候选，返回重复 take 候选组和重复句候选组。它不是主观察来源，但口播拼稿在读完整个 get_script_blocks 和 get_subtitle_blocks 之后，必须再调用它复查一次；决定 no-op 前不能跳过这一步。',
     schema: {
       take_limit: z.number().optional(),
-      sentence_limit: z.number().optional()
+      sentence_limit: z.number().optional(),
+      pause_limit: z.number().optional(),
+      min_pause_seconds: z.number().optional()
     },
     mutatesProject: false,
     execute: (projectId, args) => toolGetAssembleCandidates(projectId, args)
+  },
+  get_pause_candidates: {
+    description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。',
+    schema: {
+      min_gap_seconds: z.number().optional(),
+      limit: z.number().optional(),
+      asset_title: z.string().optional()
+    },
+    mutatesProject: false,
+    execute: (projectId, args) => toolGetPauseCandidates(projectId, args)
   },
   delete_subtitle_blocks: {
     description: '按字幕块 id 或 order 删除当前项目里的字幕块。',
@@ -286,9 +329,12 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolRestoreWordsByPhrase(projectId, args)
   },
   remove_pauses: {
-    description: '按阈值切掉明显停顿。口播剪辑在做完主要语义删减后，必须检查是否还残留明显长停顿；若有，就调用它做收尾清理。',
+    description: '切掉明显停顿。优先先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做定点删除；如果没有指定 gap_keys，才会按阈值批量清理。',
     schema: {
-      min_gap_seconds: z.number().optional()
+      min_gap_seconds: z.number().optional(),
+      gap_keys: z.array(z.string()).optional(),
+      asset_title: z.string().optional(),
+      limit: z.number().optional()
     },
     mutatesProject: true,
     execute: (projectId, args) => toolRemovePauses(projectId, args)
@@ -361,7 +407,7 @@ function toSdkToolDefinition(name, projectId, runtimeContext) {
           requestContext: runtimeContext.requestContext
         });
 
-        if (definition.mutatesProject) {
+        if (definition.mutatesProject && result?.success !== false && result?.changed !== false) {
           runtimeContext.mutatedProject.current = true;
         }
         runtimeContext.appliedChanges.push({

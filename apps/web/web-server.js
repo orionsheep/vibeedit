@@ -12,6 +12,7 @@ import projectRouter from './server/routes/projects.routes.js';
 import libraryRouter from './server/routes/library.routes.js';
 import { loadConfig } from './server/services/editor/config.js';
 import { checkDatabaseConnection, getDatabaseState } from './server/services/core/database.service.js';
+import { recoverPendingAssetJobs } from './server/services/library/asset-library.service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,6 +112,15 @@ app.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
       if (dbState.lastError) {
         console.log(`[AutoEdit Dashboard] Database error: ${dbState.lastError}`);
       }
+      recoverPendingAssetJobs()
+        .then((count) => {
+          if (count > 0) {
+            console.log(`[AutoEdit Dashboard] Requeued ${count} pending asset jobs`);
+          }
+        })
+        .catch((error) => {
+          console.log(`[AutoEdit Dashboard] Asset job recovery failed: ${error.message}`);
+        });
       console.log(`\n`);
     })
     .catch((error) => {

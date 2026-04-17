@@ -18,7 +18,7 @@ import { getProjectEditState } from '../projects/project-edit-state.service.js';
 const activeRunAbortControllers = new Map();
 const cancellationRequestedRuns = new Set();
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
-const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿)/i;
+const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏)/i;
 
 class AgentRunCancelledError extends Error {
   constructor(message = 'Agent run cancelled') {

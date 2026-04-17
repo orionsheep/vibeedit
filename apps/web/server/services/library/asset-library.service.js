@@ -7,6 +7,9 @@ import { copyExternalAssetFile, moveUploadedAssetFile } from '../core/storage.se
 import { loadConfig } from '../editor/config.js';
 import { runAsrPipeline } from '../editor/asr.service.js';
 
+const RECOVERABLE_ASSET_JOB_TYPES = new Set(['asset.ingest', 'asset.retranscribe']);
+const ACTIVE_ASSET_JOB_IDS = new Set();
+
 function flattenWords(asrResult = {}) {
   if (Array.isArray(asrResult.words)) return asrResult.words;
   if (Array.isArray(asrResult.segments)) {
@@ -17,6 +20,7 @@ function flattenWords(asrResult = {}) {
 
 function mapAssetSummary(asset) {
   const originalFile = asset.files?.find((file) => file.role === 'original') || asset.files?.[0] || null;
+  const ingestJob = asset.jobs?.[0] || null;
   return {
     id: asset.id,
     title: asset.title,
@@ -31,7 +35,17 @@ function mapAssetSummary(asset) {
     transcript_text: asset.transcriptText || '',
     mime_type: asset.mimeType || '',
     created_at: asset.createdAt,
-    source_url: originalFile ? `/api/library/assets/${asset.id}/source` : null
+    source_url: originalFile ? `/api/library/assets/${asset.id}/source` : null,
+    ingest_job: ingestJob ? {
+      id: ingestJob.id,
+      type: ingestJob.type,
+      status: ingestJob.status,
+      progress: Number(ingestJob.progress || 0),
+      message: ingestJob.message || '',
+      created_at: ingestJob.createdAt,
+      started_at: ingestJob.startedAt,
+      finished_at: ingestJob.finishedAt
+    } : null
   };
 }
 
@@ -137,35 +151,81 @@ async function updateAssetFromAsr(db, assetId, asrResult, mediaInfo) {
   });
 }
 
-async function ingestAsset(assetId, sourcePath, { language = 'Chinese', jsonFile = null } = {}) {
-  return processAssetAsr(assetId, sourcePath, {
-    language,
-    jsonFile,
-    jobType: 'asset.ingest'
+async function createAssetAsrJob(assetId, sourcePath, { language = 'Chinese', uploadedJson = null, jobType = 'asset.ingest' } = {}) {
+  return createJob({
+    type: jobType,
+    payload: {
+      assetId,
+      sourcePath,
+      language,
+      uploadedJson
+    },
+    assetId,
+    message: 'Queued for ASR'
   });
 }
 
-function queueAssetIngest(assetId, sourcePath, { language = 'Chinese', jsonFile = null } = {}) {
+function queueAssetJob(jobId) {
+  if (!jobId || ACTIVE_ASSET_JOB_IDS.has(jobId)) return;
+  ACTIVE_ASSET_JOB_IDS.add(jobId);
   Promise.resolve()
-    .then(() => ingestAsset(assetId, sourcePath, { language, jsonFile }))
+    .then(() => processAssetJob(jobId))
     .catch((error) => {
-      console.error(`[asset-ingest] ${assetId} failed:`, error);
+      console.error(`[asset-job] ${jobId} failed:`, error);
+    })
+    .finally(() => {
+      ACTIVE_ASSET_JOB_IDS.delete(jobId);
     });
 }
 
-async function processAssetAsr(assetId, sourcePath, { language = 'Chinese', jsonFile = null, jobType = 'asset.ingest' } = {}) {
-  const job = await createJob({
-    type: jobType,
-    payload: { assetId, sourcePath, language },
-    assetId
-  });
+async function enqueueAssetAsr(assetId, sourcePath, { language = 'Chinese', uploadedJson = null, jobType = 'asset.ingest' } = {}) {
+  const job = await createAssetAsrJob(assetId, sourcePath, { language, uploadedJson, jobType });
+  queueAssetJob(job.id);
+  return job;
+}
+
+async function processAssetJob(jobId) {
+  const job = await withDatabase((db) => db.job.findUnique({
+    where: { id: jobId }
+  }));
+
+  if (!job) {
+    throw new Error(`Asset job not found: ${jobId}`);
+  }
+
+  if (!RECOVERABLE_ASSET_JOB_TYPES.has(String(job.type || '').trim())) {
+    throw new Error(`Unsupported asset job type: ${job.type}`);
+  }
+
+  if (['completed', 'failed'].includes(String(job.status || '').trim())) {
+    return null;
+  }
+
+  const payload = job.payload || {};
+  const assetId = String(payload.assetId || job.assetId || '').trim();
+  const sourcePath = String(payload.sourcePath || '').trim();
+  const language = String(payload.language || 'Chinese').trim() || 'Chinese';
+  const uploadedJson = payload.uploadedJson || null;
+
+  if (!assetId || !sourcePath) {
+    await failJob(job.id, new Error('Asset job payload is missing assetId or sourcePath'));
+    throw new Error('Asset job payload is missing assetId or sourcePath');
+  }
 
   try {
+    await withDatabase((db) => db.asset.update({
+      where: { id: assetId },
+      data: {
+        status: 'processing',
+        asrStatus: uploadedJson ? 'provided' : 'processing'
+      }
+    }));
+
     await markJobRunning(job.id, 'Probing media');
+    await fs.promises.access(sourcePath, fs.constants.R_OK);
     const mediaInfo = await probeMediaInfo(sourcePath);
     await updateJobProgress(job.id, 25, 'Running ASR');
 
-    const uploadedJson = await parseUploadedJson(jsonFile);
     const asrInput = uploadedJson ? sourcePath : resolveAsrInput(assetId, sourcePath);
     const asrResult = uploadedJson || await runAsrPipeline(asrInput, language);
 
@@ -188,6 +248,11 @@ async function processAssetAsr(assetId, sourcePath, { language = 'Chinese', json
   }
 }
 
+async function runAssetAsr(assetId, sourcePath, { language = 'Chinese', uploadedJson = null, jobType = 'asset.ingest' } = {}) {
+  const job = await createAssetAsrJob(assetId, sourcePath, { language, uploadedJson, jobType });
+  return processAssetJob(job.id);
+}
+
 function resolveAsrInput(assetId, sourcePath) {
   const config = loadConfig();
   if (String(config.asr_provider || '').trim().toLowerCase() !== 'qwen_filetrans') {
@@ -204,6 +269,7 @@ function resolveAsrInput(assetId, sourcePath) {
 
 export async function createAssetFromUpload(file, { title = '', language = 'Chinese', jsonFile = null } = {}) {
   const originalFilename = file.originalname || 'uploaded-video.mp4';
+  const uploadedJson = await parseUploadedJson(jsonFile);
 
   const created = await withDatabase((db) => db.asset.create({
     data: {
@@ -212,7 +278,7 @@ export async function createAssetFromUpload(file, { title = '', language = 'Chin
       mimeType: file.mimetype || 'video/mp4',
       kind: 'video',
       status: 'processing',
-      asrStatus: jsonFile ? 'provided' : 'processing'
+      asrStatus: uploadedJson ? 'provided' : 'processing'
     }
   }));
 
@@ -229,12 +295,21 @@ export async function createAssetFromUpload(file, { title = '', language = 'Chin
     }
   }));
 
-  queueAssetIngest(created.id, stored.uri, { language, jsonFile });
+  await enqueueAssetAsr(created.id, stored.uri, { language, uploadedJson, jobType: 'asset.ingest' });
 
   return withDatabase((db) => db.asset.findUnique({
     where: { id: created.id },
     include: {
       files: true,
+      jobs: {
+        where: {
+          type: {
+            in: [...RECOVERABLE_ASSET_JOB_TYPES]
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1
+      },
       captions: {
         orderBy: { createdAt: 'desc' },
         take: 1
@@ -285,14 +360,23 @@ export async function createAssetFromSourceFile(sourcePath, {
   }
 
   if (waitForAsr) {
-    return ingestAsset(created.id, stored.uri, { language });
+    return runAssetAsr(created.id, stored.uri, { language, jobType: 'asset.ingest' });
   }
 
-  queueAssetIngest(created.id, stored.uri, { language });
+  await enqueueAssetAsr(created.id, stored.uri, { language, jobType: 'asset.ingest' });
   return withDatabase((db) => db.asset.findUnique({
     where: { id: created.id },
     include: {
       files: true,
+      jobs: {
+        where: {
+          type: {
+            in: [...RECOVERABLE_ASSET_JOB_TYPES]
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1
+      },
       captions: {
         orderBy: { createdAt: 'desc' },
         take: 1
@@ -331,7 +415,7 @@ export async function retranscribeAsset(assetId, { language = 'Chinese' } = {}) 
   }));
 
   const inferredLanguage = language || asset.captions?.[0]?.language || 'Chinese';
-  return processAssetAsr(assetId, originalFile.uri, {
+  return runAssetAsr(assetId, originalFile.uri, {
     language: inferredLanguage,
     jobType: 'asset.retranscribe'
   });
@@ -401,7 +485,16 @@ export async function listAssets({ query = '' } = {}) {
           : {})
       },
       include: {
-        files: true
+        files: true,
+        jobs: {
+          where: {
+            type: {
+              in: [...RECOVERABLE_ASSET_JOB_TYPES]
+            }
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -416,6 +509,15 @@ export async function getAssetById(assetId) {
       where: { id: assetId },
       include: {
         files: true,
+        jobs: {
+          where: {
+            type: {
+              in: [...RECOVERABLE_ASSET_JOB_TYPES]
+            }
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        },
         captions: {
           orderBy: { createdAt: 'desc' }
         }
@@ -442,4 +544,24 @@ export async function getAssetSourcePath(assetId) {
 
     return file?.uri || null;
   });
+}
+
+export async function recoverPendingAssetJobs() {
+  const jobs = await withDatabase((db) => db.job.findMany({
+    where: {
+      type: {
+        in: [...RECOVERABLE_ASSET_JOB_TYPES]
+      },
+      status: {
+        in: ['queued', 'running']
+      }
+    },
+    orderBy: { createdAt: 'asc' }
+  }));
+
+  jobs.forEach((job) => {
+    queueAssetJob(job.id);
+  });
+
+  return jobs.length;
 }

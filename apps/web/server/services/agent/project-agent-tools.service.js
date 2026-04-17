@@ -1429,6 +1429,93 @@ function filterSafePhraseMatches(words = [], matches = [], phrase = '', { strict
   return matches.filter((match) => isStandalonePhraseMatch(words, match));
 }
 
+function buildPausePreview(words = [], startIndex = 0, endIndex = 0, { trimStart = false, trimEnd = false } = {}) {
+  const text = words
+    .slice(Math.max(0, startIndex), Math.min(words.length, endIndex + 1))
+    .map((word) => String(word?.text || ''))
+    .join('')
+    .trim();
+  if (!text) return '';
+  if (trimStart && text.length > 18) return `…${text.slice(-18)}`;
+  if (trimEnd && text.length > 18) return `${text.slice(0, 18)}…`;
+  return text;
+}
+
+function buildPauseCandidates(state, {
+  minGapSeconds = 0.35,
+  assetTitle = '',
+  limit = null,
+  includeDeleted = false,
+  gapKeys = []
+} = {}) {
+  const words = Array.isArray(state?.words) ? state.words : [];
+  const keptMask = Array.isArray(state?.keptMask) ? state.keptMask : [];
+  const deletedGapKeys = new Set(state?.editState?.deleted_gap_keys || []);
+  const safeMinGap = Math.max(0, Number(minGapSeconds || 0));
+  const assetNeedle = normalizeText(assetTitle);
+  const requestedGapKeys = new Set((Array.isArray(gapKeys) ? gapKeys : []).map((value) => String(value || '').trim()).filter(Boolean));
+  const keptIndices = words.flatMap((word, index) => (keptMask[index] ? [index] : []));
+  const candidates = [];
+
+  for (let position = 0; position < keptIndices.length - 1; position += 1) {
+    const leftIndex = keptIndices[position];
+    const rightIndex = keptIndices[position + 1];
+    const left = words[leftIndex];
+    const right = words[rightIndex];
+    if (!left || !right) continue;
+    if (String(left.asset_id || '') !== String(right.asset_id || '')) continue;
+    if (assetNeedle && normalizeText(left.asset_title) !== assetNeedle) continue;
+
+    const gapKey = String(left.gap_key_after || '').trim();
+    if (!gapKey) continue;
+    if (requestedGapKeys.size && !requestedGapKeys.has(gapKey)) continue;
+
+    const alreadyDeleted = deletedGapKeys.has(gapKey);
+    if (alreadyDeleted && !includeDeleted) continue;
+
+    const gapSeconds = roundTime(Math.max(0, Number(right.start_time || 0) - Number(left.end_time || 0)));
+    if (gapSeconds < safeMinGap) continue;
+
+    const leftSentenceBoundary = /[。！？!?；;]/.test(String(left.text || ''));
+    const rightStartsWithFiller = isSafeInlineFillerPhrase(right.text || '');
+    const leftEndsWithFiller = isSafeInlineFillerPhrase(left.text || '');
+    let priorityScore = gapSeconds * 10;
+    if (gapSeconds >= 0.9) priorityScore += 3;
+    if (gapSeconds >= 0.6) priorityScore += 1;
+    if (rightStartsWithFiller) priorityScore += 1;
+    if (leftEndsWithFiller) priorityScore += 0.5;
+    if (leftSentenceBoundary && gapSeconds < 0.45) priorityScore -= 1;
+
+    candidates.push({
+      gap_key: gapKey,
+      asset_id: left.asset_id,
+      asset_title: left.asset_title,
+      start: roundTime(Number(left.end_time || 0)),
+      end: roundTime(Number(right.start_time || 0)),
+      gap_seconds: gapSeconds,
+      left_word_index: Number(left.asset_word_index || 0),
+      right_word_index: Number(right.asset_word_index || 0),
+      left_preview: buildPausePreview(words, leftIndex - 5, leftIndex, { trimStart: true }),
+      right_preview: buildPausePreview(words, rightIndex, rightIndex + 5, { trimEnd: true }),
+      left_sentence_boundary: leftSentenceBoundary,
+      right_starts_with_filler: rightStartsWithFiller,
+      already_deleted: alreadyDeleted,
+      priority_score: roundTime(priorityScore)
+    });
+  }
+
+  const sorted = candidates.sort((left, right) => {
+    const priorityGap = Number(right.priority_score || 0) - Number(left.priority_score || 0);
+    if (priorityGap !== 0) return priorityGap;
+    const durationGap = Number(right.gap_seconds || 0) - Number(left.gap_seconds || 0);
+    if (durationGap !== 0) return durationGap;
+    return Number(left.start || 0) - Number(right.start || 0);
+  });
+
+  if (limit == null) return sorted;
+  return sorted.slice(0, Math.max(1, Number(limit || 1)));
+}
+
 function findDeletedPhraseMatches(words, keptMask, phrase, assetTitle = '') {
   const needle = normalizeText(phrase);
   const assetNeedle = normalizeText(assetTitle);
@@ -1513,11 +1600,23 @@ function mapAssembleCandidateVersion(version = {}) {
   };
 }
 
-export async function toolGetAssembleCandidates(projectId, { take_limit: takeLimit = 12, sentence_limit: sentenceLimit = 12 } = {}) {
+export async function toolGetAssembleCandidates(
+  projectId,
+  {
+    take_limit: takeLimit = 12,
+    sentence_limit: sentenceLimit = 12,
+    pause_limit: pauseLimit = 12,
+    min_pause_seconds: minPauseSeconds = 0.35
+  } = {}
+) {
   const state = await loadProjectEditableState(projectId);
   const activeWords = buildActiveWordsWithOriginalIndices(state);
   const activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
   const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+  const pauseCandidates = buildPauseCandidates(state, {
+    minGapSeconds: minPauseSeconds,
+    limit: Math.max(1, Number(pauseLimit || 12))
+  });
 
   const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
     .map((cluster, index) => ({
@@ -1542,12 +1641,34 @@ export async function toolGetAssembleCandidates(projectId, { take_limit: takeLim
   return {
     success: true,
     change: 'get_assemble_candidates',
-    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawSentenceGroups.length} 组重复句候选。`,
+    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawSentenceGroups.length} 组重复句候选、${pauseCandidates.length} 个明显停顿候选。`,
     script_block_count: scriptBlocks.length,
     take_group_count: rawTakeGroups.length,
     sentence_group_count: rawSentenceGroups.length,
+    pause_candidate_count: pauseCandidates.length,
     take_groups: rawTakeGroups,
-    sentence_groups: rawSentenceGroups
+    sentence_groups: rawSentenceGroups,
+    pause_candidates: pauseCandidates
+  };
+}
+
+export async function toolGetPauseCandidates(projectId, { min_gap_seconds: minGapSeconds = 0.35, limit = 24, asset_title: assetTitle = '' } = {}) {
+  const state = await loadProjectEditableState(projectId);
+  const candidates = buildPauseCandidates(state, {
+    minGapSeconds,
+    assetTitle,
+    limit: Math.min(120, Math.max(1, Number(limit || 24)))
+  });
+
+  return {
+    success: true,
+    change: 'get_pause_candidates',
+    summary: candidates.length
+      ? `识别到 ${candidates.length} 个明显停顿候选。`
+      : '当前没有达到阈值的明显停顿候选。',
+    total: candidates.length,
+    min_gap_seconds: Number(minGapSeconds || 0.35),
+    candidates
   };
 }
 
@@ -1757,6 +1878,7 @@ export async function toolDeleteSubtitleBlocks(projectId, { block_ids: blockIds 
 
   return {
     success: true,
+    changed: true,
     change: 'delete_subtitle_blocks',
     summary: `已删除 ${targets.length} 个字幕块。`,
     deleted_block_ids: targets.map((item) => item.id),
@@ -1795,6 +1917,7 @@ export async function toolRestoreSubtitleBlocks(projectId, { block_ids: blockIds
 
   return {
     success: true,
+    changed: true,
     change: 'restore_subtitle_blocks',
     summary: `已恢复 ${targets.length} 个字幕块。`,
     restored_block_ids: targets.map((item) => item.id),
@@ -1840,6 +1963,7 @@ export async function toolRemoveProjectAsset(projectId, { asset_id: assetId = ''
 
   return {
     success: true,
+    changed: true,
     change: 'remove_project_asset',
     summary: `已从项目中删除素材 ${target.asset.title}。`,
     asset_id: target.asset.id,
@@ -1895,6 +2019,7 @@ export async function toolReorderProjectAssets(projectId, { asset_titles: assetT
 
   return {
     success: true,
+    changed: true,
     change: 'reorder_project_assets',
     summary: '已更新项目素材顺序。',
     ordered_asset_ids: ordered
@@ -1936,6 +2061,7 @@ export async function toolDeleteWordsByPhrase(projectId, { phrase = '', asset_ti
 
   return {
     success: true,
+    changed: true,
     change: 'delete_words',
     summary: `已删除 ${matches.length} 处字幕片段。`,
     deleted_match_count: matches.length,
@@ -2011,6 +2137,7 @@ export async function toolReplaceSubtitleText(
 
   return {
     success: true,
+    changed: true,
     change: 'replace_subtitle_text',
     summary: convertedToDeletedState
       ? `已将 ${matches.length} 处“伪改字剪辑”转换为划线删除态。`
@@ -2047,6 +2174,7 @@ export async function toolRestoreWordsByPhrase(projectId, { phrase = '', asset_t
 
   return {
     success: true,
+    changed: true,
     change: 'restore_words',
     summary: `已恢复 ${matches.length} 处字幕片段。`,
     restored_match_count: matches.length,
@@ -2067,41 +2195,76 @@ export async function toolClearDeleted(projectId, _args = {}, context = {}) {
 
   return {
     success: true,
+    changed: true,
     change: 'clear_deleted',
     summary: '已恢复整条项目时间线到完整素材状态。',
     timeline: updatedTimeline
   };
 }
 
-export async function toolRemovePauses(projectId, { min_gap_seconds: minGapSeconds = 0.6 } = {}, context = {}) {
+export async function toolRemovePauses(
+  projectId,
+  {
+    min_gap_seconds: minGapSeconds = 0.4,
+    gap_keys: gapKeys = [],
+    asset_title: assetTitle = '',
+    limit = null
+  } = {},
+  context = {}
+) {
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
-  let deletedGapCount = 0;
-  let removedSeconds = 0;
 
-  for (let index = 0; index < state.words.length - 1; index += 1) {
-    if (!state.keptMask[index] || !state.keptMask[index + 1]) continue;
-    const left = state.words[index];
-    const right = state.words[index + 1];
-    if (left.asset_id !== right.asset_id) continue;
-    const gap = Number(right.start_time || 0) - Number(left.end_time || 0);
-    if (gap >= Number(minGapSeconds || 0.6)) {
-      deletedGapKeys.add(String(left.gap_key_after || ''));
-      deletedGapCount += 1;
-      removedSeconds += gap;
-    }
+  const requestedGapKeys = (Array.isArray(gapKeys) ? gapKeys : []).map((value) => String(value || '').trim()).filter(Boolean);
+  const selectedCandidates = buildPauseCandidates(state, {
+    minGapSeconds: requestedGapKeys.length ? 0 : Number(minGapSeconds || 0.4),
+    assetTitle,
+    limit: requestedGapKeys.length
+      ? Math.max(1, requestedGapKeys.length)
+      : (limit == null ? null : Math.min(200, Math.max(1, Number(limit || 1)))),
+    gapKeys: requestedGapKeys
+  }).filter((candidate) => (
+    !requestedGapKeys.length || Number(candidate.gap_seconds || 0) >= Number(minGapSeconds || 0.4)
+  ));
+
+  if (!selectedCandidates.length) {
+    return {
+      success: false,
+      changed: false,
+      change: 'remove_pauses',
+      summary: '没有找到符合条件的明显停顿。',
+      deleted_gap_count: 0,
+      removed_seconds: 0
+    };
+  }
+
+  let removedSeconds = 0;
+  for (const candidate of selectedCandidates) {
+    deletedGapKeys.add(String(candidate.gap_key || ''));
+    removedSeconds += Number(candidate.gap_seconds || 0);
   }
 
   const timeline = await persistEditableProjectState(projectId, state, {
     deletedGapKeys: [...deletedGapKeys].filter(Boolean),
-    audit: buildAgentEditHistoryContext('remove_pauses', { min_gap_seconds: minGapSeconds }, context, `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.6).toFixed(1)} 秒`)
+    audit: buildAgentEditHistoryContext(
+      'remove_pauses',
+      {
+        min_gap_seconds: minGapSeconds,
+        gap_keys: requestedGapKeys,
+        asset_title: assetTitle
+      },
+      context,
+      `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
+    )
   });
 
   return {
     success: true,
+    changed: true,
     change: 'remove_pauses',
-    summary: `已按 ${Number(minGapSeconds || 0.6).toFixed(1)} 秒阈值切掉 ${deletedGapCount} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
-    deleted_gap_count: deletedGapCount,
+    summary: `已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
+    deleted_gap_count: selectedCandidates.length,
+    deleted_gap_keys: selectedCandidates.map((candidate) => candidate.gap_key),
     removed_seconds: roundTime(removedSeconds),
     timeline
   };
@@ -2115,6 +2278,7 @@ export async function toolSaveSnapshot(projectId, { note = 'Agent snapshot' } = 
 
   return {
     success: true,
+    changed: true,
     change: 'save_snapshot',
     summary: '已保存时间线快照。',
     snapshot_id: snapshot.id

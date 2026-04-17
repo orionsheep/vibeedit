@@ -20,7 +20,7 @@ import {
 } from './agent-session.service.js';
 
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
-const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿)/i;
+const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏)/i;
 
 function loadClaudeMdInstructions() {
   try {
@@ -60,14 +60,16 @@ function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRet
         '默认高保留率，主要删除重复 take、明显重复句、口头禅和停顿；不要为了“更顺”而重写表达。',
         '删除整句、半句、重复 take、重复表达时，优先使用 delete_subtitle_blocks / restore_subtitle_blocks 做块级删改；不要为了省事在句子中间掏词。',
         'delete_words_by_phrase / restore_words_by_phrase 只用于独立短口头禅和语气词，例如“嗯”“啊”“呃”“就是”“那个”；不允许用它删除句中实词、主谓宾、连接逻辑或半句结构。',
-        '如果用户要求去口气词、口头禅或停顿，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、remove_pauses 等工具落地，而不是只在总结里声称处理过。',
-        '即使用户没有单独强调停顿，口播拼稿在完成主要语义删减后，也必须检查一次当前结果里是否还残留明显长停顿；若有，就调用 remove_pauses 做收尾清理。',
+        '如果用户要求去口气词、口头禅、停顿、间隙或压紧节奏，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、get_pause_candidates、remove_pauses 等工具落地，而不是只在总结里声称处理过。',
+        '处理停顿时，优先先读 get_pause_candidates 或 get_assemble_candidates 里的停顿候选，再把 gap_keys 传给 remove_pauses 做定点删除；不要只靠大阈值全局扫一遍就结束。',
+        '好的口播成片应尽量保持句义单元完整，主要通过删除重复块和 gap 来压紧节奏，而不是在句子中间抠几个字假装顺畅。',
+        '即使用户没有单独强调停顿，口播拼稿在完成主要语义删减后，也必须检查一次当前结果里是否还残留明显长停顿；若有，就调用 remove_pauses 做收尾清理，并确认 deleted_gap_count 真的增加。',
         '在你认为编辑完成后，必须做一次强制自我审查，而且不能只凭记忆判断；必须再次调用 get_script_blocks、必要时再调用 get_subtitle_blocks / get_timeline_detail，基于最新结果逐项复查。',
         '自我审查必须逐项检查这 8 点：1. 顺序是否正确；如果本轮涉及调序，必须确认只改了素材之间的顺序，没有改单个素材内部顺序；2. 句子是否通顺；3. 逻辑是否完整；4. 断句和衔接是否自然；5. 是否仍残留重复 take 或重复句；6. 停顿、口气词、口头禅是否真的去掉；7. 是否误删关键内容；8. 是否还存在一到两处明显可改进点。',
         '只要这 8 项里有任意一项不通过，就继续调用工具修正，直到全部通过后才能结束。',
         '最终回复里，必须用简短清单汇报这 8 项的检查结果与修正结论，不能只给一句笼统总结；如果没有这 8 项清单，就不算完成。',
         assembleRetryPass
-          ? '这是一次强制重试：上一轮没有真正改到项目或没有完成自审清单。你这次必须自己读完整个当前口播稿，随后强制调用一次 get_assemble_candidates，再调用删除/恢复/去停顿工具完成实际修改。不要停在总结。'
+          ? '这是一次强制重试：上一轮没有真正改到项目或没有完成自审清单。你这次必须自己读完整个当前口播稿，随后强制调用一次 get_assemble_candidates，必要时再读 get_pause_candidates，然后调用删除/恢复/去停顿工具完成实际修改。不要停在总结。'
           : ''
       ].join('\n')
     : [
@@ -119,7 +121,7 @@ function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinut
   lines.push(`用户要求：${String(prompt || '').trim() || `执行 ${mode}`}`);
   const memoryText = buildConversationMemory(sessionDetail, String(prompt || '').trim());
   if (memoryText) lines.push(memoryText);
-  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅或去停顿，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，优先再调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，并把 gap_keys 传给 remove_pauses 做定点删除；不要只靠一句“我已经删了停顿”就结束。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
   if (assembleRetryPass && String(mode || '').trim() === 'assemble_script') {
     lines.push('上一轮没有真正修改项目或没有完成自审清单。这一轮禁止只读取候选摘要后结束，必须自己读完整脚本块、读完整字幕块，再调用一次 get_assemble_candidates，然后真正调用删改工具。');
   }
@@ -127,7 +129,7 @@ function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinut
 }
 
 function getPrimaryAppliedSummary(appliedChanges = []) {
-  const primaryChange = appliedChanges[appliedChanges.length - 1];
+  const primaryChange = [...appliedChanges].reverse().find((change) => didChangeApply(change)) || appliedChanges[appliedChanges.length - 1];
   return String(primaryChange?.summary || '').trim();
 }
 
@@ -181,7 +183,10 @@ function isAssembleReviewFailure(error) {
 }
 
 function summarizeAssembleAppliedChanges(appliedChanges = []) {
-  const tools = appliedChanges.map((change) => String(change?.tool || '').trim()).filter(Boolean);
+  const tools = appliedChanges
+    .filter((change) => didChangeApply(change))
+    .map((change) => String(change?.tool || '').trim())
+    .filter(Boolean);
   return {
     savedSnapshot: tools.includes('save_snapshot'),
     reorderedAssets: tools.includes('reorder_project_assets'),
@@ -228,12 +233,16 @@ function requestRequiresToolUse({ mode = 'custom', prompt = '', topic = '', targ
   if (Number(targetMinutes || 0) > 0) return true;
   const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
   if (!text) return false;
-  return /(读取|查看|项目|上下文|素材|时间线|字幕|搜索|删除|恢复|导出|快照|拼稿|口播|停顿|冗余|改写|替换|调整|排序|移除|保存|重写|修改|剪辑|剪一下|精简)/.test(text);
+  return /(读取|查看|项目|上下文|素材|时间线|字幕|搜索|删除|恢复|导出|快照|拼稿|口播|停顿|间隙|空白|节奏|冗余|改写|替换|调整|排序|移除|保存|重写|修改|剪辑|剪一下|精简)/.test(text);
+}
+
+function didChangeApply(change = {}) {
+  return change?.success !== false && change?.changed !== false;
 }
 
 function isMutatingChange(change = {}) {
   const tool = String(change.tool || change.change || change.type || '').trim();
-  return new Set([
+  return didChangeApply(change) && new Set([
     'delete_subtitle_blocks',
     'restore_subtitle_blocks',
     'remove_project_asset',
@@ -251,7 +260,7 @@ function isMutatingChange(change = {}) {
 
 function isTimelineEditingChange(change = {}) {
   const tool = String(change.tool || change.change || change.type || '').trim();
-  return new Set([
+  return didChangeApply(change) && new Set([
     'delete_subtitle_blocks',
     'restore_subtitle_blocks',
     'remove_project_asset',
@@ -271,7 +280,7 @@ function requestRequiresMutation({ mode = 'custom', prompt = '', topic = '', tar
   if (Number(targetMinutes || 0) > 0) return true;
   const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
   if (!text) return false;
-  return /(拼稿|删除|恢复|导出|快照|去重|删掉|移除|改写|替换|调整|排序|口播|改成|清理|压缩|精简|去掉|重写|修改)/.test(text);
+  return /(拼稿|删除|恢复|导出|快照|去重|删掉|移除|改写|替换|调整|排序|口播|停顿|间隙|空白|节奏|改成|清理|压缩|精简|去掉|重写|修改)/.test(text);
 }
 
 function selectToolNames({ mode = 'custom' } = {}) {

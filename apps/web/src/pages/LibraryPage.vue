@@ -49,6 +49,11 @@
               <span>{{ asset.status }}</span>
               <span>{{ asset.asr_status }}</span>
             </div>
+            <div v-if="asset.ingest_job" class="asset-job" :class="`status-${asset.ingest_job.status}`">
+              <span>{{ formatJobLabel(asset.ingest_job) }}</span>
+              <span v-if="Number(asset.ingest_job.progress || 0) > 0">{{ asset.ingest_job.progress }}%</span>
+              <span v-if="asset.ingest_job.message">{{ asset.ingest_job.message }}</span>
+            </div>
           </div>
           <a class="chip-link" :href="asset.source_url" target="_blank" rel="noopener">源文件</a>
         </div>
@@ -64,7 +69,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { listProjects } from '../features/projects/api/projectsApi';
 import { addLibraryAssetToProject, listLibraryAssets, uploadLibraryAssets } from '../features/library/api/libraryApi';
 
@@ -77,9 +82,31 @@ const uploadProgress = ref(0);
 const selectedProjectId = ref('');
 const search = ref('');
 const fileInputRef = ref(null);
+const assetPollTimer = ref(null);
+
+function hasActiveIngest(asset) {
+  const asrStatus = String(asset?.asr_status || '').trim();
+  const jobStatus = String(asset?.ingest_job?.status || '').trim();
+  return ['processing', 'pending', 'provided'].includes(asrStatus) || ['queued', 'running'].includes(jobStatus);
+}
+
+function syncAssetPolling() {
+  const shouldPoll = assets.value.some((asset) => hasActiveIngest(asset));
+  if (shouldPoll && !assetPollTimer.value) {
+    assetPollTimer.value = window.setInterval(() => {
+      loadAssets().catch(() => {});
+    }, 4000);
+    return;
+  }
+  if (!shouldPoll && assetPollTimer.value) {
+    clearInterval(assetPollTimer.value);
+    assetPollTimer.value = null;
+  }
+}
 
 async function loadAssets() {
   assets.value = await listLibraryAssets(search.value.trim());
+  syncAssetPolling();
 }
 
 async function loadProjects() {
@@ -122,6 +149,12 @@ async function handleAddToProject(assetId) {
   await addLibraryAssetToProject(assetId, selectedProjectId.value);
 }
 
+function formatJobLabel(job = {}) {
+  const type = String(job.type || '').trim();
+  if (type === 'asset.retranscribe') return '重转写';
+  return '上传转写';
+}
+
 function formatDuration(seconds) {
   const safe = Number(seconds || 0);
   const mins = Math.floor(safe / 60);
@@ -135,6 +168,13 @@ watch(search, () => {
 
 onMounted(async () => {
   await Promise.all([loadAssets(), loadProjects()]);
+});
+
+onUnmounted(() => {
+  if (assetPollTimer.value) {
+    clearInterval(assetPollTimer.value);
+    assetPollTimer.value = null;
+  }
 });
 </script>
 
@@ -267,6 +307,28 @@ h1 {
   gap: 8px;
   color: #87a0b3;
   font-size: 13px;
+}
+
+.asset-job {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #87a0b3;
+  font-size: 12px;
+}
+
+.asset-job.status-running,
+.asset-job.status-queued {
+  color: #73dce6;
+}
+
+.asset-job.status-failed {
+  color: #ff8c8c;
+}
+
+.asset-job.status-completed {
+  color: #8ddf9b;
 }
 
 .asset-desc {
