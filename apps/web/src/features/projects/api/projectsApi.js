@@ -84,6 +84,13 @@ export async function createProjectSnapshot(projectId, payload = {}) {
   return response.data.snapshot;
 }
 
+export async function listProjectEditHistory(projectId, params = {}) {
+  const response = await axios.get(`${API_BASE}/${projectId}/edit-history`, {
+    params
+  });
+  return response.data.histories || [];
+}
+
 export async function appendTimelineClip(projectId, payload) {
   const response = await axios.post(`${API_BASE}/${projectId}/timeline/clips`, payload);
   return response.data.clip;

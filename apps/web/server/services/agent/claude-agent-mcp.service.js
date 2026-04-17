@@ -258,7 +258,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolReorderProjectAssets(projectId, args)
   },
   delete_words_by_phrase: {
-    description: '按字幕文本删除一段内容，适合删口头禅、寒暄、口气词和明确多余的一句话。默认保持原顺序，只做删除，不做改写。',
+    description: '按字幕文本删除一段内容。它只适合删除独立短口头禅和语气词，例如“嗯”“啊”“呃”“就是”“那个”；不要用它删除句中实词、主谓宾、半句结构或整句内容。删整句、删重复句、删半句时改用 delete_subtitle_blocks。',
     schema: {
       phrase: z.string(),
       asset_title: z.string().optional()

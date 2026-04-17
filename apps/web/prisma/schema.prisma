@@ -33,6 +33,7 @@ model Project {
   agentRuns       AgentRun[]
   exports         ExportRecord[]
   snapshots       TimelineSnapshot[]
+  editHistories   ProjectEditHistory[]
   captionOverrides ProjectCaptionOverride[]
   editState       ProjectEditState?
 
@@ -300,6 +301,33 @@ model TimelineSnapshot {
 
   @@index([projectId, createdAt])
   @@index([timelineId, createdAt])
+}
+
+model ProjectEditHistory {
+  id             String   @id @default(cuid())
+  projectId      String
+  source         String   @default("system")
+  actorType      String?
+  operationType  String
+  note           String?
+  sessionId      String?
+  runId          String?
+  beforeVersion  Int?
+  afterVersion   Int?
+  diffSummary    Json?
+  beforeEditState Json?
+  afterEditState Json?
+  beforeTimeline Json?
+  afterTimeline  Json?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([projectId, source, createdAt])
+  @@index([projectId, operationType, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([runId, createdAt])
 }
 
 model ExportRecord {

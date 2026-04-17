@@ -1444,6 +1444,9 @@ async function saveTimeline(options = {}) {
       deletedWordKeys: buildPersistedDeletedWordKeys(),
       deletedGapKeys: buildPersistedDeletedGapKeys(),
       textReplacements: projectEditState.value?.text_replacements || [],
+      source: createSnapshot ? 'manual' : 'autosave',
+      actorType: 'manual',
+      operationType: createSnapshot ? 'workspace_edit_state' : 'workspace_autosave_edit_state',
       createSnapshot,
       note
     });

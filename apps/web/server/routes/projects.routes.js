@@ -7,6 +7,7 @@ import { listJobsByProject } from '../services/core/job.service.js';
 import { createProject, deleteProject, getProjectById, listProjectCategories, listProjects, addAssetToProject, reorderProjectAssets, removeAssetFromProject } from '../services/projects/project.service.js';
 import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, listTimelineSnapshots, removeTimelineClip, replaceTimelineClips } from '../services/projects/timeline.service.js';
 import { getProjectEditState, realignProjectEditState, saveProjectEditState } from '../services/projects/project-edit-state.service.js';
+import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
 import { exportProjectPackage, exportProjectTimelineVideo } from '../services/projects/project-export.service.js';
 import { exportProjectInterchangeFile, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
 import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
@@ -21,6 +22,40 @@ const upload = multer({
   dest: uploadsDir,
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }
 });
+
+async function loadProjectAuditState(projectId) {
+  const [editState, timeline] = await Promise.all([
+    getProjectEditState(projectId),
+    getProjectTimeline(projectId)
+  ]);
+  return {
+    editState,
+    timeline
+  };
+}
+
+async function recordRouteEditHistory(projectId, {
+  source = 'manual',
+  actorType = 'manual',
+  operationType = 'route_edit',
+  note = '',
+  before = null,
+  after = null,
+  metadata = null
+} = {}) {
+  return recordProjectEditHistory({
+    projectId,
+    source,
+    actorType,
+    operationType,
+    note,
+    beforeEditState: before?.editState || null,
+    afterEditState: after?.editState || null,
+    beforeTimeline: before?.timeline || null,
+    afterTimeline: after?.timeline || null,
+    metadata
+  });
+}
 
 router.get('/categories', async (_req, res) => {
   try {
@@ -102,8 +137,23 @@ router.post('/:projectId/assets', async (req, res) => {
     if (!assetId) {
       return res.status(400).json({ error: 'assetId is required' });
     }
+    const before = await loadProjectAuditState(req.params.projectId);
     await addAssetToProject(req.params.projectId, assetId);
-    await realignProjectEditState(req.params.projectId);
+    const afterRealign = await realignProjectEditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'add_asset_to_project',
+      note: 'Manual add asset to project',
+      before,
+      after: {
+        editState: afterRealign.edit_state,
+        timeline: afterRealign.timeline
+      },
+      metadata: {
+        asset_id: assetId
+      }
+    });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -116,6 +166,7 @@ router.post('/:projectId/assets/upload', upload.fields([
   { name: 'json', maxCount: 1 }
 ]), async (req, res) => {
   try {
+    const before = await loadProjectAuditState(req.params.projectId);
     const videoFiles = [
       ...(req.files?.video || []),
       ...(req.files?.videos || [])
@@ -139,6 +190,21 @@ router.post('/:projectId/assets/upload', upload.fields([
     }
 
     const realigned = await realignProjectEditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'upload_assets_to_project',
+      note: 'Manual upload assets to project',
+      before,
+      after: {
+        editState: realigned.edit_state,
+        timeline: realigned.timeline
+      },
+      metadata: {
+        asset_ids: assets.map((asset) => asset.id),
+        asset_titles: assets.map((asset) => asset.title)
+      }
+    });
     res.json({
       success: true,
       assets,
@@ -153,8 +219,23 @@ router.post('/:projectId/assets/upload', upload.fields([
 router.put('/:projectId/assets/order', async (req, res) => {
   try {
     const orderedAssetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds : [];
+    const before = await loadProjectAuditState(req.params.projectId);
     const project = await reorderProjectAssets(req.params.projectId, orderedAssetIds);
-    await realignProjectEditState(req.params.projectId);
+    const realigned = await realignProjectEditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'reorder_project_assets',
+      note: 'Manual reorder project assets',
+      before,
+      after: {
+        editState: realigned.edit_state,
+        timeline: realigned.timeline
+      },
+      metadata: {
+        ordered_asset_ids: orderedAssetIds
+      }
+    });
     res.json({ success: true, project });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -163,8 +244,23 @@ router.put('/:projectId/assets/order', async (req, res) => {
 
 router.delete('/:projectId/assets/:assetId', async (req, res) => {
   try {
+    const before = await loadProjectAuditState(req.params.projectId);
     const project = await removeAssetFromProject(req.params.projectId, req.params.assetId);
-    await realignProjectEditState(req.params.projectId);
+    const realigned = await realignProjectEditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'remove_project_asset',
+      note: 'Manual remove project asset',
+      before,
+      after: {
+        editState: realigned.edit_state,
+        timeline: realigned.timeline
+      },
+      metadata: {
+        asset_id: req.params.assetId
+      }
+    });
     res.json({ success: true, project });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -182,7 +278,12 @@ router.get('/:projectId/edit-state', async (req, res) => {
 
 router.put('/:projectId/edit-state', async (req, res) => {
   try {
-    const result = await saveProjectEditState(req.params.projectId, req.body || {});
+    const result = await saveProjectEditState(req.params.projectId, {
+      ...(req.body || {}),
+      source: req.body?.source || 'manual',
+      actorType: req.body?.actorType || req.body?.actor_type || 'manual',
+      operationType: req.body?.operationType || req.body?.operation_type || 'workspace_edit_state'
+    });
     if (req.body?.createSnapshot !== false) {
       await createTimelineSnapshot(req.params.projectId, {
         source: req.body?.source || 'manual',
@@ -190,6 +291,18 @@ router.put('/:projectId/edit-state', async (req, res) => {
       });
     }
     res.json({ success: true, edit_state: result.edit_state, timeline: result.timeline });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:projectId/edit-history', async (req, res) => {
+  try {
+    const histories = await listProjectEditHistories(req.params.projectId, {
+      limit: req.query?.limit,
+      source: req.query?.source || ''
+    });
+    res.json({ success: true, histories });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -206,10 +319,23 @@ router.get('/:projectId/timeline', async (req, res) => {
 
 router.put('/:projectId/timeline', async (req, res) => {
   try {
+    const before = await loadProjectAuditState(req.params.projectId);
     const timeline = await replaceTimelineClips(req.params.projectId, req.body.clips || []);
     await createTimelineSnapshot(req.params.projectId, {
       source: 'manual',
       note: 'Manual timeline update'
+    });
+    const after = await loadProjectAuditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'replace_timeline_clips',
+      note: 'Manual timeline update',
+      before,
+      after,
+      metadata: {
+        clip_count: Array.isArray(req.body?.clips) ? req.body.clips.length : 0
+      }
     });
     res.json({ success: true, timeline });
   } catch (error) {
@@ -223,10 +349,26 @@ router.post('/:projectId/timeline/clips', async (req, res) => {
     if (!assetId) {
       return res.status(400).json({ error: 'assetId is required' });
     }
+    const before = await loadProjectAuditState(req.params.projectId);
     const clip = await appendAssetToTimeline(req.params.projectId, assetId, { start, end, label });
     await createTimelineSnapshot(req.params.projectId, {
       source: 'manual',
       note: 'Append clip'
+    });
+    const after = await loadProjectAuditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'append_timeline_clip',
+      note: 'Append clip',
+      before,
+      after,
+      metadata: {
+        asset_id: assetId,
+        start,
+        end,
+        label: label || ''
+      }
     });
     res.json({ success: true, clip });
   } catch (error) {
@@ -236,10 +378,23 @@ router.post('/:projectId/timeline/clips', async (req, res) => {
 
 router.delete('/:projectId/timeline/clips/:clipId', async (req, res) => {
   try {
+    const before = await loadProjectAuditState(req.params.projectId);
     const timeline = await removeTimelineClip(req.params.projectId, req.params.clipId);
     await createTimelineSnapshot(req.params.projectId, {
       source: 'manual',
       note: 'Remove clip'
+    });
+    const after = await loadProjectAuditState(req.params.projectId);
+    await recordRouteEditHistory(req.params.projectId, {
+      source: 'manual',
+      actorType: 'manual',
+      operationType: 'remove_timeline_clip',
+      note: 'Remove clip',
+      before,
+      after,
+      metadata: {
+        clip_id: req.params.clipId
+      }
     });
     res.json({ success: true, timeline });
   } catch (error) {

@@ -57,6 +57,8 @@ function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRet
         '先自己读取当前真实时间线、当前脚本块和当前字幕块，再判断重复 take、整段重复、明显重复句、口气词和停顿。不要依赖候选摘要替你下结论。',
         '优先一次性读取完整脚本块和完整字幕块，再尽量用少量、成组的删改工具完成修改；不要删一点就反复回头分页检查，除非你明确需要验证结果。',
         '默认高保留率，主要删除重复 take、明显重复句、口头禅和停顿；不要为了“更顺”而重写表达。',
+        '删除整句、半句、重复 take、重复表达时，优先使用 delete_subtitle_blocks / restore_subtitle_blocks 做块级删改；不要为了省事在句子中间掏词。',
+        'delete_words_by_phrase / restore_words_by_phrase 只用于独立短口头禅和语气词，例如“嗯”“啊”“呃”“就是”“那个”；不允许用它删除句中实词、主谓宾、连接逻辑或半句结构。',
         '如果用户要求去口气词、口头禅或停顿，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、remove_pauses 等工具落地，而不是只在总结里声称处理过。',
         '即使用户没有单独强调停顿，口播拼稿在完成主要语义删减后，也必须检查一次当前结果里是否还残留明显长停顿；若有，就调用 remove_pauses 做收尾清理。',
         '在你认为编辑完成后，必须做一次强制自我审查，而且不能只凭记忆判断；必须再次调用 get_script_blocks、必要时再调用 get_subtitle_blocks / get_timeline_detail，基于最新结果逐项复查。',
@@ -84,7 +86,7 @@ function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRet
     '除了 remove_pauses 这类明显确定性动作外，其他语义判断都必须由你基于完整上下文做出。',
     '读取上下文时先小后大：先用 get_project_context 和 get_timeline_detail 建立整体认知；只有在需要语义判断时，再读 get_script_blocks、get_subtitle_blocks 或 search_project_subtitles。',
     '口播拼稿时，固定先保存快照，再读取真实时间线和当前完整脚本块，然后基于当前结果做增量修改。',
-    '执行语义编辑时，优先使用 delete_subtitle_blocks、restore_subtitle_blocks、delete_words_by_phrase、restore_words_by_phrase 等原子工具；口播剪辑中的删减一律优先落到删除态，不要用 replace_subtitle_text 去偷删内容。',
+    '执行语义编辑时，删除完整意思单元优先使用 delete_subtitle_blocks、restore_subtitle_blocks；delete_words_by_phrase、restore_words_by_phrase 只用于独立短口头禅和语气词，不允许删除句中实词、主谓宾或半句结构。',
     'replace_subtitle_text 只用于真正的字幕纠错，不用于剪辑意义上的删减，也不用于为追求“更顺”而改写原句。',
     '如果你没有真正改动项目，就不要说完成。',
     '默认用简洁中文回复。',
@@ -116,7 +118,7 @@ function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinut
   lines.push(`用户要求：${String(prompt || '').trim() || `执行 ${mode}`}`);
   const memoryText = buildConversationMemory(sessionDetail, String(prompt || '').trim());
   if (memoryText) lines.push(memoryText);
-  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。若用户要求去口气词、去口头禅或去停顿，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅或去停顿，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
   if (assembleRetryPass && String(mode || '').trim() === 'assemble_script') {
     lines.push('上一轮没有真正修改项目或没有完成自审清单。这一轮禁止只读取候选摘要后结束，必须自己读完整脚本块并真正调用删改工具。');
   }
@@ -536,7 +538,9 @@ export async function runClaudeAgentSession({
             prompt,
             topic,
             targetMinutes,
-            preferencePrompt
+            preferencePrompt,
+            sessionId,
+            runId
           }
         }, mcpToolNames);
 

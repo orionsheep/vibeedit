@@ -3,11 +3,13 @@ import { createTimelineSnapshot } from '../projects/timeline.service.js';
 import { exportProjectPackage, exportProjectTimelineVideo } from '../projects/project-export.service.js';
 import { getProjectById, removeAssetFromProject, reorderProjectAssets } from '../projects/project.service.js';
 import { getProjectTimeline, listAssetWords } from '../projects/timeline.service.js';
+import { recordProjectEditHistory } from '../projects/project-edit-history.service.js';
 import {
   buildDeletedGapKeysFromSet,
   buildDeletedWordKeysFromMask,
   buildDeletedGapKeySet,
   buildDeletedWordKeySet,
+  getProjectEditState,
   loadProjectEditSource,
   realignProjectEditState,
   saveProjectEditState
@@ -71,6 +73,15 @@ const BROAD_FILLER_NOISE_PHRASES = [
   '这个呢'
 ];
 const SAFE_LEADING_FILLER_TOKENS = SAFE_LEADING_FILLER_PHRASES.map((item) => tokenizeSegmentText(item));
+const SAFE_INLINE_FILLER_PHRASES = Array.from(new Set([
+  ...SAFE_LEADING_FILLER_PHRASES,
+  ...BROAD_FILLER_NOISE_PHRASES,
+  '对吧',
+  '是吧',
+  '好吧',
+  '嗯呢',
+  '啊哈'
+].map((item) => normalizeText(item)).filter(Boolean)));
 
 function normalizeAssembleScriptText(text = '') {
   let value = normalizeText(text);
@@ -129,6 +140,27 @@ function diceSimilarity(leftText = '', rightText = '') {
 function buildStableSegmentId(prefix, assetId = '', startIndex = 0, endIndex = 0) {
   const safeAssetId = String(assetId || 'global').replace(/[^a-zA-Z0-9_-]/g, '_');
   return `${prefix}_${safeAssetId}_${Number(startIndex || 0)}_${Number(endIndex || 0)}`;
+}
+
+function buildAgentEditHistoryContext(toolName, args = {}, context = {}, note = '') {
+  const requestContext = context?.requestContext || {};
+  return {
+    source: 'agent',
+    actorType: 'agent',
+    operationType: toolName,
+    note: String(note || `Agent ${toolName}`).trim(),
+    sessionId: String(requestContext.sessionId || '').trim(),
+    runId: String(requestContext.runId || '').trim(),
+    metadata: {
+      mode: requestContext.mode || '',
+      prompt: requestContext.prompt || '',
+      topic: requestContext.topic || '',
+      target_minutes: Number(requestContext.targetMinutes || 0),
+      llm_provider: context?.llm_provider || context?.llmProvider || '',
+      llm_model: context?.llm_model || context?.llmModel || '',
+      args
+    }
+  };
 }
 
 function buildActiveWordsWithOriginalIndices(state) {
@@ -1147,12 +1179,13 @@ function buildTimelinePayloadFromRanges(ranges, assetTimelineRanges) {
   return merged;
 }
 
-async function persistEditableProjectState(projectId, state, { deletedGapKeys = null } = {}) {
+async function persistEditableProjectState(projectId, state, { deletedGapKeys = null, audit = null } = {}) {
   const result = await saveProjectEditState(projectId, {
     assetOrder: state.editState?.asset_order || [],
     deletedWordKeys: buildDeletedWordKeysFromMask(state.words, state.keptMask),
     deletedGapKeys: deletedGapKeys || buildDeletedGapKeysFromSet(state.words, new Set()),
-    textReplacements: state.editState?.text_replacements || []
+    textReplacements: state.editState?.text_replacements || [],
+    ...(audit || {})
   });
   return result.timeline;
 }
@@ -1348,6 +1381,52 @@ function findPhraseMatches(words, keptMask, phrase, assetTitle = '') {
   }
 
   return matches;
+}
+
+function isPhraseBoundaryToken(text = '') {
+  return /[，。！？、,.!?：:；;"'“”‘’（）()\[\]【】<>《》\-—]/.test(String(text || ''));
+}
+
+function isStandalonePhraseMatch(words = [], match = {}) {
+  const start = Number(match.start || 0);
+  const end = Number(match.end || 0);
+  const first = words[start];
+  const last = words[end];
+  if (!first || !last) return false;
+
+  const previous = words[start - 1] || null;
+  const next = words[end + 1] || null;
+  const gapBefore = previous && previous.asset_id === first.asset_id
+    ? Number(first.start_time || 0) - Number(previous.end_time || 0)
+    : Infinity;
+  const gapAfter = next && next.asset_id === last.asset_id
+    ? Number(next.start_time || 0) - Number(last.end_time || 0)
+    : Infinity;
+
+  const startBoundary = !previous ||
+    previous.asset_id !== first.asset_id ||
+    gapBefore >= 0.18 ||
+    isPhraseBoundaryToken(previous.text);
+  const endBoundary = !next ||
+    next.asset_id !== last.asset_id ||
+    gapAfter >= 0.18 ||
+    isPhraseBoundaryToken(next.text) ||
+    isPhraseBoundaryToken(last.text);
+
+  return startBoundary && endBoundary;
+}
+
+function isSafeInlineFillerPhrase(phrase = '') {
+  const needle = normalizeText(phrase);
+  if (!needle) return false;
+  if (needle.length > 4) return false;
+  return SAFE_INLINE_FILLER_PHRASES.includes(needle);
+}
+
+function filterSafePhraseMatches(words = [], matches = [], phrase = '', { strictAssemble = false } = {}) {
+  if (!strictAssemble) return matches;
+  if (!isSafeInlineFillerPhrase(phrase)) return [];
+  return matches.filter((match) => isStandalonePhraseMatch(words, match));
 }
 
 function findDeletedPhraseMatches(words, keptMask, phrase, assetTitle = '') {
@@ -1650,7 +1729,7 @@ export async function toolGetDeletedSubtitleBlocks(projectId, { offset = 0, limi
   };
 }
 
-export async function toolDeleteSubtitleBlocks(projectId, { block_ids: blockIds = [], orders = [] } = {}) {
+export async function toolDeleteSubtitleBlocks(projectId, { block_ids: blockIds = [], orders = [] } = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
   const activeSentences = buildProjectSentenceUnits(buildActiveWordsWithOriginalIndices(state), 0.65);
   const idSet = new Set((Array.isArray(blockIds) ? blockIds : []).map((item) => String(item || '').trim()).filter(Boolean));
@@ -1672,7 +1751,8 @@ export async function toolDeleteSubtitleBlocks(projectId, { block_ids: blockIds 
   }
 
   const timeline = await persistEditableProjectState(projectId, state, {
-    deletedGapKeys: state.editState?.deleted_gap_keys || []
+    deletedGapKeys: state.editState?.deleted_gap_keys || [],
+    audit: buildAgentEditHistoryContext('delete_subtitle_blocks', { block_ids: blockIds, orders }, context, `Agent 删除 ${targets.length} 个字幕块`)
   });
 
   return {
@@ -1687,7 +1767,7 @@ export async function toolDeleteSubtitleBlocks(projectId, { block_ids: blockIds 
   };
 }
 
-export async function toolRestoreSubtitleBlocks(projectId, { block_ids: blockIds = [], orders = [] } = {}) {
+export async function toolRestoreSubtitleBlocks(projectId, { block_ids: blockIds = [], orders = [] } = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
   const allBlocks = buildRemovedSubtitleCandidates(state);
   const idSet = new Set((Array.isArray(blockIds) ? blockIds : []).map((item) => String(item || '').trim()).filter(Boolean));
@@ -1709,7 +1789,8 @@ export async function toolRestoreSubtitleBlocks(projectId, { block_ids: blockIds
   }
 
   const timeline = await persistEditableProjectState(projectId, state, {
-    deletedGapKeys: state.editState?.deleted_gap_keys || []
+    deletedGapKeys: state.editState?.deleted_gap_keys || [],
+    audit: buildAgentEditHistoryContext('restore_subtitle_blocks', { block_ids: blockIds, orders }, context, `Agent 恢复 ${targets.length} 个字幕块`)
   });
 
   return {
@@ -1724,7 +1805,11 @@ export async function toolRestoreSubtitleBlocks(projectId, { block_ids: blockIds
   };
 }
 
-export async function toolRemoveProjectAsset(projectId, { asset_id: assetId = '', asset_title: assetTitle = '' } = {}) {
+export async function toolRemoveProjectAsset(projectId, { asset_id: assetId = '', asset_title: assetTitle = '' } = {}, context = {}) {
+  const [beforeEditState, beforeTimeline] = await Promise.all([
+    getProjectEditState(projectId),
+    getProjectTimeline(projectId)
+  ]);
   const project = await getProjectById(projectId);
   if (!project) throw new Error('Project not found');
 
@@ -1743,7 +1828,15 @@ export async function toolRemoveProjectAsset(projectId, { asset_id: assetId = ''
   }
 
   await removeAssetFromProject(projectId, target.asset.id);
-  await realignProjectEditState(projectId);
+  const realigned = await realignProjectEditState(projectId);
+  await recordProjectEditHistory({
+    projectId,
+    ...buildAgentEditHistoryContext('remove_project_asset', { asset_id: assetId, asset_title: assetTitle }, context, `Agent 删除素材 ${target.asset.title}`),
+    beforeEditState,
+    afterEditState: realigned.edit_state,
+    beforeTimeline,
+    afterTimeline: realigned.timeline
+  });
 
   return {
     success: true,
@@ -1754,11 +1847,15 @@ export async function toolRemoveProjectAsset(projectId, { asset_id: assetId = ''
   };
 }
 
-export async function toolReorderProjectAssets(projectId, { asset_titles = [], ordered_titles = [] } = {}) {
+export async function toolReorderProjectAssets(projectId, { asset_titles: assetTitles = [], ordered_titles: orderedTitles = [] } = {}, context = {}) {
+  const [beforeEditState, beforeTimeline] = await Promise.all([
+    getProjectEditState(projectId),
+    getProjectTimeline(projectId)
+  ]);
   const project = await getProjectById(projectId);
   if (!project) throw new Error('Project not found');
 
-  const requestedTitles = (ordered_titles.length ? ordered_titles : asset_titles).map(normalizeText).filter(Boolean);
+  const requestedTitles = (orderedTitles.length ? orderedTitles : assetTitles).map(normalizeText).filter(Boolean);
   if (!requestedTitles.length) {
     return {
       success: false,
@@ -1786,7 +1883,15 @@ export async function toolReorderProjectAssets(projectId, { asset_titles = [], o
   });
 
   await reorderProjectAssets(projectId, ordered);
-  await realignProjectEditState(projectId);
+  const realigned = await realignProjectEditState(projectId);
+  await recordProjectEditHistory({
+    projectId,
+    ...buildAgentEditHistoryContext('reorder_project_assets', { asset_titles: assetTitles, ordered_titles: orderedTitles }, context, 'Agent 更新素材顺序'),
+    beforeEditState,
+    afterEditState: realigned.edit_state,
+    beforeTimeline,
+    afterTimeline: realigned.timeline
+  });
 
   return {
     success: true,
@@ -1796,9 +1901,19 @@ export async function toolReorderProjectAssets(projectId, { asset_titles = [], o
   };
 }
 
-export async function toolDeleteWordsByPhrase(projectId, { phrase = '', asset_title: assetTitle = '' } = {}) {
+export async function toolDeleteWordsByPhrase(projectId, { phrase = '', asset_title: assetTitle = '' } = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
-  const matches = findPhraseMatches(state.words, state.keptMask, phrase, assetTitle);
+  const strictAssemble = String(context?.requestContext?.mode || '') === 'assemble_script';
+  const rawMatches = findPhraseMatches(state.words, state.keptMask, phrase, assetTitle);
+  const matches = filterSafePhraseMatches(state.words, rawMatches, phrase, { strictAssemble });
+
+  if (strictAssemble && rawMatches.length && !matches.length) {
+    return {
+      success: false,
+      change: 'delete_words',
+      summary: '这段短语不是可安全删除的独立口头禅/语气词。删整句、删半句或删重复表达时请改用 delete_subtitle_blocks。'
+    };
+  }
 
   if (!matches.length) {
     return {
@@ -1815,7 +1930,8 @@ export async function toolDeleteWordsByPhrase(projectId, { phrase = '', asset_ti
   });
 
   const timeline = await persistEditableProjectState(projectId, state, {
-    deletedGapKeys: state.editState?.deleted_gap_keys || []
+    deletedGapKeys: state.editState?.deleted_gap_keys || [],
+    audit: buildAgentEditHistoryContext('delete_words_by_phrase', { phrase, asset_title: assetTitle }, context, `Agent 删除短语“${phrase}”`)
   });
 
   return {
@@ -1829,7 +1945,8 @@ export async function toolDeleteWordsByPhrase(projectId, { phrase = '', asset_ti
 
 export async function toolReplaceSubtitleText(
   projectId,
-  { find_text: findText = '', replacement_text: replacementText = '', asset_title: assetTitle = '' } = {}
+  { find_text: findText = '', replacement_text: replacementText = '', asset_title: assetTitle = '' } = {},
+  context = {}
 ) {
   const state = await loadProjectEditableState(projectId);
   const matches = findPhraseMatches(state.words, state.keptMask.map(() => true), findText, assetTitle);
@@ -1878,7 +1995,8 @@ export async function toolReplaceSubtitleText(
   const { timeline, edit_state: nextEditState } = await saveProjectEditState(projectId, {
     deletedWordKeys: state.editState?.deleted_word_keys || [],
     deletedGapKeys: state.editState?.deleted_gap_keys || [],
-    textReplacements: mergeProjectTextReplacements(state.editState?.text_replacements || [], incomingReplacements)
+    textReplacements: mergeProjectTextReplacements(state.editState?.text_replacements || [], incomingReplacements),
+    ...buildAgentEditHistoryContext('replace_subtitle_text', { find_text: findText, replacement_text: replacementText, asset_title: assetTitle }, context, `Agent 替换字幕“${findText}”`)
   });
 
   const persistedReplacements = Array.isArray(nextEditState?.text_replacements) ? nextEditState.text_replacements : [];
@@ -1904,7 +2022,7 @@ export async function toolReplaceSubtitleText(
   };
 }
 
-export async function toolRestoreWordsByPhrase(projectId, { phrase = '', asset_title: assetTitle = '' } = {}) {
+export async function toolRestoreWordsByPhrase(projectId, { phrase = '', asset_title: assetTitle = '' } = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
   const matches = findDeletedPhraseMatches(state.words, state.keptMask, phrase, assetTitle);
 
@@ -1923,7 +2041,8 @@ export async function toolRestoreWordsByPhrase(projectId, { phrase = '', asset_t
   });
 
   const timeline = await persistEditableProjectState(projectId, state, {
-    deletedGapKeys: state.editState?.deleted_gap_keys || []
+    deletedGapKeys: state.editState?.deleted_gap_keys || [],
+    audit: buildAgentEditHistoryContext('restore_words_by_phrase', { phrase, asset_title: assetTitle }, context, `Agent 恢复短语“${phrase}”`)
   });
 
   return {
@@ -1935,13 +2054,14 @@ export async function toolRestoreWordsByPhrase(projectId, { phrase = '', asset_t
   };
 }
 
-export async function toolClearDeleted(projectId) {
+export async function toolClearDeleted(projectId, _args = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
   const result = await saveProjectEditState(projectId, {
     assetOrder: state.editState?.asset_order || [],
     deletedWordKeys: [],
     deletedGapKeys: [],
-    textReplacements: state.editState?.text_replacements || []
+    textReplacements: state.editState?.text_replacements || [],
+    ...buildAgentEditHistoryContext('clear_deleted', {}, context, 'Agent 清空当前删减')
   });
   const updatedTimeline = result.timeline;
 
@@ -1953,7 +2073,7 @@ export async function toolClearDeleted(projectId) {
   };
 }
 
-export async function toolRemovePauses(projectId, { min_gap_seconds: minGapSeconds = 0.6 } = {}) {
+export async function toolRemovePauses(projectId, { min_gap_seconds: minGapSeconds = 0.6 } = {}, context = {}) {
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
   let deletedGapCount = 0;
@@ -1973,7 +2093,8 @@ export async function toolRemovePauses(projectId, { min_gap_seconds: minGapSecon
   }
 
   const timeline = await persistEditableProjectState(projectId, state, {
-    deletedGapKeys: [...deletedGapKeys].filter(Boolean)
+    deletedGapKeys: [...deletedGapKeys].filter(Boolean),
+    audit: buildAgentEditHistoryContext('remove_pauses', { min_gap_seconds: minGapSeconds }, context, `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.6).toFixed(1)} 秒`)
   });
 
   return {

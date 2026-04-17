@@ -548,7 +548,13 @@ export async function confirmProjectAgentRun({ projectId, runId, approved = true
   }
 
   const result = await executeProjectAgentToolDirect(projectId, pendingTool.tool, pendingTool.args || {}, {
-    approvedHighRisk: true
+    approvedHighRisk: true,
+    requestContext: {
+      mode: run.mode,
+      prompt: run.prompt,
+      sessionId: run.session_id,
+      runId
+    }
   });
   const appliedChanges = [...(run.applied_changes || []), result];
   const reply = String(result?.summary || '高风险操作已确认并执行。').trim();

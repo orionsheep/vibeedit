@@ -1,4 +1,5 @@
 import { withDatabase } from '../core/database.service.js';
+import { recordProjectEditHistoryTx } from './project-edit-history.service.js';
 import { getOrCreatePrimaryTimeline } from './project.service.js';
 
 function roundTime(value) {
@@ -346,15 +347,28 @@ async function ensureProjectEditStateRecord(db, projectId) {
   });
 
   if (!existing) {
-    const created = await db.projectEditState.create({
-      data: {
-        projectId,
-        assetOrder: activeAssetIds,
-        deletedWordKeys: [],
-        deletedGapKeys: [],
-        textReplacements: []
+    let created = null;
+    try {
+      created = await db.projectEditState.create({
+        data: {
+          projectId,
+          assetOrder: activeAssetIds,
+          deletedWordKeys: [],
+          deletedGapKeys: [],
+          textReplacements: []
+        }
+      });
+    } catch (error) {
+      if (String(error?.code || '') !== 'P2002') {
+        throw error;
       }
-    });
+      created = await db.projectEditState.findUnique({
+        where: { projectId }
+      });
+      if (!created) {
+        throw error;
+      }
+    }
     return {
       project,
       record: created
@@ -780,6 +794,7 @@ export async function saveProjectEditState(projectId, payload = {}) {
   return withDatabase(async (db) => {
     const { project, record } = await ensureProjectEditStateRecord(db, projectId);
     const currentState = normalizeEditStateRecord(record);
+    const currentTimeline = await readMaterializedTimeline(db, projectId);
     const assetOrder = mergeAssetOrder(
       payload.assetOrder ?? payload.asset_order ?? currentState.asset_order,
       project.projectAssets.map((relation) => relation.assetId)
@@ -803,6 +818,19 @@ export async function saveProjectEditState(projectId, payload = {}) {
       text_replacements: normalizeReplacementArray(payload.textReplacements ?? payload.text_replacements ?? currentState.text_replacements)
     });
 
+    const stateChanged =
+      !areStringArraysEqual(currentState.asset_order, nextState.asset_order) ||
+      !areStringArraysEqual(currentState.deleted_word_keys, nextState.deleted_word_keys) ||
+      !areStringArraysEqual(currentState.deleted_gap_keys, nextState.deleted_gap_keys) ||
+      !areReplacementArraysEqual(currentState.text_replacements, nextState.text_replacements);
+
+    if (!stateChanged) {
+      return {
+        edit_state: currentState,
+        timeline: currentTimeline
+      };
+    }
+
     const updated = await db.projectEditState.update({
       where: { projectId },
       data: {
@@ -819,6 +847,21 @@ export async function saveProjectEditState(projectId, payload = {}) {
     await materializeTimelineClips(db, projectId, buildTimelineClipSpecsFromSource(sourceState));
     await syncProjectCaptionOverrideSummaries(db, project, sourceState);
     const timeline = await readMaterializedTimeline(db, projectId);
+    await recordProjectEditHistoryTx(db, {
+      projectId,
+      source: payload.source || 'system',
+      actorType: payload.actorType || payload.actor_type || '',
+      operationType: payload.operationType || payload.operation_type || 'edit_state_update',
+      note: payload.note || '',
+      sessionId: payload.sessionId || payload.session_id || '',
+      runId: payload.runId || payload.run_id || '',
+      beforeEditState: currentState,
+      afterEditState: normalized,
+      beforeTimeline: currentTimeline,
+      afterTimeline: timeline,
+      metadata: payload.metadata || null,
+      force: Boolean(payload.forceHistory)
+    });
 
     return {
       edit_state: normalized,
