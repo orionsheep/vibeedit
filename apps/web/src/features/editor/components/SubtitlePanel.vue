@@ -139,7 +139,8 @@
                 deleted: isWordDeleted(index),
                 selected: isWordSelected(index),
                 current: index === currentWordIndex,
-                'in-active-slice': Boolean(word.slice_active)
+                'in-active-slice': Boolean(word.slice_active),
+                'has-slice-fill': Boolean(word.slice_markers?.length)
               }"
               :style="getWordStyle(word)"
               :data-index="index"
@@ -151,15 +152,6 @@
               @dblclick="toggleDeleteWord(index)"
               @contextmenu.prevent.stop="openWordContextMenu($event, index)"
             >
-              <span v-if="word.slice_markers?.length" class="slice-marker-stack">
-                <span
-                  v-for="marker in word.slice_markers.slice(0, 3)"
-                  :key="`${word.id || index}_${marker.id}`"
-                  class="slice-marker"
-                  :style="{ '--slice-marker-color': marker.color || '#4cc2ff' }"
-                  :title="marker.title || ''"
-                ></span>
-              </span>
               {{ word.text }}
               <span class="time-hint">{{ formatTime(word.start_time) }}</span>
             </span>
@@ -277,13 +269,45 @@ function getGapAfterWord(index) {
   return editorStore.gaps.find(g => g.afterWord === index);
 }
 
+function buildSliceFill(markers = []) {
+  const palette = (Array.isArray(markers) ? markers : [])
+    .map((marker) => String(marker?.color || '').trim())
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (!palette.length) return '';
+  if (palette.length === 1) {
+    return `linear-gradient(90deg, color-mix(in srgb, ${palette[0]} 22%, transparent) 0%, color-mix(in srgb, ${palette[0]} 22%, transparent) 100%)`;
+  }
+
+  const step = 100 / palette.length;
+  const stops = [];
+  palette.forEach((color, index) => {
+    const start = (step * index).toFixed(3);
+    const end = (step * (index + 1)).toFixed(3);
+    const tone = `color-mix(in srgb, ${color} 20%, transparent)`;
+    stops.push(`${tone} ${start}%`, `${tone} ${end}%`);
+  });
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
 function getWordStyle(word) {
+  const sliceFill = buildSliceFill(word?.slice_markers || []);
   const style = {
     '--word-asset-color': word.asset_color || 'transparent',
     '--word-asset-soft': word.asset_soft || 'transparent',
-    '--word-slice-color': word?.slice_active_color || 'transparent'
+    '--word-slice-color': word?.slice_active_color || (word?.slice_markers?.[0]?.color || 'transparent'),
+    '--word-slice-fill': sliceFill || 'none'
   };
-  if (!word?.asset_color && !word?.asset_soft && !word?.slice_active_color) return null;
+
+  if (sliceFill) {
+    style.backgroundImage = `${sliceFill}, linear-gradient(to bottom, var(--word-asset-color, transparent), var(--word-asset-color, transparent))`;
+    style.backgroundRepeat = 'no-repeat, no-repeat';
+    style.backgroundPosition = 'left top, left calc(100% - 1px)';
+    style.backgroundSize = '100% 100%, 100% 1px';
+  }
+
+  if (!word?.asset_color && !word?.asset_soft && !sliceFill && !word?.slice_active_color) return null;
   return style;
 }
 
@@ -937,9 +961,14 @@ export default {
   background-size: 100% 1px;
 }
 
+.word.has-slice-fill:not(.selected):not(.deleted) {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--word-slice-color, transparent) 38%, transparent);
+}
+
 .word.in-active-slice:not(.selected):not(.deleted) {
-  background: color-mix(in srgb, var(--word-slice-color, transparent) 16%, transparent);
-  box-shadow: inset 0 -3px 0 var(--word-slice-color, transparent);
+  box-shadow:
+    inset 0 -3px 0 var(--word-slice-color, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--word-slice-color, transparent) 18%, transparent);
 }
 
 .word:hover:not(.selected) {
@@ -960,22 +989,6 @@ export default {
 .word.current:not(.selected) {
   background: rgba(0, 212, 255, 0.15);
   background-size: 100% 2px;
-}
-
-.slice-marker-stack {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: inline-flex;
-  gap: 2px;
-  pointer-events: none;
-}
-
-.slice-marker {
-  width: 9px;
-  height: 2px;
-  background: var(--slice-marker-color, #4cc2ff);
-  opacity: 0.95;
 }
 
 .word .time-hint {
