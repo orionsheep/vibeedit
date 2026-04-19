@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { fetchSession, loginWithPassword, logoutSession, registerWithPassword } from '../api/authApi';
+import { changePassword, fetchSession, listUsers, loginWithPassword, logoutSession, registerWithPassword } from '../api/authApi';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -7,7 +7,9 @@ export const useAuthStore = defineStore('auth', {
     sessionChecked: false,
     bootstrapAdminEmail: '',
     loading: false,
-    sessionPromise: null
+    sessionPromise: null,
+    users: [],
+    usersLoading: false
   }),
 
   getters: {
@@ -76,7 +78,36 @@ export const useAuthStore = defineStore('auth', {
       } finally {
         this.user = null;
         this.sessionChecked = true;
+        this.users = [];
         this.loading = false;
+      }
+    },
+
+    async updatePassword(payload = {}) {
+      this.loading = true;
+      try {
+        const result = await changePassword(payload);
+        this.user = result.user || this.user;
+        return this.user;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async loadUsers(force = false) {
+      if (!this.isAdmin) {
+        this.users = [];
+        return [];
+      }
+      if (this.users.length && !force) {
+        return this.users;
+      }
+      this.usersLoading = true;
+      try {
+        this.users = await listUsers();
+        return this.users;
+      } finally {
+        this.usersLoading = false;
       }
     }
   }

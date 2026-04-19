@@ -75,6 +75,11 @@ function parseCookies(cookieHeader = '') {
     }, {});
 }
 
+export function getSessionTokenFromRequest(req) {
+  const cookies = parseCookies(req.headers?.cookie || '');
+  return String(cookies[SESSION_COOKIE_NAME] || '').trim();
+}
+
 function buildCookieString(name, value, {
   expires = null,
   maxAge = null,
@@ -133,8 +138,7 @@ export function clearAuthCookie(res, req) {
 }
 
 export async function getSessionUserFromRequest(req) {
-  const cookies = parseCookies(req.headers?.cookie || '');
-  const rawToken = String(cookies[SESSION_COOKIE_NAME] || '').trim();
+  const rawToken = getSessionTokenFromRequest(req);
   if (!rawToken) return null;
 
   const tokenHash = hashWithSha256(rawToken);
@@ -244,14 +248,104 @@ export async function createSessionForUser(userId) {
 }
 
 export async function logoutRequest(req) {
-  const cookies = parseCookies(req.headers?.cookie || '');
-  const rawToken = String(cookies[SESSION_COOKIE_NAME] || '').trim();
+  const rawToken = getSessionTokenFromRequest(req);
   if (!rawToken) return;
 
   const tokenHash = hashWithSha256(rawToken);
   await withDatabase((db) => db.authSession.deleteMany({
     where: { tokenHash }
   }));
+}
+
+export async function changeUserPassword({
+  userId = '',
+  currentPassword = '',
+  nextPassword = '',
+  preserveSessionToken = ''
+} = {}) {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) {
+    throw new Error('用户不存在');
+  }
+  if (String(nextPassword || '').length < 6) {
+    throw new Error('新密码至少需要 6 位');
+  }
+
+  return withDatabase(async (db) => {
+    const user = await db.user.findUnique({
+      where: { id: normalizedUserId }
+    });
+    if (!user) {
+      throw new Error('用户不存在');
+    }
+    if (!verifyPassword(currentPassword, user.passwordHash)) {
+      throw new Error('当前密码不正确');
+    }
+
+    const preservedTokenHash = preserveSessionToken ? hashWithSha256(preserveSessionToken) : '';
+
+    await db.$transaction([
+      db.user.update({
+        where: { id: normalizedUserId },
+        data: {
+          passwordHash: hashPassword(nextPassword)
+        }
+      }),
+      db.authSession.deleteMany({
+        where: {
+          userId: normalizedUserId,
+          ...(preservedTokenHash
+            ? {
+                tokenHash: {
+                  not: preservedTokenHash
+                }
+              }
+            : {})
+        }
+      })
+    ]);
+
+    const updated = await db.user.findUnique({
+      where: { id: normalizedUserId }
+    });
+    return mapUser(updated);
+  });
+}
+
+export async function listUsersForAdmin() {
+  return withDatabase(async (db) => {
+    const now = new Date();
+    const users = await db.user.findMany({
+      include: {
+        _count: {
+          select: {
+            projects: true,
+            assets: true
+          }
+        }
+      },
+      orderBy: [
+        { role: 'asc' },
+        { createdAt: 'asc' }
+      ]
+    });
+
+    const activeSessionCounts = await Promise.all(users.map((user) => db.authSession.count({
+      where: {
+        userId: user.id,
+        expiresAt: {
+          gt: now
+        }
+      }
+    })));
+
+    return users.map((user, index) => ({
+      ...mapUser(user),
+      project_count: Number(user._count?.projects || 0),
+      asset_count: Number(user._count?.assets || 0),
+      active_session_count: Number(activeSessionCounts[index] || 0)
+    }));
+  });
 }
 
 export async function getOwnedProjectById(projectId, ownerId) {

@@ -7,6 +7,7 @@ import LibraryPage from '../pages/LibraryPage.vue';
 import ProjectWorkspacePage from '../pages/ProjectWorkspacePage.vue';
 import LoginPage from '../pages/LoginPage.vue';
 import RegisterPage from '../pages/RegisterPage.vue';
+import AccountSettingsPage from '../pages/AccountSettingsPage.vue';
 import { useAuthStore } from '../features/auth/stores/authStore';
 
 const routes = [
@@ -16,6 +17,7 @@ const routes = [
   { path: '/register', name: 'Register', component: RegisterPage, meta: { public: true, authOnly: true } },
   { path: '/projects', name: 'Projects', component: ProjectsPage },
   { path: '/library', name: 'Library', component: LibraryPage },
+  { path: '/settings', name: 'AccountSettings', component: AccountSettingsPage },
   { path: '/projects/:projectId', name: 'Project', component: ProjectWorkspacePage },
   { path: '/projects/:projectId/edit', name: 'ProjectWorkspace', component: ProjectWorkspacePage },
   { path: '/dashboard', name: 'Dashboard', component: UploadPage }

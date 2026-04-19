@@ -26,6 +26,13 @@ export function requireAuth(req, res, next) {
   return res.status(401).json({ error: '请先登录' });
 }
 
+export function requireAdmin(req, res, next) {
+  if (req.auth?.isAuthenticated && String(req.auth?.user?.role || '') === 'admin') {
+    return next();
+  }
+  return res.status(403).json({ error: '需要管理员权限' });
+}
+
 export async function requireOwnedProject(req, res, next) {
   try {
     const projectId = String(req.params.projectId || '').trim();

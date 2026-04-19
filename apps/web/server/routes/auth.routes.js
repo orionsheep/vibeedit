@@ -1,14 +1,17 @@
 import express from 'express';
 import {
+  changeUserPassword,
   clearAuthCookie,
   createSessionForUser,
   getAdminBootstrapEmail,
+  getSessionTokenFromRequest,
+  listUsersForAdmin,
   loginUser,
   logoutRequest,
   registerUser,
   setAuthCookie
 } from '../services/auth/auth.service.js';
-import { attachAuthContext, requireAuth } from '../services/auth/auth.middleware.js';
+import { attachAuthContext, requireAdmin, requireAuth } from '../services/auth/auth.middleware.js';
 
 const router = express.Router();
 
@@ -68,6 +71,41 @@ router.post('/logout', requireAuth, async (req, res) => {
     await logoutRequest(req);
     clearAuthCookie(res, req);
     return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/change-password', requireAuth, async (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const nextPassword = String(req.body?.nextPassword || req.body?.password || '');
+    const confirmPassword = String(req.body?.confirmPassword || '');
+
+    if (!currentPassword || !nextPassword || !confirmPassword) {
+      return res.status(400).json({ error: '当前密码、新密码和确认密码都不能为空' });
+    }
+    if (nextPassword !== confirmPassword) {
+      return res.status(400).json({ error: '两次输入的新密码不一致' });
+    }
+
+    const user = await changeUserPassword({
+      userId: req.auth?.userId || '',
+      currentPassword,
+      nextPassword,
+      preserveSessionToken: getSessionTokenFromRequest(req)
+    });
+
+    return res.json({ success: true, user });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.get('/users', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const users = await listUsersForAdmin();
+    return res.json({ success: true, users });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

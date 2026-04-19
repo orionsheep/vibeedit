@@ -21,3 +21,13 @@ export async function logoutSession() {
   const response = await axios.post(`${API_BASE}/logout`);
   return response.data;
 }
+
+export async function changePassword(payload = {}) {
+  const response = await axios.post(`${API_BASE}/change-password`, payload);
+  return response.data;
+}
+
+export async function listUsers() {
+  const response = await axios.get(`${API_BASE}/users`);
+  return response.data.users || [];
+}

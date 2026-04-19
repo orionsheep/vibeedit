@@ -6,8 +6,10 @@
         <router-link v-if="authStore.isAuthenticated" to="/projects">项目</router-link>
         <router-link v-if="authStore.isAuthenticated" to="/library">素材库</router-link>
         <router-link v-if="authStore.isAuthenticated" to="/dashboard">快速上传</router-link>
+        <router-link v-if="authStore.isAuthenticated" to="/settings">账号</router-link>
       </div>
       <div class="nav-user" v-if="authStore.isAuthenticated">
+        <span class="role-badge" v-if="authStore.isAdmin">管理员</span>
         <span>{{ authStore.user?.email }}</span>
         <button class="logout-btn" :disabled="authStore.loading" @click="handleLogout">
           {{ authStore.loading ? '退出中...' : '退出' }}
@@ -146,6 +148,15 @@ html {
   gap: 10px;
   font-size: 12px;
   color: #9cb0bf;
+}
+
+.role-badge {
+  border: 1px solid #4f6542;
+  background: #122112;
+  color: #b7f5aa;
+  padding: 3px 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
 
 .logout-btn {
