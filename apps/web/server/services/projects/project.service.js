@@ -1,17 +1,7 @@
 import { withDatabase } from '../core/database.service.js';
+import { normalizeTimelineSettings, readTimelineKind } from '../shared/timeline-utils.js';
 
 const DEFAULT_SLICE_COLOR = '#4cc2ff';
-
-function readTimelineSettings(timeline = null) {
-  const settings = timeline?.settings;
-  return settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
-}
-
-function readTimelineKind(timeline = null) {
-  if (timeline?.isPrimary) return 'master';
-  const settings = readTimelineSettings(timeline);
-  return String(settings.kind || 'aux').trim() || 'aux';
-}
 
 async function ensureCategory(db, categoryName) {
   const value = String(categoryName || '').trim();
@@ -102,7 +92,7 @@ function mapAssetCompact(asset) {
 }
 
 function mapTimelineCompact(timeline) {
-  const settings = readTimelineSettings(timeline);
+  const settings = normalizeTimelineSettings(timeline?.settings);
   const kind = readTimelineKind(timeline);
   const color = String(settings.color || (kind === 'slice' ? DEFAULT_SLICE_COLOR : '')).trim();
   const clips = Array.isArray(timeline.clips) ? timeline.clips : [];

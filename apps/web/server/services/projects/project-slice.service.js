@@ -1,5 +1,6 @@
 import { withDatabase } from '../core/database.service.js';
 import { loadProjectEditSource } from './project-edit-state.service.js';
+import { normalizeTimelineSettings, readTimelineKind, roundTime } from '../shared/timeline-utils.js';
 
 const DEFAULT_SLICE_COLORS = [
   '#4cc2ff',
@@ -12,26 +13,9 @@ const DEFAULT_SLICE_COLORS = [
   '#f97316'
 ];
 
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
-
 function sanitizeSliceTitle(value, fallback = '未命名切片') {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   return normalized || fallback;
-}
-
-function normalizeTimelineSettings(settings = {}) {
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
-    return {};
-  }
-  return { ...settings };
-}
-
-function readTimelineKind(timeline = null) {
-  if (timeline?.isPrimary) return 'master';
-  const settings = normalizeTimelineSettings(timeline?.settings);
-  return String(settings.kind || 'aux').trim() || 'aux';
 }
 
 function readSliceSettings(timeline = null) {

@@ -470,6 +470,9 @@ const projectUploadProgress = ref(0);
 const projectUploadDragDepth = ref(0);
 const assetJobs = ref([]);
 const assetJobPollTimer = ref(null);
+const assetJobPollDelayMs = ref(1800);
+const assetJobPollIdleCycles = ref(0);
+const assetJobRefreshInFlight = ref(false);
 const activePreviewClip = ref(null);
 const previewPlaying = ref(false);
 const projectPackageImportInputRef = ref(null);
@@ -720,6 +723,9 @@ const processingAssetIds = computed(() => orderedProjectAssets.value
   .filter((asset) => ['processing', 'pending', 'provided'].includes(String(asset.asr_status || '').trim()))
   .map((asset) => asset.id));
 
+const ASSET_JOB_POLL_MIN_MS = 1800;
+const ASSET_JOB_POLL_MAX_MS = 7200;
+
 const timelineDirty = computed(() => captureEditorSignature() !== editorBaselineSignature.value);
 const totalWords = computed(() => editorStore.totalWords);
 const deletedWordCount = computed(() => editorStore.deletedWordCount);
@@ -940,6 +946,43 @@ function assetStateLabel(asset) {
   return isAssetOnTimeline(asset.id) ? '在轨' : '空轨';
 }
 
+function clearAssetJobPollTimer() {
+  if (assetJobPollTimer.value) {
+    clearTimeout(assetJobPollTimer.value);
+    assetJobPollTimer.value = null;
+  }
+}
+
+function resetAssetJobPollState() {
+  assetJobPollDelayMs.value = ASSET_JOB_POLL_MIN_MS;
+  assetJobPollIdleCycles.value = 0;
+}
+
+function captureAssetPollingSignature(assets = [], jobs = []) {
+  const assetSignature = assets
+    .map((asset) => (
+      `${asset.id}:${String(asset?.asr_status || '').trim()}:${Number(asset?.ingest_job?.progress ?? 0)}:${String(asset?.ingest_job?.message || '')}`
+    ))
+    .join('|');
+  const jobSignature = (jobs || [])
+    .map((job) => `${job.id}:${job.status}:${Number(job.progress ?? 0)}:${String(job.message || '')}`)
+    .join('|');
+  return `${assetSignature}||${jobSignature}`;
+}
+
+function scheduleAssetJobPoll(delayMs = assetJobPollDelayMs.value) {
+  clearAssetJobPollTimer();
+  if (!processingAssetIds.value.length) {
+    resetAssetJobPollState();
+    return;
+  }
+
+  const waitMs = Math.max(0, Number(delayMs || assetJobPollDelayMs.value || ASSET_JOB_POLL_MIN_MS));
+  assetJobPollTimer.value = setTimeout(() => {
+    refreshProcessingAssets().catch(() => {});
+  }, waitMs);
+}
+
 async function retryAssetTranscription(assetId) {
   if (!assetId || isRetryingAsset(assetId)) return;
 
@@ -947,11 +990,7 @@ async function retryAssetTranscription(assetId) {
   try {
     await retranscribeLibraryAsset(assetId, { language: 'Chinese' });
     await refreshProcessingAssets();
-    if (!assetJobPollTimer.value) {
-      assetJobPollTimer.value = setInterval(() => {
-        refreshProcessingAssets().catch(() => {});
-      }, 1800);
-    }
+    scheduleAssetJobPoll(250);
   } catch (retryError) {
     error.value = retryError?.response?.data?.error || retryError?.message || '重试转写失败';
   } finally {
@@ -1811,9 +1850,11 @@ async function loadProjectAssetJobs() {
 }
 
 async function refreshProcessingAssets() {
-  if (!projectId.value) return;
+  if (!projectId.value || assetJobRefreshInFlight.value) return;
+  assetJobRefreshInFlight.value = true;
   const previousStatuses = Object.fromEntries(orderedProjectAssets.value.map((asset) => [asset.id, asset.asr_status]));
   const previousProcessing = new Set(processingAssetIds.value);
+  const previousSignature = captureAssetPollingSignature(orderedProjectAssets.value, assetJobs.value);
   try {
     const [projectData, jobs] = await Promise.all([
       getProject(projectId.value),
@@ -1821,9 +1862,9 @@ async function refreshProcessingAssets() {
     ]);
     project.value = projectData;
     assetJobs.value = jobs;
+    const nextAssets = (projectData?.projectAssets || []).map((relation) => relation.asset);
     const nextProcessing = new Set(
-      (projectData?.projectAssets || [])
-        .map((relation) => relation.asset)
+      nextAssets
         .filter((asset) => ['processing', 'pending', 'provided'].includes(String(asset?.asr_status || '').trim()))
         .map((asset) => asset.id)
     );
@@ -1839,12 +1880,34 @@ async function refreshProcessingAssets() {
       syncPreviewToCurrentTime();
     }
 
-    if (!nextProcessing.size && assetJobPollTimer.value) {
-      clearInterval(assetJobPollTimer.value);
-      assetJobPollTimer.value = null;
+    if (!nextProcessing.size) {
+      clearAssetJobPollTimer();
+      resetAssetJobPollState();
+      return;
     }
+
+    const nextSignature = captureAssetPollingSignature(nextAssets, jobs);
+    const hasMeaningfulChange = completedAssetIds.length > 0 || nextSignature !== previousSignature;
+    if (hasMeaningfulChange) {
+      resetAssetJobPollState();
+    } else {
+      assetJobPollIdleCycles.value += 1;
+      assetJobPollDelayMs.value = Math.min(
+        ASSET_JOB_POLL_MAX_MS,
+        ASSET_JOB_POLL_MIN_MS + assetJobPollIdleCycles.value * 1200
+      );
+    }
+    scheduleAssetJobPoll(assetJobPollDelayMs.value);
   } catch {
-    // keep the current UI state if background refresh fails
+    assetJobPollDelayMs.value = Math.min(
+      ASSET_JOB_POLL_MAX_MS,
+      Math.max(assetJobPollDelayMs.value + 1500, ASSET_JOB_POLL_MIN_MS)
+    );
+    if (processingAssetIds.value.length) {
+      scheduleAssetJobPoll(assetJobPollDelayMs.value);
+    }
+  } finally {
+    assetJobRefreshInFlight.value = false;
   }
 }
 
@@ -2625,19 +2688,15 @@ watch(selectedAssetId, (assetId) => {
 });
 
 watch(processingAssetIds, (assetIds) => {
-  if (assetJobPollTimer.value) {
-    clearInterval(assetJobPollTimer.value);
-    assetJobPollTimer.value = null;
-  }
+  clearAssetJobPollTimer();
 
   if (!assetIds.length) {
+    resetAssetJobPollState();
     return;
   }
 
+  resetAssetJobPollState();
   refreshProcessingAssets().catch(() => {});
-  assetJobPollTimer.value = setInterval(() => {
-    refreshProcessingAssets().catch(() => {});
-  }, 1800);
 }, { immediate: true });
 
 watch(activePreviewClips, (clips) => {
@@ -2686,10 +2745,7 @@ onBeforeUnmount(() => {
     clearTimeout(autosaveTimer.value);
     autosaveTimer.value = null;
   }
-  if (assetJobPollTimer.value) {
-    clearInterval(assetJobPollTimer.value);
-    assetJobPollTimer.value = null;
-  }
+  clearAssetJobPollTimer();
   previewPlayerRef.value?.pausePlayback?.();
   document.removeEventListener('click', closeContextMenu);
   document.removeEventListener('keydown', handleGlobalWorkspaceKeydown);

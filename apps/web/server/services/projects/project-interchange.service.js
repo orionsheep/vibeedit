@@ -8,6 +8,8 @@ import { ensureStorageDirs } from '../editor/config.js';
 import { withDatabase } from '../core/database.service.js';
 import { completeJob, createJob, failJob, markJobRunning } from '../core/job.service.js';
 import { ensureProjectEditStateConsistency, loadProjectEditSource } from './project-edit-state.service.js';
+import { readTimelineKind, roundTime } from '../shared/timeline-utils.js';
+import { sanitizeAsciiFilename, sanitizeFilename } from '../shared/text-utils.js';
 
 const DEFAULT_FPS = 30;
 const DEFAULT_WIDTH = 1920;
@@ -36,20 +38,6 @@ export const PROJECT_INTERCHANGE_FORMATS = {
     note: '剪映 / CapCut 当前更稳的是字幕导入链路；请将导出的最终视频与该 SRT 一起导入。'
   }
 };
-
-function roundTime(value, digits = 3) {
-  return Number(Number(value || 0).toFixed(digits));
-}
-
-function sanitizeFilename(value, fallback = 'autoedit-project') {
-  const safe = String(value || '')
-    .trim()
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return safe || fallback;
-}
 
 function xmlEscape(value) {
   return String(value ?? '')
@@ -184,13 +172,6 @@ async function probeMediaInfo(sourcePath, { pathurl = '' } = {}) {
       });
     });
   });
-}
-
-function readTimelineKind(timeline = null) {
-  if (timeline?.isPrimary) return 'master';
-  const settings = timeline?.settings;
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return 'aux';
-  return String(settings.kind || 'aux').trim() || 'aux';
 }
 
 function selectTimelineForInterchange(project, timelineId = '') {
@@ -776,7 +757,7 @@ export async function exportProjectSliceXmlBundle(projectId) {
 
     const { packagesDir } = ensureStorageDirs();
     const bundleId = uuidv4().substring(0, 8);
-    const bundleBaseName = `${sanitizeFilename(project.name)}_slice_xml_bundle_${bundleId}`;
+    const bundleBaseName = `${sanitizeAsciiFilename(project.name, 'project')}_slice_xml_bundle_${bundleId}`;
     const bundleDir = path.join(packagesDir, bundleBaseName);
     await fs.promises.mkdir(bundleDir, { recursive: true });
 
@@ -793,7 +774,7 @@ export async function exportProjectSliceXmlBundle(projectId) {
       const timeline = sliceTimelines[index];
       const sliceTitle = String(timeline.settings?.title || timeline.name || `切片 ${index + 1}`).trim() || `切片 ${index + 1}`;
       const ordinal = String(index + 1).padStart(2, '0');
-      const filename = `${ordinal}_${sanitizeFilename(sliceTitle, `slice_${ordinal}`)}.xml`;
+      const filename = `${ordinal}_${sanitizeAsciiFilename(sliceTitle, `slice_${ordinal}`)}.xml`;
       const outputPath = path.join(bundleDir, filename);
       const sourceInfoByAssetId = await collectSourceInfoByAssetId(timeline.clips);
       const content = buildPremiereXml({

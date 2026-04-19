@@ -58,23 +58,20 @@ export async function failJob(jobId, error) {
 }
 
 export async function listJobsByProject(projectId) {
-  return withDatabase(async (db) => {
-    const assetRelations = await db.projectAsset.findMany({
-      where: { projectId },
-      select: { assetId: true }
-    });
-
-    const assetIds = assetRelations.map((item) => item.assetId);
-
-    return db.job.findMany({
-      where: {
-        OR: [
-          { projectId },
-          assetIds.length ? { assetId: { in: assetIds } } : undefined
-        ].filter(Boolean)
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 100
-    });
-  });
+  return withDatabase((db) => db.job.findMany({
+    where: {
+      OR: [
+        { projectId },
+        {
+          asset: {
+            projectAssets: {
+              some: { projectId }
+            }
+          }
+        }
+      ]
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 100
+  }));
 }

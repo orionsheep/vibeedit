@@ -129,6 +129,7 @@ export const useEditorStore = defineStore('editor', () => {
   const isLoading = ref(false);
   const error = ref(null);
   const timingRepairApplied = ref(false);
+  const wordSourceRevision = ref(0);
   const undoStack = ref([]);
   const redoStack = ref([]);
   const isApplyingHistory = ref(false);
@@ -208,21 +209,17 @@ export const useEditorStore = defineStore('editor', () => {
   const canUndo = computed(() => undoStack.value.length > 0);
   const canRedo = computed(() => redoStack.value.length > 0);
 
-  function cloneWords(sourceWords) {
-    return sourceWords.map(word => ({ ...word }));
-  }
-
   function normalizeIndexArray(indices) {
     return [...indices].sort((a, b) => a - b);
   }
 
   function createHistorySnapshot() {
     return {
-      words: cloneWords(words.value),
       deletedWords: normalizeIndexArray(deletedWords.value),
       deletedGaps: normalizeIndexArray(deletedGaps.value),
       config: { ...config.value },
-      timingRepairApplied: timingRepairApplied.value
+      timingRepairApplied: timingRepairApplied.value,
+      wordSourceRevision: wordSourceRevision.value
     };
   }
 
@@ -230,20 +227,6 @@ export const useEditorStore = defineStore('editor', () => {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i += 1) {
       if (a[i] !== b[i]) return false;
-    }
-    return true;
-  }
-
-  function wordsEqual(a = [], b = []) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      if (
-        a[i]?.text !== b[i]?.text ||
-        Number(a[i]?.start_time) !== Number(b[i]?.start_time) ||
-        Number(a[i]?.end_time) !== Number(b[i]?.end_time)
-      ) {
-        return false;
-      }
     }
     return true;
   }
@@ -261,11 +244,11 @@ export const useEditorStore = defineStore('editor', () => {
   function snapshotsEqual(a, b) {
     if (!a || !b) return false;
     return (
-      wordsEqual(a.words, b.words) &&
       arraysEqual(a.deletedWords, b.deletedWords) &&
       arraysEqual(a.deletedGaps, b.deletedGaps) &&
       configsEqual(a.config, b.config) &&
-      Boolean(a.timingRepairApplied) === Boolean(b.timingRepairApplied)
+      Boolean(a.timingRepairApplied) === Boolean(b.timingRepairApplied) &&
+      Number(a.wordSourceRevision || 0) === Number(b.wordSourceRevision || 0)
     );
   }
 
@@ -291,11 +274,11 @@ export const useEditorStore = defineStore('editor', () => {
 
     isApplyingHistory.value = true;
     try {
-      words.value = cloneWords(snapshot.words || []);
       deletedWords.value = new Set(snapshot.deletedWords || []);
       deletedGaps.value = new Set(snapshot.deletedGaps || []);
       config.value = { ...config.value, ...(snapshot.config || {}) };
       timingRepairApplied.value = Boolean(snapshot.timingRepairApplied);
+      wordSourceRevision.value = Number(snapshot.wordSourceRevision || wordSourceRevision.value || 0);
       clearSelectionState();
       detectGaps();
       sanitizeDeletedGaps();
@@ -398,6 +381,7 @@ export const useEditorStore = defineStore('editor', () => {
     const repaired = repairCollapsedWordTimings(loadedWords, duration.value || asrResult.duration || 0);
     words.value = repaired.words;
     timingRepairApplied.value = repaired.applied;
+    wordSourceRevision.value += 1;
     detectGaps();
     deletedWords.value.clear();
     deletedGaps.value.clear();
@@ -413,6 +397,7 @@ export const useEditorStore = defineStore('editor', () => {
     duration.value = Number(payload.duration || 0);
     words.value = loadedWords;
     timingRepairApplied.value = false;
+    wordSourceRevision.value += 1;
     detectGaps();
     deletedWords.value.clear();
     deletedGaps.value.clear();
@@ -699,6 +684,7 @@ export const useEditorStore = defineStore('editor', () => {
     currentWordIndex.value = -1;
     error.value = null;
     timingRepairApplied.value = false;
+    wordSourceRevision.value += 1;
     clearHistory();
   }
 

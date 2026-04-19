@@ -9,20 +9,8 @@ import { completeJob, createJob, failJob, markJobRunning, updateJobProgress } fr
 import { createTimelineSnapshot } from './timeline.service.js';
 import { getProjectEditState, loadProjectEditSource } from './project-edit-state.service.js';
 import { buildProjectInterchangeArtifacts, collectSourceInfoByAssetId } from './project-interchange.service.js';
-
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
-
-function sanitizeFilename(value, fallback = 'autoedit-project') {
-  const safe = String(value || '')
-    .trim()
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return safe || fallback;
-}
+import { readTimelineKind, roundTime } from '../shared/timeline-utils.js';
+import { sanitizeFilename } from '../shared/text-utils.js';
 
 function exportClipSegment(sourcePath, clip, outputPath) {
   return new Promise((resolve, reject) => {
@@ -39,13 +27,6 @@ function exportClipSegment(sourcePath, clip, outputPath) {
       .on('error', reject)
       .run();
   });
-}
-
-function readTimelineKind(timeline = null) {
-  if (timeline?.isPrimary) return 'master';
-  const settings = timeline?.settings;
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return 'aux';
-  return String(settings.kind || 'aux').trim() || 'aux';
 }
 
 function selectTimelineForExport(project, timelineId = '') {

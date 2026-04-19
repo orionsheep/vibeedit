@@ -6,19 +6,8 @@ import {
   ensureProjectEditStateConsistency,
   flattenCaptionWords as flattenProjectCaptionWords
 } from './project-edit-state.service.js';
-
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
-
-function tokenizeSegmentText(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return [];
-  if (/\s/.test(value)) {
-    return value.split(/\s+/).filter(Boolean);
-  }
-  return Array.from(value).filter((char) => /\S/.test(char));
-}
+import { roundTime } from '../shared/timeline-utils.js';
+import { tokenizeSegmentText } from '../shared/text-utils.js';
 
 function flattenWords(asrResult = {}) {
   if (Array.isArray(asrResult.words)) return asrResult.words;

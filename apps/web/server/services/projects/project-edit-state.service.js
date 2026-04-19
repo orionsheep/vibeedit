@@ -1,19 +1,8 @@
 import { withDatabase } from '../core/database.service.js';
 import { recordProjectEditHistoryTx } from './project-edit-history.service.js';
 import { getOrCreatePrimaryTimeline } from './project.service.js';
-
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
-
-function tokenizeSegmentText(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return [];
-  if (/\s/.test(value)) {
-    return value.split(/\s+/).filter(Boolean);
-  }
-  return Array.from(value).filter((char) => /\S/.test(char));
-}
+import { roundTime } from '../shared/timeline-utils.js';
+import { tokenizeSegmentText } from '../shared/text-utils.js';
 
 export function flattenCaptionWords(payload = {}, assetId = '', durationSeconds = 0) {
   if (Array.isArray(payload?.words)) {

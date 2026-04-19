@@ -21,10 +21,8 @@ import {
   realignProjectEditState,
   saveProjectEditState
 } from '../projects/project-edit-state.service.js';
-
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
+import { roundTime } from '../shared/timeline-utils.js';
+import { tokenizeSegmentText } from '../shared/text-utils.js';
 
 function normalizeText(text) {
   return String(text || '')
@@ -32,15 +30,6 @@ function normalizeText(text) {
     .replace(/[，。！？、,.!?：:；;"'“”‘’（）()\[\]【】<>《》\-—]/g, '')
     .trim()
     .toLowerCase();
-}
-
-function tokenizeSegmentText(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return [];
-  if (/\s/.test(value)) {
-    return value.split(/\s+/).filter(Boolean);
-  }
-  return Array.from(value).filter((char) => /\S/.test(char));
 }
 
 function rangesOverlap(left = {}, right = {}) {
