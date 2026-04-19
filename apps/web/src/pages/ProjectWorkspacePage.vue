@@ -243,7 +243,7 @@
                   :duration="currentPreviewDuration"
                   :display-time="currentPreviewTime"
                   :display-duration="currentPreviewDuration"
-                  :empty-label="isLiveSlicingMode ? '请选择一个切片，或先让系统分析生成候选切片。' : '当前项目时间线上还没有可预览的成片片段。'"
+                  :empty-label="isLiveSlicingMode ? '先让右侧 Agent 生成切片，或在字幕里手动框选后新建切片。' : '当前项目时间线上还没有可预览的成片片段。'"
                   @project-time-update="handlePreviewProjectTimeUpdate"
                   @clip-change="handlePreviewClipChange"
                   @playing-change="handlePreviewPlayingChange"
@@ -254,104 +254,24 @@
 
           <div class="pane-resizer horizontal" @mousedown="startResize('preview', $event)"></div>
 
-          <section class="subtitle-workspace" :class="{ 'has-slice-workbench': isLiveSlicingMode }">
-            <div v-if="isLiveSlicingMode" class="slice-workbench">
-              <div class="slice-toolbar">
-                <div class="slice-toolbar-copy">
-                  <strong>直播切片</strong>
-                  <span>先分析母片，再生成多个独立切片。字幕面板中的色签表示词句命中了哪些切片。</span>
-                </div>
-                <div class="slice-toolbar-controls">
-                  <input
-                    v-model.trim="sliceQuery"
-                    class="slice-query-input"
-                    type="text"
-                    placeholder="例如：AI 排队、自动化、劳动价值、模型拥堵"
-                  />
-                  <input
-                    v-model.number="sliceCount"
-                    class="slice-count-input"
-                    type="number"
-                    min="1"
-                    max="8"
-                  />
-                  <button class="ghost-btn slice-toolbar-btn" :disabled="!canCreateSliceSuggestions" @click="analyzeLiveSlices({ create: false })">
-                    {{ loadingSliceSuggestions ? '分析中...' : '分析候选' }}
-                  </button>
-                  <button class="primary-btn slice-toolbar-btn" :disabled="!canCreateSliceSuggestions" @click="analyzeLiveSlices({ create: true })">
-                    {{ loadingSliceSuggestions ? '生成中...' : '直接生成切片' }}
-                  </button>
-                </div>
-              </div>
-
-              <div v-if="sliceSuggestions.length" class="slice-suggestion-strip">
-                <button
-                  v-for="(suggestion, index) in sliceSuggestions"
-                  :key="`suggestion_${index}`"
-                  class="slice-suggestion-card"
-                  @click="createSliceFromSuggestion(suggestion)"
-                >
-                  <span class="slice-suggestion-kicker">候选 {{ index + 1 }}</span>
-                  <strong>{{ suggestion.title }}</strong>
-                  <span>{{ formatDuration(suggestion.duration_seconds) }} · {{ suggestion.summary }}</span>
-                </button>
-              </div>
-
-              <div class="slice-rail">
-                <button
-                  v-for="slice in projectSlices"
-                  :key="slice.id"
-                  class="slice-chip"
-                  :class="{ active: selectedSliceId === slice.id }"
-                  :style="{
-                    '--slice-color': slice.color || '#4cc2ff',
-                    '--slice-soft': `${slice.color || '#4cc2ff'}22`
-                  }"
-                  @click="selectSlice(slice.id)"
-                >
-                  <span class="slice-chip-kicker">{{ formatDuration(slice.total_duration) }}</span>
-                  <strong>{{ slice.title }}</strong>
-                  <span>{{ slice.summary || slice.description || '点击查看该切片的正文与导出范围。' }}</span>
-                </button>
-              </div>
-
-              <div class="slice-transcript-shell">
-                <div class="slice-transcript-head">
-                  <div>
-                    <strong>{{ selectedSlice?.title || '未选择切片' }}</strong>
-                    <span>{{ selectedSlice ? `${formatDuration(selectedSlice.total_duration)} · ${selectedSlice.clip_count} 段` : '先从上方生成或选择一个切片。' }}</span>
-                  </div>
-                  <button
-                    v-if="selectedSliceId"
-                    class="ghost-btn danger-ghost-btn slice-delete-btn"
-                    :disabled="deletingSliceId === selectedSliceId"
-                    @click="removeSelectedSlice"
-                  >
-                    {{ deletingSliceId === selectedSliceId ? '删除中...' : '删除切片' }}
-                  </button>
-                </div>
-                <div v-if="loadingSliceDetail" class="slice-transcript-loading">正在加载切片文本...</div>
-                <div v-else-if="selectedSliceTranscriptText" class="slice-transcript-body">
-                  <div class="slice-transcript-preview">{{ selectedSliceTranscriptText }}</div>
-                  <div class="slice-transcript-blocks">
-                    <div
-                      v-for="block in selectedSliceTranscriptBlocks"
-                      :key="block.id"
-                      class="slice-transcript-block"
-                    >
-                      <span>{{ formatDuration(block.start) }} - {{ formatDuration(block.end) }}</span>
-                      <strong>{{ block.text }}</strong>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="slice-transcript-empty">当前切片还没有可展示的正文。</div>
-              </div>
-            </div>
-
+          <section class="subtitle-workspace">
             <SubtitlePanel
               class="project-subtitle-panel"
               :workspace-mode="workspaceMode"
+              :project-slices="projectSlices"
+              :selected-slice-id="selectedSliceId"
+              :slice-selection-hint="liveSliceSelectionHint"
+              :can-create-slice-from-selection="canCreateManualSlice"
+              :can-append-selection-to-slice="canAppendSelectionToSlice"
+              :can-remove-selection-from-slice="canRemoveSelectionFromSlice"
+              :can-delete-selected-slice="Boolean(selectedSliceId)"
+              :slice-action-busy="sliceMutationBusy"
               @update:workspace-mode="workspaceMode = $event"
+              @create-slice-from-selection="createManualSliceFromSelection"
+              @append-selection-to-slice="appendSelectionToCurrentSlice"
+              @remove-selection-from-slice="removeSelectionFromCurrentSlice"
+              @delete-selected-slice="removeSelectedSlice"
+              @select-slice="handleSliceChipSelect"
               @seek-to="handleProjectSeek"
             />
             <TimelineStrip class="project-timeline-strip" />
@@ -466,9 +386,9 @@ import {
   removeProjectAsset,
   reorderProjectAssets,
   runProjectAgentWithProgress,
-  suggestProjectSlices,
   uploadProjectAssets,
-  updateProjectEditState
+  updateProjectEditState,
+  updateProjectSlice
 } from '../features/projects/api/projectsApi';
 
 const route = useRoute();
@@ -514,14 +434,11 @@ const workspaceMode = ref('assemble_script');
 const agentPrompt = ref('');
 const topic = ref('');
 const targetMinutes = ref(1.5);
-const sliceQuery = ref('');
-const sliceCount = ref(4);
-const sliceSuggestions = ref([]);
-const loadingSliceSuggestions = ref(false);
 const selectedSliceId = ref('');
 const selectedSliceDetail = ref(null);
 const loadingSliceDetail = ref(false);
 const deletingSliceId = ref('');
+const mutatingSlice = ref(false);
 const runningAgent = ref(false);
 const exportingVideo = ref(false);
 const exportingPackage = ref(false);
@@ -749,9 +666,6 @@ const activePreviewClips = computed(() => (
 ));
 const currentPreviewDuration = computed(() => Number(activePreviewClips.value[activePreviewClips.value.length - 1]?.project_end || 0));
 const currentPreviewTime = computed(() => originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value));
-const selectedSliceTranscriptBlocks = computed(() => selectedSliceDetail.value?.transcript_blocks || []);
-const selectedSliceTranscriptText = computed(() => String(selectedSliceDetail.value?.transcript_text || '').trim());
-const canCreateSliceSuggestions = computed(() => orderedProjectAssets.value.length > 0 && !loadingSliceSuggestions.value);
 const activeExportTimelineId = computed(() => (isLiveSlicingMode.value ? String(selectedSliceId.value || '').trim() : ''));
 const activeExportTargetLabel = computed(() => {
   if (activeExportTimelineId.value && selectedSlice.value) {
@@ -790,6 +704,55 @@ const timelineDirty = computed(() => captureEditorSignature() !== editorBaseline
 const totalWords = computed(() => editorStore.totalWords);
 const deletedWordCount = computed(() => editorStore.deletedWordCount);
 const deletedGapDuration = computed(() => editorStore.deletedGapDuration);
+const selectedWordIndices = computed(() => Array.from(editorStore.selectedWords || []).sort((left, right) => left - right));
+const manualSliceSelectionRanges = computed(() => {
+  const allWords = Array.isArray(editorStore.words) ? editorStore.words : [];
+  const indices = selectedWordIndices.value.filter((index) => Number.isInteger(index) && index >= 0 && index < allWords.length);
+  if (!indices.length) return [];
+
+  const groups = [];
+  let current = {
+    startIndex: indices[0],
+    endIndex: indices[0]
+  };
+
+  for (let pointer = 1; pointer < indices.length; pointer += 1) {
+    const index = indices[pointer];
+    if (index === current.endIndex + 1) {
+      current.endIndex = index;
+      continue;
+    }
+    groups.push(current);
+    current = {
+      startIndex: index,
+      endIndex: index
+    };
+  }
+  groups.push(current);
+
+  return mergeRanges(groups.map((group) => ({
+    start: Number(allWords[group.startIndex]?.start_time || 0),
+    end: Number(allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0)
+  })));
+});
+const manualSliceSelectionDuration = computed(() => manualSliceSelectionRanges.value.reduce((sum, range) => sum + Math.max(0, Number(range.end || 0) - Number(range.start || 0)), 0));
+const sliceMutationBusy = computed(() => Boolean(mutatingSlice.value || deletingSliceId.value));
+const canCreateManualSlice = computed(() => isLiveSlicingMode.value && manualSliceSelectionRanges.value.length > 0 && !sliceMutationBusy.value);
+const canAppendSelectionToSlice = computed(() => canCreateManualSlice.value && Boolean(selectedSliceId.value));
+const canRemoveSelectionFromSlice = computed(() => canCreateManualSlice.value && Boolean(selectedSliceId.value));
+const liveSliceSelectionHint = computed(() => {
+  if (!projectSlices.value.length) {
+    return canCreateManualSlice.value
+      ? `已选 ${manualSliceSelectionRanges.value.length} 段 · ${formatDuration(manualSliceSelectionDuration.value)}，可直接新建第一条手动切片。`
+      : '自动切片优先通过右侧 Agent 完成；手动切片时，先在字幕里框选一段内容。';
+  }
+  if (!manualSliceSelectionRanges.value.length) {
+    return selectedSlice.value
+      ? `当前切片：${selectedSlice.value.title}。先在字幕里框选一段内容，再加入或移出当前切片。`
+      : '先选择一个切片，或在字幕里框选一段内容后新建切片。';
+  }
+  return `已选 ${manualSliceSelectionRanges.value.length} 段 · ${formatDuration(manualSliceSelectionDuration.value)}，可新建切片，或加入/移出当前切片。`;
+});
 
 const agentActionLabel = computed(() => {
   const map = {
@@ -836,6 +799,68 @@ const agentPlaceholder = computed(() => {
 
 function roundTime(value) {
   return Number(Number(value || 0).toFixed(3));
+}
+
+function mergeRanges(ranges = []) {
+  const normalized = (Array.isArray(ranges) ? ranges : [])
+    .map((range) => ({
+      start: roundTime(Number(range?.start || 0)),
+      end: roundTime(Number(range?.end || 0))
+    }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end - range.start > 0.05)
+    .sort((left, right) => left.start - right.start);
+
+  if (!normalized.length) return [];
+
+  const merged = [normalized[0]];
+  for (let index = 1; index < normalized.length; index += 1) {
+    const current = normalized[index];
+    const previous = merged[merged.length - 1];
+    if (current.start <= previous.end + 0.05) {
+      previous.end = roundTime(Math.max(previous.end, current.end));
+      continue;
+    }
+    merged.push({ ...current });
+  }
+  return merged;
+}
+
+function subtractRanges(baseRanges = [], removeRanges = []) {
+  const source = mergeRanges(baseRanges);
+  const cuts = mergeRanges(removeRanges);
+  if (!source.length || !cuts.length) return source;
+
+  const result = [];
+  for (const base of source) {
+    let fragments = [{ ...base }];
+    for (const cut of cuts) {
+      const nextFragments = [];
+      for (const fragment of fragments) {
+        const overlapStart = Math.max(fragment.start, cut.start);
+        const overlapEnd = Math.min(fragment.end, cut.end);
+        if (overlapEnd - overlapStart <= 0.001) {
+          nextFragments.push(fragment);
+          continue;
+        }
+        if (overlapStart - fragment.start > 0.05) {
+          nextFragments.push({
+            start: fragment.start,
+            end: roundTime(overlapStart)
+          });
+        }
+        if (fragment.end - overlapEnd > 0.05) {
+          nextFragments.push({
+            start: roundTime(overlapEnd),
+            end: fragment.end
+          });
+        }
+      }
+      fragments = nextFragments;
+      if (!fragments.length) break;
+    }
+    result.push(...fragments);
+  }
+  return mergeRanges(result);
 }
 
 function clamp(value, min, max) {
@@ -1440,56 +1465,102 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   syncPreviewToCurrentTime({ preservePlayback: false });
 }
 
-async function analyzeLiveSlices({ create = false } = {}) {
-  if (!canCreateSliceSuggestions.value) return;
-  loadingSliceSuggestions.value = true;
-  try {
-    if (timelineDirty.value) {
-      await saveTimeline({
-        createSnapshot: false,
-        note: 'Pre-slice analysis sync'
-      });
-    }
-    const result = await suggestProjectSlices(projectId.value, {
-      query: sliceQuery.value.trim(),
-      count: Number(sliceCount.value || 4),
-      create
-    });
-    sliceSuggestions.value = result.suggestions || [];
-    if (create) {
-      await refreshProjectSlices({ preserveSelection: false });
-      const firstCreatedId = result.created?.[0]?.id || '';
-      if (firstCreatedId) {
-        await selectSlice(firstCreatedId);
-      }
-    }
-  } catch (sliceError) {
-    window.alert(sliceError.response?.data?.error || sliceError.message || '生成切片失败');
-  } finally {
-    loadingSliceSuggestions.value = false;
-  }
+function buildManualSliceTitle() {
+  const excerpt = manualSliceSelectionRanges.value
+    .map((range) => {
+      const allWords = Array.isArray(editorStore.words) ? editorStore.words : [];
+      return allWords
+        .filter((word) => Number(word.start_time || 0) < range.end && Number(word.end_time || word.start_time || 0) > range.start)
+        .map((word) => String(word.text || ''))
+        .join('');
+    })
+    .join(' ')
+    .replace(/\s+/g, '')
+    .slice(0, 16);
+  return excerpt ? `手动切片 · ${excerpt}` : `手动切片 ${projectSlices.value.length + 1}`;
 }
 
-async function createSliceFromSuggestion(suggestion) {
-  if (!suggestion) return;
+async function createManualSliceFromSelection() {
+  if (!canCreateManualSlice.value) return;
+  mutatingSlice.value = true;
   try {
     if (timelineDirty.value) {
       await saveTimeline({
         createSnapshot: false,
-        note: 'Pre-slice create sync'
+        note: 'Pre-manual-slice create sync'
       });
     }
     const created = await createProjectSlice(projectId.value, {
-      title: suggestion.title,
-      summary: suggestion.summary,
-      query: sliceQuery.value.trim(),
-      target_duration_seconds: suggestion.duration_seconds,
-      ranges: suggestion.ranges
+      title: buildManualSliceTitle(),
+      summary: `手动框选 ${manualSliceSelectionRanges.value.length} 段字幕后创建`,
+      generated_by: 'manual_selection',
+      target_duration_seconds: manualSliceSelectionDuration.value,
+      ranges: manualSliceSelectionRanges.value
     });
     await refreshProjectSlices({ preserveSelection: false });
     await selectSlice(created.id);
+    editorStore.clearSelection();
   } catch (sliceError) {
-    window.alert(sliceError.response?.data?.error || sliceError.message || '创建切片失败');
+    window.alert(sliceError.response?.data?.error || sliceError.message || '新建手动切片失败');
+  } finally {
+    mutatingSlice.value = false;
+  }
+}
+
+async function appendSelectionToCurrentSlice() {
+  if (!canAppendSelectionToSlice.value) return;
+  mutatingSlice.value = true;
+  try {
+    if (timelineDirty.value) {
+      await saveTimeline({
+        createSnapshot: false,
+        note: 'Pre-manual-slice append sync'
+      });
+    }
+    const detail = await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
+    const mergedRanges = mergeRanges([...(detail?.ranges || []), ...manualSliceSelectionRanges.value]);
+    const updated = await updateProjectSlice(projectId.value, selectedSliceId.value, {
+      ranges: mergedRanges,
+      generated_by: 'manual_selection'
+    });
+    selectedSliceDetail.value = updated;
+    await refreshProjectSlices({ preserveSelection: true });
+    editorStore.clearSelection();
+  } catch (sliceError) {
+    window.alert(sliceError.response?.data?.error || sliceError.message || '加入当前切片失败');
+  } finally {
+    mutatingSlice.value = false;
+  }
+}
+
+async function removeSelectionFromCurrentSlice() {
+  if (!canRemoveSelectionFromSlice.value) return;
+  mutatingSlice.value = true;
+  try {
+    if (timelineDirty.value) {
+      await saveTimeline({
+        createSnapshot: false,
+        note: 'Pre-manual-slice remove sync'
+      });
+    }
+    const detail = await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
+    const nextRanges = subtractRanges(detail?.ranges || [], manualSliceSelectionRanges.value);
+    if (!nextRanges.length) {
+      await deleteProjectSlice(projectId.value, selectedSliceId.value);
+      await refreshProjectSlices({ preserveSelection: false });
+    } else {
+      const updated = await updateProjectSlice(projectId.value, selectedSliceId.value, {
+        ranges: nextRanges,
+        generated_by: 'manual_selection'
+      });
+      selectedSliceDetail.value = updated;
+      await refreshProjectSlices({ preserveSelection: true });
+    }
+    editorStore.clearSelection();
+  } catch (sliceError) {
+    window.alert(sliceError.response?.data?.error || sliceError.message || '从当前切片移出失败');
+  } finally {
+    mutatingSlice.value = false;
   }
 }
 
@@ -1505,6 +1576,10 @@ async function removeSelectedSlice() {
   } finally {
     deletingSliceId.value = '';
   }
+}
+
+function handleSliceChipSelect(sliceId) {
+  selectSlice(sliceId).catch(() => {});
 }
 
 async function loadWorkspace() {
@@ -3106,207 +3181,6 @@ onBeforeUnmount(() => {
 .subtitle-workspace {
   display: grid;
   grid-template-rows: minmax(0, 1fr) 100px 28px;
-}
-
-.subtitle-workspace.has-slice-workbench {
-  grid-template-rows: auto minmax(0, 1fr) 100px 28px;
-}
-
-.slice-workbench {
-  min-height: 0;
-  display: grid;
-  gap: 8px;
-  padding: 8px 8px 0;
-  border-bottom: 1px solid #13202c;
-  background:
-    linear-gradient(180deg, rgba(8, 17, 26, 0.98) 0%, rgba(10, 16, 24, 0.98) 100%);
-}
-
-.slice-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.slice-toolbar-copy {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.slice-toolbar-copy strong {
-  font-size: 12px;
-  color: #f1fbff;
-}
-
-.slice-toolbar-copy span {
-  font-size: 10px;
-  color: #85a4b8;
-  line-height: 1.5;
-}
-
-.slice-toolbar-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.slice-query-input,
-.slice-count-input {
-  border: 1px solid #243443;
-  background: #091019;
-  color: #eef8fc;
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 11px;
-}
-
-.slice-query-input {
-  width: 300px;
-}
-
-.slice-count-input {
-  width: 58px;
-  text-align: center;
-}
-
-.slice-toolbar-btn {
-  min-height: 30px;
-}
-
-.slice-suggestion-strip,
-.slice-rail,
-.slice-transcript-blocks {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-}
-
-.slice-suggestion-card,
-.slice-chip {
-  flex: 0 0 220px;
-  border: 1px solid #233647;
-  background: #091019;
-  color: #eff8fd;
-  text-align: left;
-  padding: 10px;
-  display: grid;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.slice-suggestion-card:hover,
-.slice-chip:hover {
-  border-color: #4fcfff;
-  background: rgba(22, 197, 255, 0.08);
-}
-
-.slice-suggestion-kicker,
-.slice-chip-kicker {
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #6d889a;
-}
-
-.slice-suggestion-card strong,
-.slice-chip strong {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.slice-suggestion-card span:last-child,
-.slice-chip span:last-child {
-  font-size: 10px;
-  line-height: 1.55;
-  color: #91abbc;
-}
-
-.slice-chip {
-  border-color: color-mix(in srgb, var(--slice-color) 60%, #20303f);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--slice-color) 14%, #091019) 0%, #091019 100%);
-  box-shadow: inset 3px 0 0 var(--slice-color);
-}
-
-.slice-chip.active {
-  border-color: var(--slice-color);
-  background: color-mix(in srgb, var(--slice-color) 18%, #091019);
-}
-
-.slice-transcript-shell {
-  border: 1px solid #152332;
-  background: #08111a;
-  padding: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.slice-transcript-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.slice-transcript-head > div {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.slice-transcript-head strong {
-  font-size: 12px;
-  color: #f1fbff;
-}
-
-.slice-transcript-head span,
-.slice-transcript-loading,
-.slice-transcript-empty {
-  font-size: 10px;
-  color: #86a0b1;
-}
-
-.slice-delete-btn {
-  min-height: 28px;
-}
-
-.slice-transcript-body {
-  display: grid;
-  gap: 8px;
-}
-
-.slice-transcript-preview {
-  max-height: 56px;
-  overflow: auto;
-  font-size: 11px;
-  line-height: 1.7;
-  color: #e8f4f9;
-}
-
-.slice-transcript-blocks {
-  padding-bottom: 2px;
-}
-
-.slice-transcript-block {
-  flex: 0 0 220px;
-  border: 1px solid #20303f;
-  background: #091019;
-  padding: 8px;
-  display: grid;
-  gap: 4px;
-}
-
-.slice-transcript-block span {
-  font-size: 10px;
-  color: #74c9ff;
-}
-
-.slice-transcript-block strong {
-  font-size: 11px;
-  line-height: 1.6;
-  color: #edf7fc;
 }
 
 .editor-status-bar {

@@ -18,65 +18,115 @@
 
     <template v-else>
       <div class="editor-topbar">
-        <div class="editor-header">
-          <span class="panel-title">字幕编辑</span>
-          <span class="panel-stats">{{ keptWords }}/{{ totalWords }} 字</span>
+        <div class="editor-topbar-main">
+          <div class="editor-header">
+            <span class="panel-title">字幕编辑</span>
+            <span class="panel-stats">{{ keptWords }}/{{ totalWords }} 字</span>
+          </div>
+          <div class="editor-toolbar">
+            <button
+              class="editor-btn danger"
+              :disabled="!hasSelection"
+              @click="deleteSelected"
+              title="删除选中 (Delete/Backspace)"
+            >
+              <i class="fas fa-trash"></i>
+              删除
+            </button>
+            <button
+              class="editor-btn"
+              :disabled="!hasSelection"
+              @click="restoreSelected"
+              title="恢复选中"
+            >
+              <i class="fas fa-undo"></i>
+              恢复
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="editor-btn danger" @click="confirmClearDeleted">
+              <i class="fas fa-broom"></i>
+              清除已删除
+            </button>
+            <div class="toolbar-divider"></div>
+            <div class="config-item">
+              <label for="gapThreshold">间隙阈值 (秒):</label>
+              <input
+                id="gapThreshold"
+                type="number"
+                :value="config.gapThreshold"
+                @change="updateGapThreshold"
+                step="0.1"
+                min="0.1"
+                max="5"
+                style="width: 60px;"
+              />
+            </div>
+            <div class="toolbar-divider"></div>
+          </div>
+          <div class="editor-mode-switch">
+            <button
+              class="mode-switch-btn"
+              :class="{ active: props.workspaceMode === 'assemble_script' }"
+              @click="$emit('update:workspaceMode', 'assemble_script')"
+            >
+              口播剪稿
+            </button>
+            <button
+              class="mode-switch-btn"
+              :class="{ active: props.workspaceMode === 'live_slicing' }"
+              @click="$emit('update:workspaceMode', 'live_slicing')"
+            >
+              直播切片
+            </button>
+          </div>
         </div>
-        <div class="editor-toolbar">
-        <button
-          class="editor-btn danger"
-          :disabled="!hasSelection"
-          @click="deleteSelected"
-          title="删除选中 (Delete/Backspace)"
-        >
-          <i class="fas fa-trash"></i>
-          删除
-        </button>
-        <button
-          class="editor-btn"
-          :disabled="!hasSelection"
-          @click="restoreSelected"
-          title="恢复选中"
-        >
-          <i class="fas fa-undo"></i>
-          恢复
-        </button>
-        <div class="toolbar-divider"></div>
-        <button class="editor-btn danger" @click="confirmClearDeleted">
-          <i class="fas fa-broom"></i>
-          清除已删除
-        </button>
-        <div class="toolbar-divider"></div>
-        <div class="config-item">
-          <label for="gapThreshold">间隙阈值 (秒):</label>
-          <input
-            id="gapThreshold"
-            type="number"
-            :value="config.gapThreshold"
-            @change="updateGapThreshold"
-            step="0.1"
-            min="0.1"
-            max="5"
-            style="width: 60px;"
-          />
-        </div>
-        <div class="toolbar-divider"></div>
-        </div>
-        <div class="editor-mode-switch">
-          <button
-            class="mode-switch-btn"
-            :class="{ active: props.workspaceMode === 'assemble_script' }"
-            @click="$emit('update:workspaceMode', 'assemble_script')"
-          >
-            口播剪稿
-          </button>
-          <button
-            class="mode-switch-btn"
-            :class="{ active: props.workspaceMode === 'live_slicing' }"
-            @click="$emit('update:workspaceMode', 'live_slicing')"
-          >
-            直播切片
-          </button>
+
+        <div v-if="props.workspaceMode === 'live_slicing'" class="slice-inline-toolbar">
+          <div class="slice-inline-actions">
+            <button
+              class="editor-btn"
+              :disabled="!props.canCreateSliceFromSelection || props.sliceActionBusy"
+              @click="$emit('createSliceFromSelection')"
+            >
+              新建切片
+            </button>
+            <button
+              class="editor-btn"
+              :disabled="!props.canAppendSelectionToSlice || props.sliceActionBusy"
+              @click="$emit('appendSelectionToSlice')"
+            >
+              加入当前切片
+            </button>
+            <button
+              class="editor-btn"
+              :disabled="!props.canRemoveSelectionFromSlice || props.sliceActionBusy"
+              @click="$emit('removeSelectionFromSlice')"
+            >
+              从当前切片移出
+            </button>
+            <button
+              class="editor-btn danger"
+              :disabled="!props.canDeleteSelectedSlice || props.sliceActionBusy"
+              @click="$emit('deleteSelectedSlice')"
+            >
+              删除当前切片
+            </button>
+            <span class="slice-inline-hint">{{ props.sliceSelectionHint }}</span>
+          </div>
+
+          <div v-if="props.projectSlices.length" class="slice-inline-rail">
+            <button
+              v-for="slice in props.projectSlices"
+              :key="slice.id"
+              class="slice-inline-chip"
+              :class="{ active: props.selectedSliceId === slice.id }"
+              :style="{ '--slice-inline-color': slice.color || '#4cc2ff' }"
+              @click="$emit('selectSlice', slice.id)"
+            >
+              <span class="slice-inline-chip-kicker">{{ slice.total_duration ? formatTime(slice.total_duration) : '00:00' }}</span>
+              <strong>{{ slice.title }}</strong>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -500,11 +550,51 @@ watch(currentWordIndex, (newIndex) => {
 });
 
 // Emit current word click for video seeking
-const emit = defineEmits(['seekTo', 'update:workspaceMode']);
+const emit = defineEmits([
+  'seekTo',
+  'update:workspaceMode',
+  'createSliceFromSelection',
+  'appendSelectionToSlice',
+  'removeSelectionFromSlice',
+  'deleteSelectedSlice',
+  'selectSlice'
+]);
 const props = defineProps({
   workspaceMode: {
     type: String,
     default: 'assemble_script'
+  },
+  projectSlices: {
+    type: Array,
+    default: () => []
+  },
+  selectedSliceId: {
+    type: String,
+    default: ''
+  },
+  sliceSelectionHint: {
+    type: String,
+    default: '先在字幕里框选一段内容，再新建切片或加入当前切片。'
+  },
+  canCreateSliceFromSelection: {
+    type: Boolean,
+    default: false
+  },
+  canAppendSelectionToSlice: {
+    type: Boolean,
+    default: false
+  },
+  canRemoveSelectionFromSlice: {
+    type: Boolean,
+    default: false
+  },
+  canDeleteSelectedSlice: {
+    type: Boolean,
+    default: false
+  },
+  sliceActionBusy: {
+    type: Boolean,
+    default: false
   }
 });
 
@@ -539,7 +629,15 @@ function keepCurrentWordInView(index) {
 <script>
 export default {
   name: 'SubtitlePanel',
-  emits: ['seekTo', 'update:workspaceMode']
+  emits: [
+    'seekTo',
+    'update:workspaceMode',
+    'createSliceFromSelection',
+    'appendSelectionToSlice',
+    'removeSelectionFromSlice',
+    'deleteSelectedSlice',
+    'selectSlice'
+  ]
 };
 </script>
 
@@ -572,12 +670,17 @@ export default {
 }
 
 .editor-topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  display: grid;
+  gap: 8px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border, #2a2a2a);
   background: var(--bg-tertiary, #1f1f1f);
+}
+
+.editor-topbar-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .editor-header {
@@ -606,6 +709,7 @@ export default {
   border: 1px solid var(--border, #2a2a2a);
   background: var(--bg-primary, #0a0a0a);
   margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .mode-switch-btn {
@@ -621,6 +725,62 @@ export default {
   background: rgba(0, 212, 255, 0.14);
   color: var(--text-primary, #ffffff);
   box-shadow: inset 0 0 0 1px var(--accent, #00d4ff);
+}
+
+.slice-inline-toolbar {
+  display: grid;
+  gap: 8px;
+}
+
+.slice-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.slice-inline-hint {
+  font-size: 11px;
+  color: var(--text-secondary, #a0a0a0);
+  min-width: 0;
+}
+
+.slice-inline-rail {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.slice-inline-chip {
+  flex: 0 0 auto;
+  min-width: 132px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--slice-inline-color) 58%, var(--border, #2a2a2a));
+  background: color-mix(in srgb, var(--slice-inline-color) 12%, var(--bg-primary, #0a0a0a));
+  color: var(--text-primary, #ffffff);
+  text-align: left;
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+  box-shadow: inset 2px 0 0 var(--slice-inline-color);
+}
+
+.slice-inline-chip.active {
+  border-color: var(--slice-inline-color);
+  background: color-mix(in srgb, var(--slice-inline-color) 18%, var(--bg-primary, #0a0a0a));
+}
+
+.slice-inline-chip-kicker {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary, #a0a0a0);
+  text-transform: uppercase;
+}
+
+.slice-inline-chip strong {
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .panel-title {
@@ -739,6 +899,16 @@ export default {
   overflow-y: auto;
   padding: 20px;
   user-select: none;
+}
+
+@media (max-width: 1280px) {
+  .editor-topbar-main {
+    flex-wrap: wrap;
+  }
+
+  .editor-mode-switch {
+    margin-left: 0;
+  }
 }
 
 .text-content {
