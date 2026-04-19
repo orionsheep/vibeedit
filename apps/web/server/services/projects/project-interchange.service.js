@@ -13,7 +13,7 @@ const DEFAULT_WIDTH = 1920;
 const DEFAULT_HEIGHT = 1080;
 const DEFAULT_AUDIO_RATE = 48000;
 const DEFAULT_AUDIO_CHANNELS = 2;
-const DEFAULT_START_TIMECODE_FRAMES = 3600;
+const DEFAULT_START_TIMECODE_SECONDS = 3600;
 
 export const PROJECT_INTERCHANGE_FORMATS = {
   premiere_xml: {
@@ -137,11 +137,22 @@ function buildPathUrl(sourcePath) {
   return url;
 }
 
+function normalizePathUrl(sourcePath, overridePathOrUrl = '') {
+  const value = String(overridePathOrUrl || '').trim();
+  if (!value) {
+    return buildPathUrl(sourcePath);
+  }
+  if (/^[a-z]+:\/\//i.test(value)) {
+    return value;
+  }
+  return buildPathUrl(value);
+}
+
 function normalizeSequenceName(value) {
   return String(value || '').trim() || 'AutoEdit Timeline';
 }
 
-async function probeMediaInfo(sourcePath) {
+async function probeMediaInfo(sourcePath, { pathurl = '' } = {}) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(sourcePath, (error, metadata) => {
       if (error) {
@@ -160,7 +171,7 @@ async function probeMediaInfo(sourcePath) {
 
       resolve({
         basename: path.basename(sourcePath),
-        pathurl: buildPathUrl(sourcePath),
+        pathurl: normalizePathUrl(sourcePath, pathurl),
         width: Number(videoStream.width) || DEFAULT_WIDTH,
         height: Number(videoStream.height) || DEFAULT_HEIGHT,
         hasAudio: Boolean(audioStream.codec_type === 'audio'),
@@ -225,17 +236,82 @@ async function loadProjectInterchangeData(projectId) {
   });
 }
 
-function buildProjectTimelineSegments(clips = [], sourceInfoByAssetId = new Map()) {
-  let recordCursor = DEFAULT_START_TIMECODE_FRAMES * DEFAULT_FPS;
+export async function collectSourceInfoByAssetId(clips = [], { pathurlResolver = null } = {}) {
+  const sourceInfoByAssetId = new Map();
+
+  for (const clip of clips) {
+    if (sourceInfoByAssetId.has(clip.assetId)) continue;
+    const sourcePath = clip.asset.files?.find((file) => file.role === 'original')?.uri;
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      throw new Error(`Original file missing for asset ${clip.assetId}`);
+    }
+    const pathurl = typeof pathurlResolver === 'function'
+      ? pathurlResolver({ assetId: clip.assetId, sourcePath, clip })
+      : '';
+    sourceInfoByAssetId.set(clip.assetId, await probeMediaInfo(sourcePath, { pathurl }));
+  }
+
+  return sourceInfoByAssetId;
+}
+
+function determineSequenceInfo(clips = [], sourceInfoByAssetId = new Map()) {
+  const firstInfo = clips
+    .map((clip) => sourceInfoByAssetId.get(clip.assetId))
+    .find(Boolean);
+
+  if (!firstInfo) {
+    return {
+      width: DEFAULT_WIDTH,
+      height: DEFAULT_HEIGHT,
+      audioRate: DEFAULT_AUDIO_RATE,
+      audioChannels: DEFAULT_AUDIO_CHANNELS,
+      rate: normalizeRate(DEFAULT_FPS)
+    };
+  }
+
+  const durationByRateKey = new Map();
+  for (const clip of clips) {
+    const info = sourceInfoByAssetId.get(clip.assetId);
+    if (!info?.rate?.timebase) continue;
+    const key = `${info.rate.timebase}:${info.rate.ntsc ? 'TRUE' : 'FALSE'}`;
+    const durationSeconds = Math.max(0.001, Number(clip.sourceEndSeconds || 0) - Number(clip.sourceStartSeconds || 0));
+    const bucket = durationByRateKey.get(key) || { duration: 0, rate: info.rate };
+    bucket.duration += durationSeconds;
+    durationByRateKey.set(key, bucket);
+  }
+
+  const dominantRate = [...durationByRateKey.values()]
+    .sort((left, right) => right.duration - left.duration)[0]?.rate || firstInfo.rate;
+
+  const firstAudioInfo = clips
+    .map((clip) => sourceInfoByAssetId.get(clip.assetId))
+    .find((info) => info?.hasAudio) || firstInfo;
+
+  return {
+    width: firstInfo.width || DEFAULT_WIDTH,
+    height: firstInfo.height || DEFAULT_HEIGHT,
+    audioRate: firstAudioInfo.audioRate || DEFAULT_AUDIO_RATE,
+    audioChannels: firstAudioInfo.audioChannels || DEFAULT_AUDIO_CHANNELS,
+    rate: dominantRate || normalizeRate(DEFAULT_FPS)
+  };
+}
+
+function buildProjectTimelineSegments(
+  clips = [],
+  sourceInfoByAssetId = new Map(),
+  { sequenceRate = normalizeRate(DEFAULT_FPS), recordStartFrames = 0 } = {}
+) {
+  let recordCursor = Math.max(0, Math.round(recordStartFrames || 0));
 
   return clips.map((clip, index) => {
     const info = sourceInfoByAssetId.get(clip.assetId);
-    const fps = info?.rate?.timebase || DEFAULT_FPS;
-    const sourceInFrames = secondsToFrames(clip.sourceStartSeconds, fps);
-    const sourceOutFrames = secondsToFrames(clip.sourceEndSeconds, fps);
-    const durationFrames = Math.max(1, sourceOutFrames - sourceInFrames);
+    const sourceRate = info?.rate || normalizeRate(DEFAULT_FPS);
+    const sourceInFrames = secondsToFrames(clip.sourceStartSeconds, sourceRate.timebase);
+    const sourceOutFrames = secondsToFrames(clip.sourceEndSeconds, sourceRate.timebase);
+    const clipDurationSeconds = Math.max(0.001, Number(clip.sourceEndSeconds || 0) - Number(clip.sourceStartSeconds || 0));
+    const recordDurationFrames = Math.max(1, secondsToFrames(clipDurationSeconds, sequenceRate.timebase));
     const recordInFrames = recordCursor;
-    const recordOutFrames = recordInFrames + durationFrames;
+    const recordOutFrames = recordInFrames + recordDurationFrames;
     recordCursor = recordOutFrames;
 
     return {
@@ -245,33 +321,37 @@ function buildProjectTimelineSegments(clips = [], sourceInfoByAssetId = new Map(
       recordOutFrames,
       sourceInFrames,
       sourceOutFrames,
-      durationFrames,
+      recordDurationFrames,
+      sourceDurationFrames: info?.durationFrames || Math.max(1, sourceOutFrames),
       clip,
       info
     };
   });
 }
 
-function buildPremiereXml({ project, clips, sourceInfoByAssetId }) {
-  const segments = buildProjectTimelineSegments(clips, sourceInfoByAssetId);
+export function buildPremiereXml({ project, clips, sourceInfoByAssetId }) {
+  const sequenceInfo = determineSequenceInfo(clips, sourceInfoByAssetId);
+  const sequenceRate = sequenceInfo.rate;
+  const segments = buildProjectTimelineSegments(clips, sourceInfoByAssetId, {
+    sequenceRate,
+    recordStartFrames: 0
+  });
   const safeName = normalizeSequenceName(project.name);
   const sequenceDurationFrames = segments.length
-    ? segments[segments.length - 1].recordOutFrames - segments[0].recordInFrames
+    ? segments[segments.length - 1].recordOutFrames
     : 0;
-
-  const fileDefinitions = [];
+  const timecodeStartFrames = DEFAULT_START_TIMECODE_SECONDS * sequenceRate.timebase;
   const fileIds = new Map();
+  const emittedFileDefinitions = new Set();
 
-  for (const relation of project.projectAssets || []) {
-    const assetId = relation.assetId;
-    const originalPath = relation.asset.files?.find((file) => file.role === 'original')?.uri;
-    if (!originalPath) continue;
-    const info = sourceInfoByAssetId.get(assetId);
-    if (!info) continue;
-    const fileId = `file-${assetId}`;
+  const buildFileReferenceXml = (assetId, info) => {
+    const fileId = fileIds.get(assetId) || `file-${assetId}`;
     fileIds.set(assetId, fileId);
-    fileDefinitions.push(`
-            <file id="${fileId}">
+    if (emittedFileDefinitions.has(assetId)) {
+      return `<file id="${fileId}"/>`;
+    }
+    emittedFileDefinitions.add(assetId);
+    return `<file id="${fileId}">
               <name>${xmlEscape(info.basename)}</name>
               <pathurl>${xmlEscape(info.pathurl)}</pathurl>
               <rate>
@@ -297,65 +377,157 @@ function buildPremiereXml({ project, clips, sourceInfoByAssetId }) {
                   <channelcount>${info.audioChannels}</channelcount>
                 </audio>` : ''}
               </media>
-            </file>`);
-  }
+            </file>`;
+  };
 
-  const clipItems = segments.map((segment) => {
+  const videoClipItems = segments.map((segment) => {
     const assetId = segment.clip.assetId;
     const info = segment.info;
-    const fileId = fileIds.get(assetId);
+    const videoClipItemId = `clipitem-v-${segment.clipIndex}`;
+    const audioClipItemId = `clipitem-a-${segment.clipIndex}`;
     return `
-            <clipitem id="clipitem-${segment.clip.id}">
-              <name>${xmlEscape(segment.clip.label || segment.clip.asset.title)}</name>
-              <start>${segment.recordInFrames}</start>
-              <end>${segment.recordOutFrames}</end>
-              <in>${segment.sourceInFrames}</in>
-              <out>${segment.sourceOutFrames}</out>
-              <enabled>TRUE</enabled>
-              <rate>
-                <timebase>${info.rate.timebase}</timebase>
-                <ntsc>${info.rate.ntsc ? 'TRUE' : 'FALSE'}</ntsc>
-              </rate>
-              <file id="${fileId}"/>
-            </clipitem>`;
+          <clipitem id="${videoClipItemId}">
+            <name>${xmlEscape(segment.clip.label || segment.clip.asset.title)}</name>
+            <duration>${segment.sourceDurationFrames}</duration>
+            <rate>
+              <timebase>${info.rate.timebase}</timebase>
+              <ntsc>${info.rate.ntsc ? 'TRUE' : 'FALSE'}</ntsc>
+            </rate>
+            <start>${segment.recordInFrames}</start>
+            <end>${segment.recordOutFrames}</end>
+            <in>${segment.sourceInFrames}</in>
+            <out>${segment.sourceOutFrames}</out>
+            <enabled>TRUE</enabled>
+            ${buildFileReferenceXml(assetId, info)}
+            <sourcetrack>
+              <mediatype>video</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <link>
+              <linkclipref>${videoClipItemId}</linkclipref>
+              <mediatype>video</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>${segment.clipIndex}</clipindex>
+            </link>${info.hasAudio ? `
+            <link>
+              <linkclipref>${audioClipItemId}</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>${segment.clipIndex}</clipindex>
+            </link>` : ''}
+          </clipitem>`;
   }).join('');
 
+  const audioClipItems = segments
+    .filter((segment) => segment.info?.hasAudio)
+    .map((segment) => {
+      const assetId = segment.clip.assetId;
+      const info = segment.info;
+      const fileId = fileIds.get(assetId) || `file-${assetId}`;
+      const videoClipItemId = `clipitem-v-${segment.clipIndex}`;
+      const audioClipItemId = `clipitem-a-${segment.clipIndex}`;
+      return `
+          <clipitem id="${audioClipItemId}">
+            <name>${xmlEscape(segment.clip.label || segment.clip.asset.title)}</name>
+            <duration>${segment.sourceDurationFrames}</duration>
+            <rate>
+              <timebase>${info.rate.timebase}</timebase>
+              <ntsc>${info.rate.ntsc ? 'TRUE' : 'FALSE'}</ntsc>
+            </rate>
+            <start>${segment.recordInFrames}</start>
+            <end>${segment.recordOutFrames}</end>
+            <in>${segment.sourceInFrames}</in>
+            <out>${segment.sourceOutFrames}</out>
+            <enabled>TRUE</enabled>
+            <file id="${fileId}"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <link>
+              <linkclipref>${videoClipItemId}</linkclipref>
+              <mediatype>video</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>${segment.clipIndex}</clipindex>
+            </link>
+            <link>
+              <linkclipref>${audioClipItemId}</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>${segment.clipIndex}</clipindex>
+            </link>
+          </clipitem>`;
+    }).join('');
+
   return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
 <xmeml version="5">
   <sequence id="sequence-1">
     <name>${xmlEscape(safeName)}</name>
     <duration>${sequenceDurationFrames}</duration>
     <rate>
-      <timebase>${DEFAULT_FPS}</timebase>
-      <ntsc>FALSE</ntsc>
+      <timebase>${sequenceRate.timebase}</timebase>
+      <ntsc>${sequenceRate.ntsc ? 'TRUE' : 'FALSE'}</ntsc>
     </rate>
+    <timecode>
+      <rate>
+        <timebase>${sequenceRate.timebase}</timebase>
+        <ntsc>${sequenceRate.ntsc ? 'TRUE' : 'FALSE'}</ntsc>
+      </rate>
+      <string>${formatTimecodeFromFrames(timecodeStartFrames, sequenceRate.timebase)}</string>
+      <frame>${timecodeStartFrames}</frame>
+      <displayformat>${sequenceRate.ntsc ? 'DF' : 'NDF'}</displayformat>
+    </timecode>
     <media>
       <video>
-        <track>${clipItems}
+        <format>
+          <samplecharacteristics>
+            <width>${sequenceInfo.width}</width>
+            <height>${sequenceInfo.height}</height>
+            <anamorphic>FALSE</anamorphic>
+            <pixelaspectratio>square</pixelaspectratio>
+            <fielddominance>none</fielddominance>
+          </samplecharacteristics>
+        </format>
+        <track>${videoClipItems}
         </track>
-      </video>
+      </video>${audioClipItems ? `
+      <audio>
+        <numOutputChannels>${sequenceInfo.audioChannels}</numOutputChannels>
+        <format>
+          <samplecharacteristics>
+            <depth>16</depth>
+            <samplerate>${sequenceInfo.audioRate}</samplerate>
+          </samplecharacteristics>
+        </format>
+        <track>${audioClipItems}
+        </track>
+      </audio>` : ''}
     </media>
-    <resources>${fileDefinitions.join('')}
-    </resources>
   </sequence>
 </xmeml>`;
 }
 
-function buildEdl({ project, clips, sourceInfoByAssetId }) {
-  const segments = buildProjectTimelineSegments(clips, sourceInfoByAssetId);
+export function buildEdl({ project, clips, sourceInfoByAssetId }) {
+  const sequenceInfo = determineSequenceInfo(clips, sourceInfoByAssetId);
+  const sequenceRate = sequenceInfo.rate;
+  const programStartFrames = DEFAULT_START_TIMECODE_SECONDS * sequenceRate.timebase;
+  const segments = buildProjectTimelineSegments(clips, sourceInfoByAssetId, {
+    sequenceRate,
+    recordStartFrames: programStartFrames
+  });
   const title = sanitizeFilename(project.name, 'autoedit').slice(0, 32).toUpperCase();
   const lines = [
     `TITLE: ${title}`,
-    'FCM: NON-DROP FRAME'
+    `FCM: ${sequenceRate.ntsc ? 'DROP FRAME' : 'NON-DROP FRAME'}`
   ];
 
   for (const segment of segments) {
     const clip = segment.clip;
     const info = segment.info;
     const reel = sanitizeFilename(path.basename(info.basename, path.extname(info.basename)), 'AX').slice(0, 8).toUpperCase();
-    const fps = info.rate.timebase || DEFAULT_FPS;
     lines.push(
-      `${String(segment.clipIndex).padStart(3, '0')}  ${reel.padEnd(8, ' ')} V     C        ${formatTimecodeFromFrames(segment.sourceInFrames, fps)} ${formatTimecodeFromFrames(segment.sourceOutFrames, fps)} ${formatTimecodeFromFrames(segment.recordInFrames, fps)} ${formatTimecodeFromFrames(segment.recordOutFrames, fps)}`,
+      `${String(segment.clipIndex).padStart(3, '0')}  ${reel.padEnd(8, ' ')} V     C        ${formatTimecodeFromFrames(segment.sourceInFrames, info.rate.timebase)} ${formatTimecodeFromFrames(segment.sourceOutFrames, info.rate.timebase)} ${formatTimecodeFromFrames(segment.recordInFrames, sequenceRate.timebase)} ${formatTimecodeFromFrames(segment.recordOutFrames, sequenceRate.timebase)}`,
       `* FROM CLIP NAME: ${clip.label || clip.asset.title}`
     );
   }
@@ -401,7 +573,7 @@ function buildEditedWords(sourceState = {}) {
   return kept;
 }
 
-function buildCapCutSrt(sourceState = {}) {
+export function buildCapCutSrt(sourceState = {}) {
   const words = buildEditedWords(sourceState);
   if (!words.length) {
     throw new Error('No subtitle cues available for SRT export');
@@ -446,6 +618,19 @@ function buildCapCutSrt(sourceState = {}) {
     .join('\n');
 }
 
+export function buildProjectInterchangeArtifacts({
+  project,
+  clips,
+  sourceInfoByAssetId,
+  sourceState = null
+}) {
+  return {
+    premiereXml: buildPremiereXml({ project, clips, sourceInfoByAssetId }),
+    edl: buildEdl({ project, clips, sourceInfoByAssetId }),
+    capcutSrt: sourceState ? buildCapCutSrt(sourceState) : ''
+  };
+}
+
 export async function exportProjectInterchangeFile(projectId, format = 'premiere_xml') {
   const config = PROJECT_INTERCHANGE_FORMATS[format];
   if (!config) {
@@ -477,16 +662,7 @@ export async function exportProjectInterchangeFile(projectId, format = 'premiere
       const sourceState = await loadProjectEditSource(projectId);
       content = buildCapCutSrt(sourceState);
     } else {
-      const sourceInfoByAssetId = new Map();
-      for (const clip of timeline.clips) {
-        if (sourceInfoByAssetId.has(clip.assetId)) continue;
-        const sourcePath = clip.asset.files?.find((file) => file.role === 'original')?.uri;
-        if (!sourcePath || !fs.existsSync(sourcePath)) {
-          throw new Error(`Original file missing for asset ${clip.assetId}`);
-        }
-        sourceInfoByAssetId.set(clip.assetId, await probeMediaInfo(sourcePath));
-      }
-
+      const sourceInfoByAssetId = await collectSourceInfoByAssetId(timeline.clips);
       content = format === 'edl'
         ? buildEdl({ project, clips: timeline.clips, sourceInfoByAssetId })
         : buildPremiereXml({ project, clips: timeline.clips, sourceInfoByAssetId });

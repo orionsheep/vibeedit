@@ -8,6 +8,7 @@ import { withDatabase } from '../core/database.service.js';
 import { completeJob, createJob, failJob, markJobRunning, updateJobProgress } from '../core/job.service.js';
 import { createTimelineSnapshot } from './timeline.service.js';
 import { getProjectEditState, loadProjectEditSource } from './project-edit-state.service.js';
+import { buildProjectInterchangeArtifacts, collectSourceInfoByAssetId } from './project-interchange.service.js';
 
 function roundTime(value) {
   return Number(Number(value || 0).toFixed(3));
@@ -239,6 +240,48 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
       JSON.stringify(snapshot.otio, null, 2),
       'utf-8'
     );
+
+    const primaryTimeline = project.timelines[0];
+    if (primaryTimeline?.clips?.length) {
+      const sourceInfoByAssetId = await collectSourceInfoByAssetId(primaryTimeline.clips, {
+        pathurlResolver: ({ sourcePath }) => (
+          includeSourceMedia
+            ? path.join(mediaDir, path.basename(sourcePath))
+            : sourcePath
+        )
+      });
+      const interchange = buildProjectInterchangeArtifacts({
+        project,
+        clips: primaryTimeline.clips,
+        sourceInfoByAssetId,
+        sourceState
+      });
+      const interchangeBaseName = sanitizeFilename(project.name);
+
+      await fs.promises.writeFile(
+        path.join(projectDir, `${interchangeBaseName}.xml`),
+        interchange.premiereXml,
+        'utf-8'
+      );
+      await fs.promises.writeFile(
+        path.join(projectDir, `${interchangeBaseName}.edl`),
+        interchange.edl,
+        'utf-8'
+      );
+      if (String(interchange.capcutSrt || '').trim()) {
+        await fs.promises.writeFile(
+          path.join(projectDir, `${interchangeBaseName}.srt`),
+          interchange.capcutSrt,
+          'utf-8'
+        );
+      }
+
+      manifest.interchange_files = {
+        premiere_xml: `${interchangeBaseName}.xml`,
+        edl: `${interchangeBaseName}.edl`,
+        capcut_srt: String(interchange.capcutSrt || '').trim() ? `${interchangeBaseName}.srt` : null
+      };
+    }
 
     for (const relation of project.projectAssets) {
       await fs.promises.writeFile(
