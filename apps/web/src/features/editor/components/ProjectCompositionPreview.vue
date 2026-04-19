@@ -1,5 +1,5 @@
 <template>
-  <div class="composition-preview">
+  <div class="composition-preview" :class="{ compact: props.compact }">
     <div class="composition-stage">
       <template v-if="hasClips">
         <video
@@ -69,6 +69,10 @@ const props = defineProps({
   emptyLabel: {
     type: String,
     default: '当前项目时间线上还没有可预览的成片片段。'
+  },
+  compact: {
+    type: Boolean,
+    default: false
   }
 });
 
@@ -506,15 +510,18 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .control-button {
+  flex: 0 0 auto;
   border: 1px solid rgba(115, 169, 255, 0.28);
   background: #09121d;
   color: #dff1ff;
   height: 30px;
   min-width: 58px;
   padding: 0 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -530,6 +537,36 @@ defineExpose({
   color: #9db2c8;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.composition-preview.compact .composition-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'button meta'
+    'range range';
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.composition-preview.compact .control-button {
+  grid-area: button;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.composition-preview.compact .control-range {
+  grid-area: range;
+  width: 100%;
+}
+
+.composition-preview.compact .control-meta {
+  grid-area: meta;
+  justify-self: end;
+  min-width: 0;
+  font-size: 11px;
 }
 
 .preview-empty {

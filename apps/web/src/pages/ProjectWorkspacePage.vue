@@ -95,8 +95,8 @@
         </div>
       </header>
 
-      <div class="workspace-body" :style="workspaceLayoutStyle">
-        <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }" :style="sidebarStyle" @contextmenu.stop>
+      <div ref="workspaceBodyRef" class="workspace-body" :style="workspaceLayoutStyle">
+        <aside ref="sidebarRef" class="sidebar" :class="{ collapsed: sidebarCollapsed }" :style="sidebarStyle" @contextmenu.stop>
           <template v-if="!sidebarCollapsed">
             <div class="sidebar-tabs-shell">
               <div class="sidebar-tabs">
@@ -255,6 +255,7 @@
                 <div class="preview-frame">
                   <ProjectCompositionPreview
                     ref="previewPlayerRef"
+                    compact
                     :clips="activePreviewClips"
                     :project-time="currentPreviewTime"
                     :duration="currentPreviewDuration"
@@ -523,6 +524,8 @@ const panelSizes = ref({
   agentWidth: 420,
   previewHeight: 180
 });
+const workspaceBodyRef = ref(null);
+const sidebarRef = ref(null);
 
 const assetJobMap = computed(() => {
   const map = {};
@@ -2815,6 +2818,17 @@ function persistPanelSizes() {
   }
 }
 
+function applyPanelSizeStyles(sizes = panelSizes.value) {
+  if (workspaceBodyRef.value) {
+    workspaceBodyRef.value.style.setProperty('--sidebar-width', `${sidebarCollapsed.value ? 34 : sizes.sidebarWidth}px`);
+    workspaceBodyRef.value.style.setProperty('--agent-width', `${agentCollapsed.value ? 34 : sizes.agentWidth}px`);
+  }
+
+  if (sidebarRef.value) {
+    sidebarRef.value.style.setProperty('--sidebar-preview-height', `${sizes.previewHeight}px`);
+  }
+}
+
 function startResize(kind, event) {
   event.preventDefault();
   if (kind === 'sidebar' && sidebarCollapsed.value) {
@@ -2826,18 +2840,30 @@ function startResize(kind, event) {
   const startX = event.clientX;
   const startY = event.clientY;
   const startSizes = { ...panelSizes.value };
+  const draftSizes = { ...startSizes };
+  let resizeFrameId = null;
+
+  const scheduleStyleApply = () => {
+    if (resizeFrameId) return;
+    resizeFrameId = requestAnimationFrame(() => {
+      resizeFrameId = null;
+      applyPanelSizeStyles(draftSizes);
+    });
+  };
 
   const handleMove = (moveEvent) => {
     const deltaX = moveEvent.clientX - startX;
     const deltaY = moveEvent.clientY - startY;
 
     if (kind === 'sidebar') {
-      panelSizes.value.sidebarWidth = clamp(startSizes.sidebarWidth + deltaX, 180, 360);
+      draftSizes.sidebarWidth = clamp(startSizes.sidebarWidth + deltaX, 180, 360);
     } else if (kind === 'agent') {
-      panelSizes.value.agentWidth = clamp(startSizes.agentWidth - deltaX, 320, 620);
+      draftSizes.agentWidth = clamp(startSizes.agentWidth - deltaX, 320, 620);
     } else if (kind === 'preview') {
-      panelSizes.value.previewHeight = clamp(startSizes.previewHeight + deltaY, 110, 320);
+      draftSizes.previewHeight = clamp(startSizes.previewHeight + deltaY, 110, 320);
     }
+
+    scheduleStyleApply();
   };
 
   const handleUp = () => {
@@ -2845,6 +2871,12 @@ function startResize(kind, event) {
     document.removeEventListener('mouseup', handleUp);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    if (resizeFrameId) {
+      cancelAnimationFrame(resizeFrameId);
+      resizeFrameId = null;
+    }
+    panelSizes.value = { ...draftSizes };
+    applyPanelSizeStyles(panelSizes.value);
     persistPanelSizes();
   };
 
@@ -2856,16 +2888,20 @@ function startResize(kind, event) {
 
 function toggleSidebarCollapsed() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
+  applyPanelSizeStyles();
   persistPanelSizes();
 }
 
 function toggleAgentCollapsed() {
   agentCollapsed.value = !agentCollapsed.value;
+  applyPanelSizeStyles();
   persistPanelSizes();
 }
 
 watch(projectId, async () => {
   loadStoredPanelSizes();
+  await nextTick();
+  applyPanelSizeStyles();
   await loadWorkspace();
   await ensureAgentSessionLoaded();
 });
@@ -2955,6 +2991,8 @@ watch(projectSlices, (slices) => {
 
 onMounted(async () => {
   loadStoredPanelSizes();
+  await nextTick();
+  applyPanelSizeStyles();
   await loadWorkspace();
   await ensureAgentSessionLoaded();
   document.addEventListener('click', closeContextMenu);
@@ -3164,6 +3202,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: rgba(10, 16, 24, 0.96);
   border: 1px solid #182532;
+  contain: layout paint;
 }
 
 .sidebar {
