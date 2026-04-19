@@ -45,15 +45,56 @@
         </div>
       </template>
 
-      <div v-if="showThinkingBubble" class="terminal-entry thinking-entry">
-        <div class="entry-label system">$ {{ statusLabel || 'RUNNING' }}</div>
-        <template v-if="events.length">
-          <div v-for="event in events" :key="event.id" class="event-line">
-            <span class="event-step">{{ event.step || event.type }}</span>
-            <span class="event-message">{{ event.message }}</span>
+      <div v-if="showThinkingBubble" class="terminal-entry thinking-entry" :class="`tone-${thinkingTone}`">
+        <div class="thinking-shell">
+          <div class="thinking-hero">
+            <div class="thinking-reactor" aria-hidden="true">
+              <span class="reactor-ring ring-a"></span>
+              <span class="reactor-ring ring-b"></span>
+              <span class="reactor-ring ring-c"></span>
+              <span class="reactor-core"></span>
+            </div>
+
+            <div class="thinking-copy-block">
+              <div class="entry-label system">$ {{ statusLabel || 'RUNNING' }}</div>
+              <strong class="thinking-title">{{ thinkingTitle }}</strong>
+              <p class="thinking-subtitle">{{ thinkingSubtitle }}</p>
+            </div>
+
+            <div class="thinking-meter" aria-hidden="true">
+              <span v-for="bar in 6" :key="bar" class="meter-bar"></span>
+            </div>
           </div>
-        </template>
-        <pre v-else class="entry-copy">正在处理，请稍等…</pre>
+
+          <div class="thinking-stage-row">
+            <span
+              v-for="stage in thinkingStages"
+              :key="stage.key"
+              class="thinking-stage-pill"
+              :class="stage.state"
+            >
+              {{ stage.label }}
+            </span>
+          </div>
+
+          <div v-if="thinkingTicker.length" class="thinking-ticker">
+            <span class="ticker-label">最近动作</span>
+            <div class="ticker-track">
+              <span v-for="item in thinkingTicker" :key="item" class="ticker-chip">{{ item }}</span>
+            </div>
+          </div>
+
+          <template v-if="recentEvents.length">
+            <div v-for="event in recentEvents" :key="event.id" class="event-line enriched">
+              <span class="event-ping"></span>
+              <div class="event-copy">
+                <span class="event-step">{{ event.step || event.type }}</span>
+                <span class="event-message">{{ event.message }}</span>
+              </div>
+            </div>
+          </template>
+          <pre v-else class="entry-copy">正在处理，请稍等…</pre>
+        </div>
       </div>
     </div>
 
@@ -87,7 +128,7 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { renderAgentMarkdown } from '../utils/agentMarkdown';
 
 const props = defineProps({
@@ -119,9 +160,75 @@ const emit = defineEmits([
 
 const scrollRef = ref(null);
 const isComposing = ref(false);
+
+const STAGE_DEFINITIONS = [
+  { key: 'plan', label: '理解' },
+  { key: 'tool', label: '操作' },
+  { key: 'review', label: '校验' },
+  { key: 'finish', label: '收口' }
+];
+
 function renderMarkdown(content = '') {
   return renderAgentMarkdown(content);
 }
+
+const recentEvents = computed(() => (Array.isArray(props.events) ? props.events : []).slice(-4));
+
+const latestEvent = computed(() => recentEvents.value[recentEvents.value.length - 1] || null);
+
+const thinkingTone = computed(() => {
+  const status = String(props.statusLabel || '');
+  if (props.stoppingAgent || /停止|取消|cancell/i.test(status)) return 'warning';
+  if (props.pendingConfirmationRun || /确认|等待/.test(status)) return 'hold';
+  return 'active';
+});
+
+function inferStageKey(event, statusLabel = '') {
+  const type = String(event?.type || '').trim();
+  const status = String(statusLabel || '').trim();
+
+  if (type === 'complete' || /完成|收口/.test(status)) return 'finish';
+  if (['review_start', 'review_fixed', 'review_passed'].includes(type) || /审查|校验/.test(status)) return 'review';
+  if (['tool_call', 'tool_result', 'waiting_confirmation'].includes(type) || /确认|工具|停止/.test(status)) return 'tool';
+  return 'plan';
+}
+
+const currentStageKey = computed(() => inferStageKey(latestEvent.value, props.statusLabel));
+
+const thinkingStages = computed(() => {
+  const activeIndex = Math.max(0, STAGE_DEFINITIONS.findIndex((stage) => stage.key === currentStageKey.value));
+  return STAGE_DEFINITIONS.map((stage, index) => ({
+    ...stage,
+    state: index < activeIndex ? 'done' : index === activeIndex ? 'active' : 'idle'
+  }));
+});
+
+const thinkingTicker = computed(() => recentEvents.value
+  .map((event) => String(event.step || event.type || '').trim())
+  .filter(Boolean)
+  .slice(-3));
+
+const thinkingTitle = computed(() => {
+  if (props.stoppingAgent) return '正在安全中断当前运行';
+  if (props.pendingConfirmationRun) return '等待确认下一步工具动作';
+  if (latestEvent.value?.message) return latestEvent.value.message;
+  if (props.statusLabel) return `Agent 正在${props.statusLabel}`;
+  return 'Agent 正在处理当前项目';
+});
+
+const thinkingSubtitle = computed(() => {
+  const eventCount = recentEvents.value.length;
+  const latestStep = String(latestEvent.value?.step || latestEvent.value?.type || '').trim();
+  if (props.pendingConfirmationRun) {
+    return '当前动作需要人工确认；确认前不会继续改动时间线。';
+  }
+  if (!eventCount) {
+    return '正在建立本轮执行上下文，并准备进入工具调用。';
+  }
+  return latestStep
+    ? `当前阶段：${latestStep} · 近期 ${eventCount} 条运行事件`
+    : `近期 ${eventCount} 条运行事件正在持续刷新`;
+});
 
 function scrollToBottom() {
   nextTick(() => {
@@ -205,6 +312,190 @@ function handlePromptKeydown(event) {
 
 .thinking-entry {
   border-bottom-style: dashed;
+}
+
+.thinking-shell {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #19303f;
+  background:
+    radial-gradient(circle at top right, rgba(43, 174, 255, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(8, 16, 24, 0.98) 0%, rgba(9, 14, 20, 0.98) 100%);
+  overflow: hidden;
+}
+
+.thinking-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(115deg, transparent 0%, transparent 36%, rgba(123, 226, 255, 0.08) 50%, transparent 64%, transparent 100%);
+  background-size: 210% 100%;
+  animation: thinkingSweep 3.4s linear infinite;
+  pointer-events: none;
+}
+
+.tone-hold .thinking-shell {
+  border-color: rgba(214, 174, 92, 0.42);
+  background:
+    radial-gradient(circle at top right, rgba(214, 174, 92, 0.16), transparent 36%),
+    linear-gradient(180deg, rgba(21, 17, 10, 0.98) 0%, rgba(14, 12, 9, 0.98) 100%);
+}
+
+.tone-warning .thinking-shell {
+  border-color: rgba(255, 139, 90, 0.42);
+  background:
+    radial-gradient(circle at top right, rgba(255, 139, 90, 0.16), transparent 36%),
+    linear-gradient(180deg, rgba(24, 14, 12, 0.98) 0%, rgba(18, 11, 10, 0.98) 100%);
+}
+
+.thinking-hero {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.thinking-reactor {
+  position: relative;
+  width: 42px;
+  height: 42px;
+}
+
+.reactor-ring,
+.reactor-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+}
+
+.reactor-ring {
+  border: 1px solid rgba(118, 220, 255, 0.42);
+}
+
+.reactor-ring.ring-a {
+  animation: reactorSpin 3.4s linear infinite;
+}
+
+.reactor-ring.ring-b {
+  inset: 5px;
+  border-style: dashed;
+  animation: reactorSpinReverse 2.9s linear infinite;
+}
+
+.reactor-ring.ring-c {
+  inset: 11px;
+  border-color: rgba(118, 220, 255, 0.28);
+  animation: reactorPulse 1.8s ease-in-out infinite;
+}
+
+.reactor-core {
+  inset: 15px;
+  background: radial-gradient(circle, #95efff 0%, #23c4ff 58%, rgba(35, 196, 255, 0.08) 100%);
+  box-shadow: 0 0 18px rgba(35, 196, 255, 0.42);
+}
+
+.thinking-copy-block {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.thinking-title {
+  display: block;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #f3fbff;
+}
+
+.thinking-subtitle {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #96afc0;
+}
+
+.thinking-meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 28px;
+}
+
+.meter-bar {
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(119, 228, 255, 0.92) 0%, rgba(22, 197, 255, 0.18) 100%);
+  animation: meterBounce 1.2s ease-in-out infinite;
+}
+
+.meter-bar:nth-child(1) { height: 10px; animation-delay: 0.04s; }
+.meter-bar:nth-child(2) { height: 16px; animation-delay: 0.12s; }
+.meter-bar:nth-child(3) { height: 24px; animation-delay: 0.2s; }
+.meter-bar:nth-child(4) { height: 14px; animation-delay: 0.28s; }
+.meter-bar:nth-child(5) { height: 21px; animation-delay: 0.36s; }
+.meter-bar:nth-child(6) { height: 12px; animation-delay: 0.44s; }
+
+.thinking-stage-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.thinking-stage-pill {
+  border: 1px solid #233847;
+  background: rgba(12, 20, 28, 0.84);
+  color: #688397;
+  padding: 4px 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.thinking-stage-pill.done {
+  border-color: rgba(97, 216, 255, 0.28);
+  color: #99ecff;
+  background: rgba(15, 37, 48, 0.82);
+}
+
+.thinking-stage-pill.active {
+  border-color: #16c5ff;
+  color: #f6fcff;
+  background: linear-gradient(90deg, rgba(22, 197, 255, 0.24), rgba(14, 29, 38, 0.9));
+  box-shadow: inset 0 0 0 1px rgba(22, 197, 255, 0.1);
+}
+
+.thinking-ticker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 6px;
+}
+
+.ticker-label {
+  font-size: 10px;
+  color: #77cfff;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.ticker-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ticker-chip {
+  border: 1px solid #223342;
+  background: rgba(10, 18, 25, 0.88);
+  color: #d8e7f2;
+  padding: 5px 8px;
+  font-size: 11px;
 }
 
 .entry-label {
@@ -313,6 +604,34 @@ function handlePromptKeydown(event) {
   margin-bottom: 8px;
 }
 
+.event-line.enriched {
+  position: relative;
+  z-index: 1;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 0;
+  padding: 8px 10px;
+  border: 1px solid #162734;
+  background: rgba(7, 14, 20, 0.76);
+}
+
+.event-ping {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #7fe2ff;
+  box-shadow: 0 0 0 0 rgba(127, 226, 255, 0.5);
+  animation: eventPing 1.8s ease-out infinite;
+}
+
+.event-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
 .event-step {
   color: #73c8ff;
   font-size: 11px;
@@ -324,6 +643,28 @@ function handlePromptKeydown(event) {
   color: #d7e6f1;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.tone-warning .reactor-ring,
+.tone-warning .event-ping {
+  border-color: rgba(255, 160, 107, 0.42);
+  background: #ff8b5a;
+}
+
+.tone-warning .reactor-core {
+  background: radial-gradient(circle, #ffd1bf 0%, #ff8b5a 58%, rgba(255, 139, 90, 0.08) 100%);
+  box-shadow: 0 0 18px rgba(255, 139, 90, 0.34);
+}
+
+.tone-hold .reactor-ring,
+.tone-hold .event-ping {
+  border-color: rgba(232, 205, 109, 0.42);
+  background: #d7ae5a;
+}
+
+.tone-hold .reactor-core {
+  background: radial-gradient(circle, #fff1ba 0%, #d7ae5a 58%, rgba(215, 174, 90, 0.08) 100%);
+  box-shadow: 0 0 18px rgba(215, 174, 90, 0.34);
 }
 
 .terminal-footer {
@@ -386,5 +727,46 @@ function handlePromptKeydown(event) {
   color: #071018;
   border-color: #16c5ff;
   font-weight: 700;
+}
+
+@keyframes thinkingSweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -40% 0;
+  }
+}
+
+@keyframes reactorSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes reactorSpinReverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+@keyframes reactorPulse {
+  0%, 100% { transform: scale(0.96); opacity: 0.6; }
+  50% { transform: scale(1.02); opacity: 1; }
+}
+
+@keyframes meterBounce {
+  0%, 100% { transform: scaleY(0.55); opacity: 0.45; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+@keyframes eventPing {
+  0% {
+    box-shadow: 0 0 0 0 rgba(127, 226, 255, 0.48);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(127, 226, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(127, 226, 255, 0);
+  }
 }
 </style>
