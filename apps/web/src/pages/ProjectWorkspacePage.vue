@@ -229,29 +229,6 @@
         <div class="pane-resizer vertical" @mousedown="startResize('sidebar', $event)"></div>
 
         <main class="editor-panel" :style="editorPanelStyle" @contextmenu.stop>
-          <section class="workspace-mode-bar">
-            <div class="mode-toggle-group">
-              <button
-                class="mode-toggle-btn"
-                :class="{ active: workspaceMode === 'assemble_script' }"
-                @click="workspaceMode = 'assemble_script'"
-              >
-                口播剪稿
-              </button>
-              <button
-                class="mode-toggle-btn"
-                :class="{ active: workspaceMode === 'live_slicing' }"
-                @click="workspaceMode = 'live_slicing'"
-              >
-                直播切片
-              </button>
-            </div>
-            <div class="mode-toggle-copy">
-              <strong>{{ workspaceMode === 'live_slicing' ? '长视频切多条短片' : '单成片精修' }}</strong>
-              <span>{{ workspaceMode === 'live_slicing' ? liveSliceSummary : '在统一母片上删词、删停顿、压节奏。' }}</span>
-            </div>
-          </section>
-
           <section class="preview-slot">
             <div class="preview-card">
               <div class="preview-head">
@@ -371,7 +348,12 @@
               </div>
             </div>
 
-            <SubtitlePanel class="project-subtitle-panel" @seek-to="handleProjectSeek" />
+            <SubtitlePanel
+              class="project-subtitle-panel"
+              :workspace-mode="workspaceMode"
+              @update:workspace-mode="workspaceMode = $event"
+              @seek-to="handleProjectSeek"
+            />
             <TimelineStrip class="project-timeline-strip" />
             <div class="editor-status-bar">
               <div class="status-left">
@@ -769,11 +751,6 @@ const currentPreviewDuration = computed(() => Number(activePreviewClips.value[ac
 const currentPreviewTime = computed(() => originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value));
 const selectedSliceTranscriptBlocks = computed(() => selectedSliceDetail.value?.transcript_blocks || []);
 const selectedSliceTranscriptText = computed(() => String(selectedSliceDetail.value?.transcript_text || '').trim());
-const liveSliceSummary = computed(() => {
-  if (!projectSlices.value.length) return '还没有切片';
-  if (!selectedSlice.value) return `${projectSlices.value.length} 个切片`;
-  return `${selectedSlice.value.title} · ${formatDuration(selectedSlice.value.total_duration || currentPreviewDuration.value)}`;
-});
 const canCreateSliceSuggestions = computed(() => orderedProjectAssets.value.length > 0 && !loadingSliceSuggestions.value);
 const activeExportTimelineId = computed(() => (isLiveSlicingMode.value ? String(selectedSliceId.value || '').trim() : ''));
 const activeExportTargetLabel = computed(() => {
@@ -817,6 +794,7 @@ const deletedGapDuration = computed(() => editorStore.deletedGapDuration);
 const agentActionLabel = computed(() => {
   const map = {
     assemble_script: '口播拼稿',
+    live_slicing: '直播切片',
     custom: '自由指令'
   };
   return map[agentMode.value] || '项目 Agent';
@@ -852,6 +830,7 @@ const agentStatusLabel = computed(() => {
 
 const agentPlaceholder = computed(() => {
   if (agentMode.value === 'assemble_script') return '例如：这些素材是同一份口播稿的多次录制，请尽量完整保留内容，只去掉重复表达、口头禅和明显停顿。';
+  if (agentMode.value === 'live_slicing') return '例如：先分析全文，给我 4 个适合发短视频的平台切片候选，每条控制在 30-50 秒。';
   return '输入你对整个项目时间线的要求。';
 });
 
@@ -3077,56 +3056,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto var(--preview-height) 8px minmax(0, 1fr);
-}
-
-.workspace-mode-bar {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 8px;
-  border-bottom: 1px solid #15212d;
-  background: #08111a;
-}
-
-.mode-toggle-group {
-  display: inline-flex;
-  border: 1px solid #213242;
-  background: #091019;
-}
-
-.mode-toggle-btn {
-  border: none;
-  background: transparent;
-  color: #8ca5b6;
-  padding: 7px 12px;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  cursor: pointer;
-}
-
-.mode-toggle-btn.active {
-  background: rgba(22, 197, 255, 0.12);
-  color: #ecf6fb;
-  box-shadow: inset 0 0 0 1px #16c5ff;
-}
-
-.mode-toggle-copy {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.mode-toggle-copy strong {
-  font-size: 12px;
-  color: #f4fbff;
-}
-
-.mode-toggle-copy span {
-  font-size: 10px;
-  color: #82a0b3;
+  grid-template-rows: var(--preview-height) 8px minmax(0, 1fr);
 }
 
 .preview-slot,

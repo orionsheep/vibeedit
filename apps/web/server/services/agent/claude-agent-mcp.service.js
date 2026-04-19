@@ -6,11 +6,15 @@ import {
   toolGetPauseCandidates,
   toolDeleteSubtitleBlocks,
   toolDeleteWordsByPhrase,
+  toolCreateProjectSlice,
+  toolDeleteProjectSlice,
   toolExportPackage,
   toolExportVideo,
+  toolGetProjectSliceDetail,
   toolClearDeleted,
   toolGetProjectContext,
   toolGetScriptBlocks,
+  toolListProjectSlices,
   toolGetSubtitleBlocks,
   toolGetTimelineDetail,
   toolListProjectAssets,
@@ -18,6 +22,7 @@ import {
   toolRemoveProjectAsset,
   toolReorderProjectAssets,
   toolSearchProjectSubtitles,
+  toolSuggestProjectSlices,
   toolReplaceSubtitleText,
   toolRestoreSubtitleBlocks,
   toolRestoreWordsByPhrase,
@@ -84,6 +89,25 @@ function compactResultPayload(toolName, result = {}) {
         asset_count: Array.isArray(result.assets) ? result.assets.length : 0,
         assets: result.assets || []
       };
+    case 'list_project_slices':
+      return {
+        slice_count: Array.isArray(result.slices) ? result.slices.length : Number(result.slice_count || 0)
+      };
+    case 'suggest_project_slices':
+      return {
+        suggestion_count: Array.isArray(result.suggestions) ? result.suggestions.length : Number(result.suggestion_count || 0)
+      };
+    case 'get_project_slice_detail':
+      return {
+        slice: result.slice
+          ? {
+              id: result.slice.id,
+              title: result.slice.title,
+              total_duration: result.slice.total_duration,
+              clip_count: result.slice.clip_count
+            }
+          : undefined
+      };
     case 'get_subtitle_blocks':
     case 'get_script_blocks':
     case 'get_deleted_subtitle_blocks':
@@ -128,6 +152,8 @@ function compactResultPayload(toolName, result = {}) {
         removed_asset_title: result?.removed_asset_title || undefined,
         ordered_asset_ids: Array.isArray(result?.ordered_asset_ids) ? result.ordered_asset_ids : undefined,
         reordered_asset_titles: Array.isArray(result?.ordered_asset_titles) ? result.ordered_asset_titles : undefined,
+        slice_id: result?.slice_id || undefined,
+        slice_title: result?.slice_title || undefined,
         exported_path: result?.output_path || result?.zip_path || undefined,
         timeline: result?.timeline || undefined
       };
@@ -158,6 +184,27 @@ function toolResultToText(result = {}, toolName = '') {
       const assets = Array.isArray(result.assets) ? result.assets : [];
       const assetLines = assets.map((asset) => `${asset.sort_order}. ${asset.title} (${formatTime(asset.duration_seconds)}s)`);
       return [result.summary || '', assetLines.join('\n')].filter(Boolean).join('\n\n');
+    }
+    case 'list_project_slices': {
+      const slices = Array.isArray(result.slices) ? result.slices : [];
+      const lines = slices.map((slice, index) => `${index + 1}. ${slice.title} | ${formatTime(slice.total_duration)}s | ${slice.clip_count} 段 | id=${slice.id}`);
+      return [result.summary || '', lines.join('\n')].filter(Boolean).join('\n\n');
+    }
+    case 'suggest_project_slices': {
+      const suggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
+      const lines = suggestions.map((slice, index) => `${index + 1}. ${slice.title} | ${formatTime(slice.duration_seconds)}s | ${String(slice.summary || '').trim()}`);
+      return [result.summary || '', lines.join('\n')].filter(Boolean).join('\n\n');
+    }
+    case 'get_project_slice_detail': {
+      const slice = result.slice || null;
+      if (!slice) return result.summary || '未找到切片。';
+      const blockLines = (slice.transcript_blocks || []).map((block, index) => `${index + 1}. ${formatTime(block.start)}-${formatTime(block.end)} ${block.text}`);
+      return [
+        result.summary || '',
+        `标题：${slice.title}\n时长：${formatTime(slice.total_duration)}s\n片段数：${slice.clip_count}`,
+        String(slice.transcript_text || '').trim() ? `正文：\n${String(slice.transcript_text || '').trim()}` : '',
+        blockLines.length ? `分块：\n${blockLines.join('\n')}` : ''
+      ].filter(Boolean).join('\n\n');
     }
     case 'get_subtitle_blocks':
     case 'get_script_blocks':
@@ -217,6 +264,49 @@ export const TOOL_DEFINITIONS = {
     description: '列出项目素材标题与时长。',
     schema: {},
     execute: (projectId) => toolListProjectAssets(projectId)
+  },
+  list_project_slices: {
+    description: '列出当前项目已经存在的直播切片。',
+    schema: {},
+    execute: (projectId) => toolListProjectSlices(projectId)
+  },
+  suggest_project_slices: {
+    description: '基于当前项目全文内容给出直播切片候选。默认先给建议，不直接创建切片。',
+    schema: {
+      query: z.string().optional(),
+      count: z.number().optional(),
+      min_duration: z.number().optional(),
+      max_duration: z.number().optional()
+    },
+    execute: (projectId, args) => toolSuggestProjectSlices(projectId, args)
+  },
+  get_project_slice_detail: {
+    description: '读取某个已创建切片的标题、时长、正文和分块内容。',
+    schema: {
+      slice_id: z.string()
+    },
+    execute: (projectId, args) => toolGetProjectSliceDetail(projectId, args)
+  },
+  create_project_slice: {
+    description: '根据指定时间范围创建一个新的直播切片。ranges 使用母片时间范围数组，每项包含 start/end 秒数。',
+    schema: {
+      title: z.string().optional(),
+      summary: z.string().optional(),
+      query: z.string().optional(),
+      target_duration_seconds: z.number().optional(),
+      ranges: z.array(z.object({
+        start: z.number(),
+        end: z.number()
+      })).min(1)
+    },
+    execute: (projectId, args) => toolCreateProjectSlice(projectId, args)
+  },
+  delete_project_slice: {
+    description: '删除一个已存在的直播切片。',
+    schema: {
+      slice_id: z.string()
+    },
+    execute: (projectId, args) => toolDeleteProjectSlice(projectId, args)
   },
   search_project_subtitles: {
     description: '在当前项目字幕流里按文本搜索某句内容。',

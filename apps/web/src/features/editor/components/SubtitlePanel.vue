@@ -62,6 +62,22 @@
         </div>
         <div class="toolbar-divider"></div>
         </div>
+        <div class="editor-mode-switch">
+          <button
+            class="mode-switch-btn"
+            :class="{ active: props.workspaceMode === 'assemble_script' }"
+            @click="$emit('update:workspaceMode', 'assemble_script')"
+          >
+            口播剪稿
+          </button>
+          <button
+            class="mode-switch-btn"
+            :class="{ active: props.workspaceMode === 'live_slicing' }"
+            @click="$emit('update:workspaceMode', 'live_slicing')"
+          >
+            直播切片
+          </button>
+        </div>
       </div>
 
       <div class="editor-container" ref="editorContainer" @mousedown="handleContainerMouseDown">
@@ -484,7 +500,13 @@ watch(currentWordIndex, (newIndex) => {
 });
 
 // Emit current word click for video seeking
-const emit = defineEmits(['seekTo']);
+const emit = defineEmits(['seekTo', 'update:workspaceMode']);
+const props = defineProps({
+  workspaceMode: {
+    type: String,
+    default: 'assemble_script'
+  }
+});
 
 function seekToWord(word) {
   emit('seekTo', word.start_time);
@@ -517,7 +539,7 @@ function keepCurrentWordInView(index) {
 <script>
 export default {
   name: 'SubtitlePanel',
-  emits: ['seekTo']
+  emits: ['seekTo', 'update:workspaceMode']
 };
 </script>
 
@@ -576,6 +598,29 @@ export default {
   flex-wrap: nowrap;
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+.editor-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--bg-primary, #0a0a0a);
+  margin-left: auto;
+}
+
+.mode-switch-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #a0a0a0);
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mode-switch-btn.active {
+  background: rgba(0, 212, 255, 0.14);
+  color: var(--text-primary, #ffffff);
+  box-shadow: inset 0 0 0 1px var(--accent, #00d4ff);
 }
 
 .panel-title {

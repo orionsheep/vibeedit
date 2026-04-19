@@ -18,6 +18,7 @@ import {
 } from './project-agent-intent.service.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
 import { getProjectEditState } from '../projects/project-edit-state.service.js';
+import { getProjectById } from '../projects/project.service.js';
 
 const activeRunAbortControllers = new Map();
 const cancellationRequestedRuns = new Set();
@@ -47,12 +48,23 @@ function summarizeTimelineSignature(timeline = null) {
 }
 
 async function readProjectMutationSignature(projectId) {
-  const [timeline, editState] = await Promise.all([
+  const [timeline, editState, project] = await Promise.all([
     getProjectTimeline(projectId),
-    getProjectEditState(projectId)
+    getProjectEditState(projectId),
+    getProjectById(projectId)
   ]);
+  const sliceSignature = (project?.timelines || [])
+    .filter((item) => String(item.kind || '') === 'slice')
+    .map((item) => [
+      String(item.id || ''),
+      String(item.title || item.name || ''),
+      String(item.color || ''),
+      Number(item.clip_count || 0),
+      Number(item.total_duration || 0)
+    ]);
   return JSON.stringify({
     timeline: JSON.parse(summarizeTimelineSignature(timeline)),
+    slices: sliceSignature,
     edit_state_version: Number(editState?.version || 0),
     deleted_word_count: Array.isArray(editState?.deleted_word_keys) ? editState.deleted_word_keys.length : 0,
     deleted_gap_count: Array.isArray(editState?.deleted_gap_keys) ? editState.deleted_gap_keys.length : 0
@@ -149,7 +161,17 @@ async function finalizeCancelledRun(projectId, sessionId, runId, message = '已�
 function resultRequiresMutation(mode, result = {}) {
   if (mode === 'assemble_script') return true;
   const changes = Array.isArray(result?.applied_changes) ? result.applied_changes : [];
-  return changes.some((change) => Boolean(change?.mutates_project || change?.timeline || change?.removed_asset_title || change?.reordered_asset_titles || change?.replacement_text));
+  return changes.some((change) => {
+    const tool = String(change?.tool || change?.change || change?.type || '').trim();
+    return Boolean(
+      change?.mutates_project ||
+      change?.timeline ||
+      change?.removed_asset_title ||
+      change?.reordered_asset_titles ||
+      change?.replacement_text ||
+      ['create_project_slice', 'update_project_slice', 'delete_project_slice'].includes(tool)
+    );
+  });
 }
 
 function isNoMutationError(error) {
@@ -304,9 +326,11 @@ async function runProjectAgentInternal({
     if (requestedMode !== normalizedMode) {
       const routingMessage = requestProfile.routingReason === 'assemble_script_intent'
         ? '检测到口播剪辑意图，已自动切换到口播拼稿主链。'
+        : requestProfile.routingReason === 'live_slicing_intent'
+          ? '检测到直播切片意图，已自动切换到直播切片模式。'
         : requestProfile.routingReason === 'read_only_project_query'
           ? '检测到当前请求是读取/分析型项目问题，已切换到自由指令只读模式，不会强行改时间线。'
-          : requestProfile.routingReason === 'non_assemble_project_task'
+        : requestProfile.routingReason === 'non_assemble_project_task'
             ? '检测到当前请求不是口播拼稿，而是通用项目任务，已切换到自由指令模式处理。'
           : '检测到当前请求不是剪辑改动任务，已切换到自由指令模式处理。';
       await appendAgentEvent({
@@ -387,7 +411,7 @@ async function runProjectAgentInternal({
     const latestRun = await getAgentRunRecord(projectId, run.id);
     const assistantReply = String(result.reply || latestRun?.result?.reply || '').trim();
     const mutationSignatureAfter = await readProjectMutationSignature(projectId);
-    const requiresMutation = resultRequiresMutation(normalizedMode, latestRun?.result || result);
+    const requiresMutation = requestProfile.requiresMutation || resultRequiresMutation(normalizedMode, latestRun?.result || result);
 
     if (requiresMutation && mutationSignatureAfter === mutationSignatureBefore) {
       if (normalizedMode === 'assemble_script' && !forcedRetryUsed) {

@@ -22,7 +22,7 @@ import {
   updateAgentRunRecord
 } from './agent-session.service.js';
 
-const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
+const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script', 'live_slicing']);
 
 function loadClaudeMdInstructions() {
   try {
@@ -73,7 +73,21 @@ function buildSystemPrompt({
           ? '这是一次强制重试：上一轮没有真正改到项目或没有完成自审清单。你这次必须自己读完整个当前口播稿，随后强制调用一次 get_assemble_candidates，必要时再读 get_pause_candidates，然后调用删除/恢复/去停顿工具完成实际修改。不要停在总结。'
           : ''
       ].join('\n')
-    : [
+    : normalizedMode === 'live_slicing'
+      ? [
+          '你现在执行的是一个完整的 Claude Code skill：直播切片。',
+          '目标不是继续在主时间线上抠字，而是围绕整条长视频，分析内容结构，产出多个可独立导出的小视频切片。',
+          '直播切片模式下，优先使用切片相关工具读取、建议、创建、更新和删除切片；不要默认去改当前主时间线。',
+          '切片的本质是“母片上的若干时间范围”，所以先理解全文，再决定哪些段落值得单独成片。',
+          '如果用户还没明确给出题材方向、条数、时长或风格，你可以先读完整脚本块，再主动提出候选方案或反问约束。',
+          '若用户要求“先给候选”，优先调用 suggest_project_slices，不要直接创建切片。',
+          '若用户要求“直接生成”“就按这个主题切几条”，再调用 create_project_slice 落地。',
+          '直播切片模式下允许只做分析和建议，不要求每轮都创建切片；但只要用户明确要求生成、更新或删除切片，就必须真实调用切片工具。',
+          '不要把直播切片做成“随机截几段”。候选应尽量基于完整表达单元、相对独立主题、高潮观点或信息密度高的连续片段。',
+          '如果用户要求查看某个切片的正文、总结、时长或范围，应优先调用 list_project_slices / get_project_slice_detail，再据实回答。',
+          '除非用户明确要求，否则不要顺手删主时间线的字、停顿或片段；直播切片和口播拼稿是同一个 Agent 的两种技能，不要混用目标。'
+        ].join('\n')
+      : [
         '你现在处于自由指令模式，它是一个全能的 Claude Code 项目助理，不只是剪辑流水线触发器。',
         '如果用户是在问普通问题，且不需要项目上下文，直接回答即可；不要为了调用工具而调用工具。',
         '如果用户是在问当前项目、当前时间线、当前字幕、剪辑后逐字稿或当前成片状态，你应先读取必要工具，再给出准确答案；这种读取/分析型请求默认不要改动项目。',
@@ -90,7 +104,7 @@ function buildSystemPrompt({
     '你是 AutoEdit 的项目级 Claude Code Agent。',
     '你只能通过提供的 MCP 工具修改项目，不能凭空声称已经完成操作。',
     '你拥有当前项目全部可用工具的直接操作权，可以自行决定调用哪些工具完成任务。',
-    '模式只决定当前任务目标和编辑偏好，不会限制你的工具权限；无论是口播拼稿还是自由指令，你都可以自由选择任意项目工具。',
+    '模式只决定当前任务目标和编辑偏好，不会限制你的工具权限；无论是口播拼稿、直播切片还是自由指令，你都可以自由选择任意项目工具。',
     '项目状态的真相是当前真实时间线、当前项目级字幕覆盖和当前删除态，不要按素材原顺序脑补项目内容。',
     '除了 remove_pauses 这类明显确定性动作外，其他语义判断都必须由你基于完整上下文做出。',
     '读取上下文时先小后大：先用 get_project_context 和 get_timeline_detail 建立整体认知；只有在需要语义判断时，再读 get_script_blocks、get_subtitle_blocks 或 search_project_subtitles。',
@@ -141,6 +155,8 @@ function buildUserPrompt({
   }
   if (String(mode || '').trim() === 'assemble_script') {
     lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  } else if (String(mode || '').trim() === 'live_slicing') {
+    lines.push('这是一条直播切片请求。优先围绕整条长视频生成、读取或管理多个切片，不要默认去改主时间线。若用户只是想先看候选或先分析全文，可以只调用只读和建议类切片工具；若用户明确要求生成切片，必须真实创建切片。回复时优先给出清晰的候选标题、时长、主题和后续动作建议。');
   } else if (requestProfile?.explicitReadOnlyProjectQuery) {
     lines.push('这是一条只读型项目请求：不要修改项目，不要删除或恢复任何内容。若用户要剪辑后的逐字稿、最终稿、当前字幕全文，优先调用 get_script_blocks 一次读完整当前脚本，再直接输出。若用户要知道当前删了什么、剩下什么或当前版本状态，优先调用 get_project_context、get_timeline_detail、必要时补充 get_script_blocks，再据实回答。');
   } else if (requestProfile?.requiresMutation) {
@@ -357,7 +373,7 @@ export async function runClaudeAgentSession({
   const requestProfile = classifyProjectAgentRequest({ mode, prompt, topic, targetMinutes });
   const normalizedMode = requestProfile.effectiveMode;
   if (!SUPPORTED_PROJECT_AGENT_MODES.has(normalizedMode)) {
-    throw new Error(`Unsupported project agent mode: ${normalizedMode}. Only custom and assemble_script are supported.`);
+    throw new Error(`Unsupported project agent mode: ${normalizedMode}. Only custom, assemble_script and live_slicing are supported.`);
   }
 
   const sessionDetail = await getProjectAgentSession(projectId, sessionId);

@@ -37,7 +37,7 @@
       <template v-else>
         <div class="terminal-entry">
           <div class="entry-label system">$ READY</div>
-          <pre class="entry-copy">直接输入要求，例如“剪辑一下口播”或“执行口播拼稿，尽量完整保留，只删重复版本、口头禅和停顿”。</pre>
+          <pre class="entry-copy">直接输入要求，例如“执行口播拼稿，尽量完整保留，只删重复版本、口头禅和停顿”或“执行直播切片，先给我 4 个候选”。</pre>
         </div>
       </template>
 
@@ -58,6 +58,7 @@
         <span class="prompt-marker">&gt;</span>
         <select :value="modeValue" @change="$emit('update:modeValue', $event.target.value)">
           <option value="assemble_script">口播拼稿</option>
+          <option value="live_slicing">直播切片</option>
           <option value="custom">自由指令</option>
         </select>
       </div>

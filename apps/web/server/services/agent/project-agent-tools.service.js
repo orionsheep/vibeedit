@@ -2,6 +2,13 @@ import { withDatabase } from '../core/database.service.js';
 import { createTimelineSnapshot } from '../projects/timeline.service.js';
 import { exportProjectPackage, exportProjectTimelineVideo } from '../projects/project-export.service.js';
 import { getProjectById, removeAssetFromProject, reorderProjectAssets } from '../projects/project.service.js';
+import {
+  createProjectSlice,
+  deleteProjectSlice,
+  getProjectSlice,
+  listProjectSlices,
+  suggestProjectSlices
+} from '../projects/project-slice.service.js';
 import { getProjectTimeline, listAssetWords } from '../projects/timeline.service.js';
 import { recordProjectEditHistory } from '../projects/project-edit-history.service.js';
 import {
@@ -2326,6 +2333,114 @@ export async function toolRemovePauses(
     deleted_gap_keys: selectedCandidates.map((candidate) => candidate.gap_key),
     removed_seconds: roundTime(removedSeconds),
     timeline
+  };
+}
+
+export async function toolListProjectSlices(projectId) {
+  const slices = await listProjectSlices(projectId);
+  return {
+    success: true,
+    change: 'list_project_slices',
+    summary: slices.length ? `当前共有 ${slices.length} 个直播切片。` : '当前还没有直播切片。',
+    slice_count: slices.length,
+    slices
+  };
+}
+
+export async function toolSuggestProjectSlices(
+  projectId,
+  {
+    query = '',
+    count = 4,
+    min_duration = 20,
+    max_duration = 75
+  } = {}
+) {
+  const result = await suggestProjectSlices(projectId, {
+    query,
+    count,
+    min_duration,
+    max_duration,
+    create: false
+  });
+  const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+  return {
+    success: true,
+    changed: false,
+    change: 'suggest_project_slices',
+    summary: suggestions.length
+      ? `已给出 ${suggestions.length} 个切片候选。`
+      : '当前没有找到合适的切片候选。',
+    suggestion_count: suggestions.length,
+    suggestions
+  };
+}
+
+export async function toolGetProjectSliceDetail(projectId, { slice_id: sliceId = '' } = {}) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) {
+    return {
+      success: false,
+      change: 'get_project_slice_detail',
+      summary: 'slice_id 不能为空。'
+    };
+  }
+  const slice = await getProjectSlice(projectId, targetId);
+  return {
+    success: true,
+    change: 'get_project_slice_detail',
+    summary: `已读取切片《${slice.title}》，当前时长 ${formatDuration(slice.total_duration || 0)}。`,
+    slice
+  };
+}
+
+export async function toolCreateProjectSlice(
+  projectId,
+  {
+    title = '',
+    summary = '',
+    query = '',
+    target_duration_seconds = 0,
+    ranges = []
+  } = {}
+) {
+  const slice = await createProjectSlice(projectId, {
+    title,
+    summary,
+    query,
+    target_duration_seconds,
+    ranges
+  });
+  return {
+    success: true,
+    changed: true,
+    mutates_project: true,
+    change: 'create_project_slice',
+    summary: `已创建切片《${slice.title}》，时长 ${formatDuration(slice.total_duration || 0)}。`,
+    slice_id: slice.id,
+    slice_title: slice.title,
+    slice
+  };
+}
+
+export async function toolDeleteProjectSlice(projectId, { slice_id: sliceId = '' } = {}) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) {
+    return {
+      success: false,
+      change: 'delete_project_slice',
+      summary: 'slice_id 不能为空。'
+    };
+  }
+  const removed = await deleteProjectSlice(projectId, targetId);
+  return {
+    success: true,
+    changed: true,
+    mutates_project: true,
+    change: 'delete_project_slice',
+    summary: `已删除切片《${removed.title}》。`,
+    slice_id: removed.id,
+    slice_title: removed.title
   };
 }
 
