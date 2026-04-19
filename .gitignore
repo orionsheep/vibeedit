@@ -40,3 +40,26 @@ workspace/
 uploads/
 tmp/
 *.log
+
+# Database runtime / dump data must never be committed
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.dump
+*.sql
+*.sql.gz
+*.sql.zip
+*.bak
+*.backup
+pgdata/
+.pgdata/
+postgres-data/
+postgresql-data/
+db-data/
+database-data/
+backups/
+dumps/
