@@ -1442,12 +1442,21 @@ function buildPauseCandidateAlias(candidate = {}) {
   return `${assetPart}::${roundTime(candidate.start)}-${roundTime(candidate.end)}`;
 }
 
+function requestWantsAggressivePauseCleanup(requestContext = {}) {
+  const text = `${String(requestContext?.prompt || '').trim()} ${String(requestContext?.topic || '').trim()}`.toLowerCase();
+  if (!text) return false;
+  const mentionsPause = /(停顿|间隙|空白|空隙|节奏)/.test(text);
+  if (!mentionsPause) return false;
+  return /(所有|全部|全都|全部的|都删|全删|彻底|一口气|一次性|整个|通通)/.test(text);
+}
+
 function buildPauseCandidates(state, {
   minGapSeconds = 0.35,
   assetTitle = '',
   limit = null,
   includeDeleted = false,
-  gapKeys = []
+  gapKeys = [],
+  includeCrossAsset = false
 } = {}) {
   const words = Array.isArray(state?.words) ? state.words : [];
   const keptMask = Array.isArray(state?.keptMask) ? state.keptMask : [];
@@ -1464,7 +1473,8 @@ function buildPauseCandidates(state, {
     const left = words[leftIndex];
     const right = words[rightIndex];
     if (!left || !right) continue;
-    if (String(left.asset_id || '') !== String(right.asset_id || '')) continue;
+    const crossAssetGap = String(left.asset_id || '') !== String(right.asset_id || '');
+    if (crossAssetGap && !includeCrossAsset) continue;
     if (assetNeedle && normalizeText(left.asset_title) !== assetNeedle) continue;
 
     const gapKey = String(left.gap_key_after || '').trim();
@@ -1523,6 +1533,7 @@ function buildPauseCandidates(state, {
       left_sentence_boundary: leftSentenceBoundary,
       right_starts_with_filler: rightStartsWithFiller,
       already_deleted: alreadyDeleted,
+      cross_asset_gap: crossAssetGap,
       safety_level: safetyLevel,
       recommended,
       suggestion_reasons: suggestionReasons,
@@ -2241,16 +2252,18 @@ export async function toolRemovePauses(
     min_gap_seconds: minGapSeconds = 0.4,
     gap_keys: gapKeys = [],
     asset_title: assetTitle = '',
-    limit = null
+    limit = null,
+    aggressive = false
   } = {},
   context = {}
 ) {
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
   const strictAssemble = String(context?.requestContext?.mode || '') === 'assemble_script';
+  const aggressiveRequest = Boolean(aggressive) || requestWantsAggressivePauseCleanup(context?.requestContext);
 
   const requestedGapKeys = (Array.isArray(gapKeys) ? gapKeys : []).map((value) => String(value || '').trim()).filter(Boolean);
-  if (strictAssemble && !requestedGapKeys.length) {
+  if (strictAssemble && !requestedGapKeys.length && !aggressiveRequest) {
     const suggestedCandidates = buildPauseCandidates(state, {
       minGapSeconds: Number(minGapSeconds || 0.35),
       assetTitle,
@@ -2269,12 +2282,15 @@ export async function toolRemovePauses(
   }
   const requestedGapKeySet = new Set(requestedGapKeys);
   const selectedCandidates = buildPauseCandidates(state, {
-    minGapSeconds: requestedGapKeys.length ? 0 : Number(minGapSeconds || 0.4),
+    minGapSeconds: requestedGapKeys.length
+      ? 0
+      : (aggressiveRequest ? Math.min(Number(minGapSeconds || 0.4), 0.25) : Number(minGapSeconds || 0.4)),
     assetTitle,
     limit: requestedGapKeys.length
       ? Math.max(1, requestedGapKeys.length)
-      : (limit == null ? null : Math.min(200, Math.max(1, Number(limit || 1)))),
-    gapKeys: []
+      : (aggressiveRequest ? null : (limit == null ? null : Math.min(200, Math.max(1, Number(limit || 1))))),
+    gapKeys: [],
+    includeCrossAsset: aggressiveRequest
   }).filter((candidate) => (
     (!requestedGapKeys.length || requestedGapKeySet.has(candidate.gap_key) || requestedGapKeySet.has(buildPauseCandidateAlias(candidate))) &&
     (!requestedGapKeys.length || Number(candidate.gap_seconds || 0) >= Number(minGapSeconds || 0.4))
@@ -2304,10 +2320,13 @@ export async function toolRemovePauses(
       {
         min_gap_seconds: minGapSeconds,
         gap_keys: requestedGapKeys,
-        asset_title: assetTitle
+        asset_title: assetTitle,
+        aggressive: aggressiveRequest
       },
       context,
-      `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
+      aggressiveRequest
+        ? `Agent 全量清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
+        : `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
     )
   });
 
@@ -2315,7 +2334,8 @@ export async function toolRemovePauses(
     success: true,
     changed: true,
     change: 'remove_pauses',
-    summary: `已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
+    summary: `${aggressiveRequest ? '已执行全量停顿清理，' : ''}已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
+    aggressive: aggressiveRequest,
     targeted: requestedGapKeys.length > 0,
     requested_gap_key_count: requestedGapKeys.length,
     deleted_gap_count: selectedCandidates.length,

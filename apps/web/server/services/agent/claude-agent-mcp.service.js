@@ -431,12 +431,13 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolRestoreWordsByPhrase(projectId, args)
   },
   remove_pauses: {
-    description: '切掉明显停顿。口播拼稿模式下优先先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做 3-8 个间隙的小批量定点删除；不要直接用大阈值整批扫停顿。',
+    description: '切掉明显停顿。口播拼稿模式下默认先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做 3-8 个间隙的小批量定点删除；如果用户明确要求“删掉所有/全部停顿”，可以传 aggressive=true 做一次全量清理。',
     schema: {
       min_gap_seconds: z.number().optional(),
       gap_keys: z.array(z.string()).optional(),
       asset_title: z.string().optional(),
-      limit: z.number().optional()
+      limit: z.number().optional(),
+      aggressive: z.boolean().optional()
     },
     mutatesProject: true,
     execute: (projectId, args) => toolRemovePauses(projectId, args)
