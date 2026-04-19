@@ -193,15 +193,17 @@
         </div>
       </div>
 
-      <div
-        v-if="contextMenu.visible"
-        class="subtitle-context-menu"
-        :style="contextMenuStyle"
-        @contextmenu.prevent
-      >
-        <button class="context-menu-item danger" @click="handleContextDelete">删除</button>
-        <button class="context-menu-item" @click="handleContextRestore">恢复</button>
-      </div>
+      <Teleport to="body">
+        <div
+          v-if="contextMenu.visible"
+          class="subtitle-context-menu"
+          :style="contextMenuStyle"
+          @contextmenu.prevent
+        >
+          <button class="context-menu-item danger" @click="handleContextDelete">删除</button>
+          <button class="context-menu-item" @click="handleContextRestore">恢复</button>
+        </div>
+      </Teleport>
     </template>
   </div>
 </template>

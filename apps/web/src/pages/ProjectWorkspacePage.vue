@@ -319,28 +319,30 @@
         </aside>
       </div>
 
-      <div
-        v-if="contextMenu.visible"
-        class="context-menu"
-        :style="contextMenuStyle"
-        @contextmenu.prevent
-      >
-        <template v-if="contextMenu.scope === 'asset'">
-          <button class="context-item" @click="previewAssetFromContext">预览这个素材</button>
-          <button class="context-item" @click="moveAssetByStep(contextMenu.assetId, -1)">上移</button>
-          <button class="context-item" @click="moveAssetByStep(contextMenu.assetId, 1)">下移</button>
-          <button class="context-item" @click="moveAssetToEdge(contextMenu.assetId, 'start')">移到最前</button>
-          <button class="context-item" @click="moveAssetToEdge(contextMenu.assetId, 'end')">移到最后</button>
-          <button class="context-item danger" @click="removeAssetFromProjectAction(contextMenu.assetId)">从项目中删除</button>
-        </template>
-        <template v-else>
-          <button class="context-item" @click="saveTimeline">保存时间线</button>
-          <button class="context-item" @click="reloadTimeline">重载项目</button>
-          <button class="context-item" @click="saveSnapshot">保存快照</button>
-          <button class="context-item" @click="handleExportVideo">导出视频</button>
-          <button class="context-item" @click="handleExportPackage">导出工程包</button>
-        </template>
-      </div>
+      <Teleport to="body">
+        <div
+          v-if="contextMenu.visible"
+          class="context-menu"
+          :style="contextMenuStyle"
+          @contextmenu.prevent
+        >
+          <template v-if="contextMenu.scope === 'asset'">
+            <button class="context-item" @click="previewAssetFromContext">预览这个素材</button>
+            <button class="context-item" @click="moveAssetByStep(contextMenu.assetId, -1)">上移</button>
+            <button class="context-item" @click="moveAssetByStep(contextMenu.assetId, 1)">下移</button>
+            <button class="context-item" @click="moveAssetToEdge(contextMenu.assetId, 'start')">移到最前</button>
+            <button class="context-item" @click="moveAssetToEdge(contextMenu.assetId, 'end')">移到最后</button>
+            <button class="context-item danger" @click="removeAssetFromProjectAction(contextMenu.assetId)">从项目中删除</button>
+          </template>
+          <template v-else>
+            <button class="context-item" @click="saveTimeline">保存时间线</button>
+            <button class="context-item" @click="reloadTimeline">重载项目</button>
+            <button class="context-item" @click="saveSnapshot">保存快照</button>
+            <button class="context-item" @click="handleExportVideo">导出视频</button>
+            <button class="context-item" @click="handleExportPackage">导出工程包</button>
+          </template>
+        </div>
+      </Teleport>
     </div>
   </div>
 </template>
