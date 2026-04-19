@@ -195,10 +195,12 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import AppConfirmDialog from '../../../components/AppConfirmDialog.vue';
 import { useEditorStore } from '../stores/editorStore';
 
 const editorStore = useEditorStore();
+const { words, gaps, config, currentWordIndex, totalWords, keptWords, hasSelection } = storeToRefs(editorStore);
 
 // Helper functions to check if a word/gap is deleted or selected
 // Access store properties directly to preserve reactivity
@@ -217,17 +219,6 @@ function isGapDeleted(gapIndex) {
 function isGapSelected(gapIndex) {
   return editorStore.selectedGaps.has(gapIndex);
 }
-
-// Use computed for currentWordIndex to preserve reactivity
-const currentWordIndex = computed(() => editorStore.currentWordIndex);
-
-// Destructure refs (words, gaps are refs, Set properties are accessed via helper functions)
-const { words, gaps, config } = editorStore;
-
-// Computed from store
-const totalWords = computed(() => editorStore.totalWords);
-const keptWords = computed(() => editorStore.keptWords);
-const hasSelection = computed(() => editorStore.hasSelection);
 
 const editorContainer = ref(null);
 const contextMenu = ref({
@@ -265,8 +256,8 @@ function formatTime(seconds) {
 }
 
 function getGapAfterWord(index) {
-  if (!editorStore.gaps || editorStore.gaps.length === 0) return null;
-  return editorStore.gaps.find(g => g.afterWord === index);
+  if (!gaps.value || gaps.value.length === 0) return null;
+  return gaps.value.find(g => g.afterWord === index);
 }
 
 function buildSliceFill(markers = []) {
@@ -313,15 +304,15 @@ function getWordStyle(word) {
 
 function isCrossAssetGap(gap) {
   if (!gap) return false;
-  const left = words[gap.afterWord];
-  const right = words[gap.beforeWord];
+  const left = words.value[gap.afterWord];
+  const right = words.value[gap.beforeWord];
   return Boolean(left?.asset_id && right?.asset_id && left.asset_id !== right.asset_id);
 }
 
 function getGapStyle(gap) {
   if (!gap) return null;
-  const left = words[gap.afterWord];
-  const right = words[gap.beforeWord];
+  const left = words.value[gap.afterWord];
+  const right = words.value[gap.beforeWord];
   const color = right?.asset_color || left?.asset_color;
   const soft = right?.asset_soft || left?.asset_soft;
 
@@ -357,7 +348,7 @@ function handleWordMouseUp(event, index) {
 
   // If not dragging (just a click), seek to this word
   if (dragStartIndex.value === index) {
-    emit('seekTo', words[index].start_time);
+    emit('seekTo', words.value[index].start_time);
   }
 }
 

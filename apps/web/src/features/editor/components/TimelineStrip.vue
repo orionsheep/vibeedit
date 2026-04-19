@@ -57,11 +57,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { storeToRefs } from 'pinia';
 import { useEditorStore } from '../stores/editorStore';
 
 const editorStore = useEditorStore();
-const { words, gaps, deletedWords, deletedGaps, currentTime, duration, editedCurrentTime, editedDuration } = editorStore;
+const { words, gaps, deletedWords, deletedGaps, currentTime, duration, editedCurrentTime, editedDuration } = storeToRefs(editorStore);
 
 const trackRef = ref(null);
 const waveformCanvas = ref(null);
@@ -168,6 +169,10 @@ onMounted(() => {
 
   // Re-render on window resize
   window.addEventListener('resize', renderWaveform);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', renderWaveform);
 });
 </script>
 
