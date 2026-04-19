@@ -1447,6 +1447,7 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
     await ensureSelectedSliceDetail(selectedSliceId.value, { force: true });
   }
 
+  syncEditorWithProjectTimeline();
   return nextSlices;
 }
 
@@ -1455,6 +1456,7 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   if (!targetId) return;
   selectedSliceId.value = targetId;
   const detail = await ensureSelectedSliceDetail(targetId, { force: true });
+  syncEditorWithProjectTimeline();
   if (jumpToSliceStart) {
     const firstRange = detail?.ranges?.[0] || null;
     if (firstRange) {

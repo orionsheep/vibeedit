@@ -938,6 +938,7 @@ export default {
 }
 
 .word.in-active-slice:not(.selected):not(.deleted) {
+  background: color-mix(in srgb, var(--word-slice-color, transparent) 16%, transparent);
   box-shadow: inset 0 -3px 0 var(--word-slice-color, transparent);
 }
 
