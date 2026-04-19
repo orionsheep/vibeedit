@@ -864,18 +864,66 @@ function normalizeDocumentBlocks(blocks = []) {
     .filter((block) => block.text);
 }
 
+function buildDocumentParagraphs(blocks = [], {
+  minParagraphChars = 120,
+  maxParagraphChars = 260
+} = {}) {
+  const normalized = normalizeDocumentBlocks(blocks);
+  if (!normalized.length) return [];
+
+  const paragraphs = [];
+  let current = '';
+
+  const pushCurrent = () => {
+    const text = String(current || '').trim();
+    if (!text) return;
+    paragraphs.push(text);
+    current = '';
+  };
+
+  for (const block of normalized) {
+    const text = String(block.text || '').trim();
+    if (!text) continue;
+    const candidate = current ? `${current}${text}` : text;
+    const shouldBreak = Boolean(
+      current && (
+        current.length >= maxParagraphChars ||
+        (current.length >= minParagraphChars && /[。！？!?；;]$/.test(current))
+      )
+    );
+
+    if (shouldBreak) {
+      pushCurrent();
+      current = text;
+      continue;
+    }
+
+    current = candidate;
+  }
+
+  pushCurrent();
+  return paragraphs;
+}
+
+function formatRangeLabel(start, end) {
+  return `${formatDuration(start)} - ${formatDuration(end)}`;
+}
+
 const masterDocumentSection = computed(() => {
   const blocks = buildTranscriptBlocksFromEditorWords(editorStore.words || [], {
     deletedWords: editorStore.deletedWords,
     deletedGaps: editorStore.deletedGaps
   });
+  const paragraphs = buildDocumentParagraphs(blocks);
   const fullText = blocks.map((block) => block.text).join('\n\n');
+  const totalDuration = Number(currentPreviewDuration.value || 0);
   return {
     id: 'master',
     title: isLiveSlicingMode.value ? '当前成片文稿' : '项目文稿',
-    kicker: `${formatDuration(currentPreviewDuration.value || 0)} · ${blocks.length || 0} 段`,
-    summary: fullText.slice(0, 120),
-    blocks,
+    timeLabel: formatRangeLabel(0, totalDuration),
+    kicker: `${formatDuration(totalDuration)} · ${paragraphs.length || 0} 段`,
+    preview: paragraphs[0]?.slice(0, 80) || fullText.slice(0, 80),
+    paragraphs,
     fullText
   };
 });
@@ -885,13 +933,18 @@ const sliceDocumentSections = computed(() => projectSlices.value.map((slice) => 
     ? selectedSliceDetail.value
     : sliceDocumentCache.value[slice.id];
   const blocks = normalizeDocumentBlocks(detail?.transcript_blocks || []);
+  const paragraphs = buildDocumentParagraphs(blocks);
   const fullText = String(detail?.transcript_text || '').trim();
+  const ranges = Array.isArray(detail?.ranges) ? detail.ranges : [];
+  const rangeStart = ranges.length ? Math.min(...ranges.map((range) => Number(range.start || 0))) : 0;
+  const rangeEnd = ranges.length ? Math.max(...ranges.map((range) => Number(range.end || 0))) : Number(slice.total_duration || detail?.total_duration || 0);
   return {
     id: slice.id,
     title: slice.title || slice.name || '未命名切片',
-    kicker: `${formatDuration(slice.total_duration || detail?.total_duration || 0)} · ${blocks.length || 0} 段`,
-    summary: (blocks[0]?.text || fullText || '点击查看该切片文稿').slice(0, 120),
-    blocks,
+    timeLabel: formatRangeLabel(rangeStart, rangeEnd),
+    kicker: `${formatDuration(slice.total_duration || detail?.total_duration || 0)} · ${paragraphs.length || 0} 段`,
+    preview: (paragraphs[0] || fullText || '点击查看该切片文稿').slice(0, 80),
+    paragraphs,
     fullText
   };
 }));
@@ -926,7 +979,7 @@ const documentPreviewSubtitle = computed(() => {
   if (!section) {
     return isLiveSlicingMode.value ? '先生成切片，再打开文稿。' : '当前还没有可显示的文稿内容。';
   }
-  return `${section.kicker || ''}${section.kicker && section.summary ? ' · ' : ''}${section.summary || ''}`;
+  return section.timeLabel || section.kicker || '文稿';
 });
 
 const agentActionLabel = computed(() => {

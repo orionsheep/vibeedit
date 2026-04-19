@@ -19,9 +19,9 @@
               :class="{ active: section.id === activeSectionId }"
               @click="$emit('select-section', section.id)"
             >
-              <span class="document-section-kicker">{{ section.kicker || '文稿' }}</span>
+              <span class="document-section-kicker">{{ section.timeLabel || section.kicker || '文稿' }}</span>
               <strong>{{ section.title }}</strong>
-              <small>{{ section.summary || '点击查看内容' }}</small>
+              <small>{{ section.preview || '点击查看内容' }}</small>
             </button>
           </aside>
 
@@ -32,23 +32,18 @@
               <header class="document-active-head">
                 <div>
                   <strong>{{ activeSection.title }}</strong>
-                  <span>{{ activeSection.kicker || '文稿' }}</span>
+                  <span>{{ activeSection.timeLabel || activeSection.kicker || '文稿' }}</span>
                 </div>
-                <p v-if="activeSection.summary" class="document-summary">{{ activeSection.summary }}</p>
               </header>
 
-              <div v-if="activeSection.blocks?.length" class="document-block-list">
-                <article
-                  v-for="(block, index) in activeSection.blocks"
-                  :key="block.id || `${activeSection.id}_${index}`"
-                  class="document-block"
+              <div v-if="activeSection.paragraphs?.length" class="document-paragraph-list">
+                <p
+                  v-for="(paragraph, index) in activeSection.paragraphs"
+                  :key="`${activeSection.id}_${index}`"
+                  class="document-paragraph"
                 >
-                  <div class="document-block-meta">
-                    <span>第 {{ index + 1 }} 段</span>
-                    <strong>{{ formatTime(block.start) }} - {{ formatTime(block.end) }}</strong>
-                  </div>
-                  <p>{{ block.text }}</p>
-                </article>
+                  {{ paragraph }}
+                </p>
               </div>
               <pre v-else-if="activeSection.fullText" class="document-fallback">{{ activeSection.fullText }}</pre>
               <div v-else class="document-state">当前文稿还没有可用段落。</div>
@@ -77,13 +72,6 @@ defineEmits(['close', 'select-section']);
 const activeSection = computed(() => (
   props.sections.find((section) => section.id === props.activeSectionId) || props.sections[0] || null
 ));
-
-function formatTime(seconds) {
-  const safe = Number(seconds || 0);
-  const mins = Math.floor(safe / 60);
-  const secs = Math.floor(safe % 60);
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
 </script>
 
 <style scoped>
@@ -214,40 +202,18 @@ function formatTime(seconds) {
   color: #89aac2;
 }
 
-.document-summary {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #9eb7c8;
-}
-
-.document-block-list {
+.document-paragraph-list {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
-.document-block {
-  border: 1px solid #18252f;
-  background: #0d151c;
-  padding: 12px 14px;
-}
-
-.document-block-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: #7ea9c7;
-}
-
-.document-block p,
+.document-paragraph,
 .document-fallback {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
   color: #eef7fd;
-  line-height: 1.75;
+  line-height: 1.9;
   font-size: 14px;
 }
 
