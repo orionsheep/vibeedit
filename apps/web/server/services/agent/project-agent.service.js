@@ -179,6 +179,46 @@ function isNoMutationError(error) {
   return message.includes('没有产生任何实际修改') || message.includes('没有真正调用需要的工具');
 }
 
+function isRecoverableMutationError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('without progress') ||
+    message.includes('fetch failed') ||
+    message.includes('socket hang up') ||
+    message.includes('econnreset')
+  );
+}
+
+function didAppliedChangeSucceed(change = {}) {
+  return change?.success !== false && change?.changed !== false;
+}
+
+function buildMutationRecoveryReply(mode, appliedChanges = [], error = null) {
+  const normalizedMode = String(mode || 'custom').trim();
+  const reason = String(error?.message || '模型收尾阶段不稳定').trim();
+
+  if (normalizedMode === 'live_slicing') {
+    const createdCount = appliedChanges.filter((change) => (
+      didAppliedChangeSucceed(change) &&
+      String(change.tool || change.change || '').trim() === 'create_project_slice'
+    )).length;
+    const deletedCount = appliedChanges.filter((change) => (
+      didAppliedChangeSucceed(change) &&
+      String(change.tool || change.change || '').trim() === 'delete_project_slice'
+    )).length;
+    if (createdCount > 0 && deletedCount === 0) {
+      return `已完成直播切片创建，但模型在收尾阶段超时；本次实际生成 ${createdCount} 个切片。`;
+    }
+    if (createdCount > 0 || deletedCount > 0) {
+      return `已完成直播切片调整，但模型在收尾阶段超时；本次切片变更已经保留。`;
+    }
+  }
+
+  return `已完成本次项目修改，但模型在收尾阶段未稳定返回（${reason}）；当前变更已经保留。`;
+}
+
 function buildAssembleNoopReply() {
   return [
     '本轮已复查当前口播稿，但没有发现需要继续落地的明显删减项，所以保持当前时间线不变。',
@@ -524,6 +564,67 @@ async function runProjectAgentInternal({
   } catch (error) {
     if (abortController.signal.aborted || cancellationRequestedRuns.has(run.id) || String(error?.name || '') === 'AbortError') {
       return finalizeCancelledRun(projectId, sessionId, run.id);
+    }
+
+    const mutationSignatureAfter = await readProjectMutationSignature(projectId).catch(() => mutationSignatureBefore);
+    if (requestProfile.requiresMutation && mutationSignatureAfter !== mutationSignatureBefore && isRecoverableMutationError(error)) {
+      const latestRun = await getAgentRunRecord(projectId, run.id);
+      const appliedChanges = latestRun?.applied_changes || [];
+      const recoveredReply = String(latestRun?.result?.reply || '').trim() || buildMutationRecoveryReply(normalizedMode, appliedChanges, error);
+      const recoveredResult = {
+        ...(latestRun?.result || {}),
+        reply: recoveredReply,
+        summary: String(latestRun?.result?.summary || '').trim() || recoveredReply,
+        applied_changes: appliedChanges,
+        recovered_from_stall: true
+      };
+
+      if (String(latestRun?.status || '') !== 'completed') {
+        await updateAgentRunRecord(run.id, {
+          status: 'completed',
+          result: recoveredResult,
+          requiresConfirmation: false,
+          appliedChanges,
+          finished: true
+        });
+        await appendAgentEvent({
+          sessionId,
+          runId: run.id,
+          type: 'complete',
+          step: 'recovered_complete',
+          message: '本次 Agent 已实际改动项目；收尾阶段超时，已按完成态保底收口。',
+          payload: {
+            recovered_from_stall: true
+          }
+        });
+      }
+
+      await appendAcceptedAssistantReply({
+        sessionId,
+        runId: run.id,
+        reply: recoveredReply,
+        run: {
+          ...(latestRun || {}),
+          status: 'completed',
+          result: recoveredResult,
+          model: latestRun?.model || requestedModel,
+          provider: latestRun?.provider || requestedProvider
+        }
+      });
+      await touchAgentSession(sessionId, {
+        summary: mergeSessionSummary(session.summary, userPrompt, recoveredReply, appliedChanges)
+      });
+
+      return {
+        success: true,
+        session_id: sessionId,
+        run_id: run.id,
+        reply: recoveredReply,
+        status: 'completed',
+        requires_confirmation: false,
+        applied_changes: appliedChanges,
+        result: recoveredResult
+      };
     }
 
     const failureMessage = String(error?.message || 'Project agent failed');

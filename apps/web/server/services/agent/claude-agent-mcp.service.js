@@ -299,6 +299,7 @@ export const TOOL_DEFINITIONS = {
         end: z.number()
       })).min(1)
     },
+    mutatesProject: true,
     execute: (projectId, args) => toolCreateProjectSlice(projectId, args)
   },
   delete_project_slice: {
@@ -306,6 +307,7 @@ export const TOOL_DEFINITIONS = {
     schema: {
       slice_id: z.string()
     },
+    mutatesProject: true,
     execute: (projectId, args) => toolDeleteProjectSlice(projectId, args)
   },
   search_project_subtitles: {

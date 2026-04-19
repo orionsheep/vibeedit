@@ -279,6 +279,9 @@ function isMutatingChange(change = {}) {
   return didChangeApply(change) && new Set([
     'delete_subtitle_blocks',
     'restore_subtitle_blocks',
+    'create_project_slice',
+    'update_project_slice',
+    'delete_project_slice',
     'remove_project_asset',
     'reorder_project_assets',
     'delete_words_by_phrase',
