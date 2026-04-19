@@ -16,6 +16,8 @@ import { cancelProjectAgentRun, confirmProjectAgentRun, runProjectAgentSessionWo
 import { createProjectAgentSession, getProjectAgentSession, listProjectAgentSessions, listRunEvents } from '../services/agent/agent-session.service.js';
 import { ensureStorageDirs, ensureWorkspaceDirs } from '../services/editor/config.js';
 import { createAssetFromUpload } from '../services/library/asset-library.service.js';
+import { attachAuthContext, requireAuth, requireOwnedProject } from '../services/auth/auth.middleware.js';
+import { getOwnedAssetById } from '../services/auth/auth.service.js';
 
 const router = express.Router();
 const { uploadsDir } = ensureWorkspaceDirs();
@@ -58,6 +60,9 @@ async function recordRouteEditHistory(projectId, {
   });
 }
 
+router.use(attachAuthContext);
+router.use(requireAuth);
+
 router.get('/categories', async (_req, res) => {
   try {
     const categories = await listProjectCategories();
@@ -75,7 +80,7 @@ router.get('/categories', async (_req, res) => {
 
 router.get('/', async (_req, res) => {
   try {
-    const projects = await listProjects();
+    const projects = await listProjects(_req.auth?.userId || '');
     res.json({ success: true, projects });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -84,7 +89,10 @@ router.get('/', async (_req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const project = await createProject(req.body || {});
+    const project = await createProject({
+      ...(req.body || {}),
+      ownerId: req.auth?.userId || ''
+    });
     res.json({ success: true, project });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -97,7 +105,9 @@ router.post('/imports/package', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No package file uploaded' });
     }
 
-    const project = await importProjectPackageFromZip(req.file.path);
+    const project = await importProjectPackageFromZip(req.file.path, {
+      ownerId: req.auth?.userId || ''
+    });
     await fs.promises.unlink(req.file.path).catch(() => {});
     res.json({ success: true, project });
   } catch (error) {
@@ -107,6 +117,8 @@ router.post('/imports/package', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+router.use('/:projectId', requireOwnedProject);
 
 router.get('/:projectId', async (req, res) => {
   try {
@@ -137,6 +149,10 @@ router.post('/:projectId/assets', async (req, res) => {
     const { assetId } = req.body;
     if (!assetId) {
       return res.status(400).json({ error: 'assetId is required' });
+    }
+    const asset = await getOwnedAssetById(assetId, req.auth?.userId || '');
+    if (!asset) {
+      return res.status(404).json({ error: 'Asset not found' });
     }
     const before = await loadProjectAuditState(req.params.projectId);
     await addAssetToProject(req.params.projectId, assetId);
@@ -184,7 +200,8 @@ router.post('/:projectId/assets/upload', upload.fields([
       const asset = await createAssetFromUpload(file, {
         language: req.body.language || 'Chinese',
         title: Array.isArray(req.body.title) ? req.body.title[index] : req.body.title,
-        jsonFile: index === 0 ? jsonFile : null
+        jsonFile: index === 0 ? jsonFile : null,
+        ownerId: req.auth?.userId || ''
       });
       await addAssetToProject(req.params.projectId, asset.id);
       assets.push(asset);

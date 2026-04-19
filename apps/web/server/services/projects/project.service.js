@@ -175,11 +175,12 @@ export async function listProjectCategories() {
   }));
 }
 
-export async function createProject({ name, description = '', categoryName = '' }) {
+export async function createProject({ name, description = '', categoryName = '', ownerId = '' }) {
   return withDatabase(async (db) => {
     const category = await ensureCategory(db, categoryName);
     const project = await db.project.create({
       data: {
+        ownerId: String(ownerId || '').trim() || null,
         name: String(name || '').trim() || 'Untitled Project',
         description: String(description || '').trim() || null,
         categoryId: category?.id || null,
@@ -206,9 +207,12 @@ export async function createProject({ name, description = '', categoryName = '' 
   });
 }
 
-export async function listProjects() {
+export async function listProjects(ownerId = '') {
   return withDatabase(async (db) => {
     const projects = await db.project.findMany({
+      where: {
+        ownerId: String(ownerId || '').trim() || null
+      },
       include: {
         category: true,
         _count: {

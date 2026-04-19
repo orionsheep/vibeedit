@@ -131,7 +131,7 @@ function findPackageRoot(extractDir) {
   return children.find((candidate) => fs.existsSync(path.join(candidate, 'manifest.json'))) || extractDir;
 }
 
-export async function importProjectPackageFromZip(zipPath) {
+export async function importProjectPackageFromZip(zipPath, { ownerId = '' } = {}) {
   const { outputsDir } = ensureWorkspaceDirs();
   const tempRoot = path.join(outputsDir, `package_import_${uuidv4().substring(0, 8)}`);
   await fs.promises.mkdir(tempRoot, { recursive: true });
@@ -149,7 +149,8 @@ export async function importProjectPackageFromZip(zipPath) {
     const project = await createProject({
       name: `${String(projectJson.name || '导入工程')}`.trim() || '导入工程',
       description: projectJson.description || '由工程包导入',
-      categoryName: projectJson.category || ''
+      categoryName: projectJson.category || '',
+      ownerId
     });
 
     const importedAssets = [];
@@ -165,7 +166,8 @@ export async function importProjectPackageFromZip(zipPath) {
         title: assetMeta.title || path.basename(mediaFilename, path.extname(mediaFilename)),
         originalFilename: assetMeta.original_filename || mediaFilename,
         jsonData: captionData?.payload || null,
-        waitForAsr: !captionData?.payload
+        waitForAsr: !captionData?.payload,
+        ownerId
       });
       await addAssetToProject(project.id, asset.id);
       importedAssets.push(asset);
@@ -186,7 +188,8 @@ export async function importProjectPackageFromZip(zipPath) {
         const asset = await createAssetFromSourceFile(sourcePath, {
           title: path.basename(mediaFilename, path.extname(mediaFilename)),
           originalFilename: mediaFilename,
-          waitForAsr: true
+          waitForAsr: true,
+          ownerId
         });
         await addAssetToProject(project.id, asset.id);
         importedAssets.push(asset);

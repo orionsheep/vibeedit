@@ -5,10 +5,12 @@
 
 import express from 'express';
 import cors from 'cors';
+import authRouter from './server/routes/auth.routes.js';
 import projectRouter from './server/routes/projects.routes.js';
 import libraryRouter from './server/routes/library.routes.js';
 import { loadConfig } from './server/services/editor/config.js';
 import { checkDatabaseConnection, getDatabaseState } from './server/services/core/database.service.js';
+import { attachAuthContext } from './server/services/auth/auth.middleware.js';
 
 const app = express();
 
@@ -25,7 +27,9 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+app.use(attachAuthContext);
 
+app.use('/api/auth', authRouter);
 app.use('/api/projects', projectRouter);
 app.use('/api/library', libraryRouter);
 

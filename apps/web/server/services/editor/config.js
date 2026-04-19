@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   dashboard_port: 12080,
   api_port: 12081,
   database_url: process.env.DATABASE_URL || 'postgresql://autoedit:autoedit@127.0.0.1:5432/autoedit?schema=public',
+  auth_secret: process.env.AUTOEDIT_AUTH_SECRET || '',
   queue_enabled: true,
   asr_provider: 'local',
   asr_model_size: '1.7B',

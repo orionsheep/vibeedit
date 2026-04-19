@@ -5,6 +5,8 @@ import { ensureWorkspaceDirs } from '../services/editor/config.js';
 import { createAssetFromUpload, getAssetById, getAssetSourcePath, listAssets, retranscribeAllAssets, retranscribeAsset } from '../services/library/asset-library.service.js';
 import { addAssetToProject } from '../services/projects/project.service.js';
 import { listAssetSegments, listAssetWords } from '../services/projects/timeline.service.js';
+import { allowSignedAssetSourceOrOwner, attachAuthContext, requireAuth, requireOwnedAsset } from '../services/auth/auth.middleware.js';
+import { getOwnedProjectById } from '../services/auth/auth.service.js';
 
 const router = express.Router();
 const { uploadsDir } = ensureWorkspaceDirs();
@@ -13,9 +15,28 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }
 });
 
+router.use(attachAuthContext);
+
+router.get('/assets/:assetId/source', allowSignedAssetSourceOrOwner, async (req, res) => {
+  try {
+    const sourcePath = await getAssetSourcePath(req.params.assetId, req.auth?.userId || '', {
+      allowAny: Boolean(String(req.query?.token || '').trim())
+    });
+    if (!sourcePath) {
+      return res.status(404).json({ error: 'Source file not found' });
+    }
+    res.sendFile(sourcePath);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.use(requireAuth);
+router.use('/assets/:assetId', requireOwnedAsset);
+
 router.get('/assets', async (req, res) => {
   try {
-    const assets = await listAssets({ query: req.query.q || '' });
+    const assets = await listAssets({ query: req.query.q || '', ownerId: req.auth?.userId || '' });
     res.json({ success: true, assets });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -44,7 +65,8 @@ router.post('/assets/upload', upload.fields([
       const asset = await createAssetFromUpload(file, {
         language: req.body.language || 'Chinese',
         title: Array.isArray(req.body.title) ? req.body.title[index] : req.body.title,
-        jsonFile: index === 0 ? jsonFile : null
+        jsonFile: index === 0 ? jsonFile : null,
+        ownerId: req.auth?.userId || ''
       });
       results.push(asset);
     }
@@ -60,7 +82,7 @@ router.post('/assets/upload', upload.fields([
 
 router.get('/assets/:assetId', async (req, res) => {
   try {
-    const asset = await getAssetById(req.params.assetId);
+    const asset = await getAssetById(req.params.assetId, req.auth?.userId || '');
     if (!asset) {
       return res.status(404).json({ error: 'Asset not found' });
     }
@@ -71,22 +93,11 @@ router.get('/assets/:assetId', async (req, res) => {
   }
 });
 
-router.get('/assets/:assetId/source', async (req, res) => {
-  try {
-    const sourcePath = await getAssetSourcePath(req.params.assetId);
-    if (!sourcePath) {
-      return res.status(404).json({ error: 'Source file not found' });
-    }
-    res.sendFile(sourcePath);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 router.post('/assets/retranscribe', async (req, res) => {
   try {
     const results = await retranscribeAllAssets({
-      language: req.body?.language || 'Chinese'
+      language: req.body?.language || 'Chinese',
+      ownerId: req.auth?.userId || ''
     });
     res.json({ success: true, results });
   } catch (error) {
@@ -97,7 +108,8 @@ router.post('/assets/retranscribe', async (req, res) => {
 router.post('/assets/:assetId/retranscribe', async (req, res) => {
   try {
     const asset = await retranscribeAsset(req.params.assetId, {
-      language: req.body?.language || 'Chinese'
+      language: req.body?.language || 'Chinese',
+      ownerId: req.auth?.userId || ''
     });
     res.json({ success: true, asset });
   } catch (error) {
@@ -127,6 +139,10 @@ router.get('/assets/:assetId/words', async (req, res) => {
 
 router.post('/assets/:assetId/projects/:projectId', async (req, res) => {
   try {
+    const project = await getOwnedProjectById(req.params.projectId, req.auth?.userId || '');
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
     await addAssetToProject(req.params.projectId, req.params.assetId);
     res.json({ success: true });
   } catch (error) {

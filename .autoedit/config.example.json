@@ -4,6 +4,7 @@
   "dashboard_host": "0.0.0.0",
   "dashboard_port": 12080,
   "api_port": 12081,
+  "auth_secret": "replace-with-a-long-random-secret",
   "asr_provider": "local",
   "asr_model_size": "0.6B",
   "dashscope_api_key": "sk-...",

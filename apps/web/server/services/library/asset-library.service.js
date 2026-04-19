@@ -6,6 +6,7 @@ import { createJob, markJobRunning, updateJobProgress, completeJob, failJob } fr
 import { copyExternalAssetFile, moveUploadedAssetFile } from '../core/storage.service.js';
 import { loadConfig } from '../editor/config.js';
 import { runAsrPipeline } from '../editor/asr.service.js';
+import { createSignedAssetSourceToken } from '../auth/auth.service.js';
 
 const RECOVERABLE_ASSET_JOB_TYPES = new Set(['asset.ingest', 'asset.retranscribe']);
 const ACTIVE_ASSET_JOB_IDS = new Set();
@@ -264,15 +265,17 @@ function resolveAsrInput(assetId, sourcePath) {
     throw new Error('public_base_url is required when asr_provider is qwen_filetrans');
   }
 
-  return `${publicBaseUrl}/api/library/assets/${encodeURIComponent(assetId)}/source`;
+  const token = createSignedAssetSourceToken(assetId);
+  return `${publicBaseUrl}/api/library/assets/${encodeURIComponent(assetId)}/source?token=${encodeURIComponent(token)}`;
 }
 
-export async function createAssetFromUpload(file, { title = '', language = 'Chinese', jsonFile = null } = {}) {
+export async function createAssetFromUpload(file, { title = '', language = 'Chinese', jsonFile = null, ownerId = '' } = {}) {
   const originalFilename = file.originalname || 'uploaded-video.mp4';
   const uploadedJson = await parseUploadedJson(jsonFile);
 
   const created = await withDatabase((db) => db.asset.create({
     data: {
+      ownerId: String(ownerId || '').trim() || null,
       title: String(title || '').trim() || path.basename(originalFilename, path.extname(originalFilename)),
       originalFilename,
       mimeType: file.mimetype || 'video/mp4',
@@ -323,13 +326,15 @@ export async function createAssetFromSourceFile(sourcePath, {
   originalFilename = '',
   language = 'Chinese',
   jsonData = null,
-  waitForAsr = true
+  waitForAsr = true,
+  ownerId = ''
 } = {}) {
   const resolvedFilename = originalFilename || path.basename(sourcePath || '') || 'imported-video.mp4';
   const mimeType = inferMimeTypeFromFilename(resolvedFilename);
 
   const created = await withDatabase((db) => db.asset.create({
     data: {
+      ownerId: String(ownerId || '').trim() || null,
       title: String(title || '').trim() || path.basename(resolvedFilename, path.extname(resolvedFilename)),
       originalFilename: resolvedFilename,
       mimeType,
@@ -385,7 +390,7 @@ export async function createAssetFromSourceFile(sourcePath, {
   })).then(mapAssetSummary);
 }
 
-export async function retranscribeAsset(assetId, { language = 'Chinese' } = {}) {
+export async function retranscribeAsset(assetId, { language = 'Chinese', ownerId = '' } = {}) {
   const asset = await withDatabase((db) => db.asset.findUnique({
     where: { id: assetId },
     include: {
@@ -398,6 +403,9 @@ export async function retranscribeAsset(assetId, { language = 'Chinese' } = {}) 
   }));
 
   if (!asset) {
+    throw new Error(`Asset not found: ${assetId}`);
+  }
+  if (ownerId && String(asset.ownerId || '') !== String(ownerId || '')) {
     throw new Error(`Asset not found: ${assetId}`);
   }
 
@@ -421,9 +429,12 @@ export async function retranscribeAsset(assetId, { language = 'Chinese' } = {}) 
   });
 }
 
-export async function retranscribeAllAssets({ language = 'Chinese' } = {}) {
+export async function retranscribeAllAssets({ language = 'Chinese', ownerId = '' } = {}) {
   const assets = await withDatabase((db) => db.asset.findMany({
-    where: { kind: 'video' },
+    where: {
+      kind: 'video',
+      ...(ownerId ? { ownerId: String(ownerId || '').trim() } : {})
+    },
     include: {
       files: true,
       captions: {
@@ -449,7 +460,8 @@ export async function retranscribeAllAssets({ language = 'Chinese' } = {}) {
 
     try {
       const updated = await retranscribeAsset(asset.id, {
-        language: language || asset.captions?.[0]?.language || 'Chinese'
+        language: language || asset.captions?.[0]?.language || 'Chinese',
+        ownerId
       });
       results.push({
         assetId: asset.id,
@@ -469,11 +481,12 @@ export async function retranscribeAllAssets({ language = 'Chinese' } = {}) {
   return results;
 }
 
-export async function listAssets({ query = '' } = {}) {
+export async function listAssets({ query = '', ownerId = '' } = {}) {
   return withDatabase(async (db) => {
     const assets = await db.asset.findMany({
       where: {
         kind: 'video',
+        ...(ownerId ? { ownerId: String(ownerId || '').trim() } : {}),
         ...(query
           ? {
               OR: [
@@ -503,7 +516,7 @@ export async function listAssets({ query = '' } = {}) {
   });
 }
 
-export async function getAssetById(assetId) {
+export async function getAssetById(assetId, ownerId = '') {
   return withDatabase(async (db) => {
     const asset = await db.asset.findUnique({
       where: { id: assetId },
@@ -525,6 +538,7 @@ export async function getAssetById(assetId) {
     });
 
     if (!asset) return null;
+    if (ownerId && String(asset.ownerId || '') !== String(ownerId || '')) return null;
 
     return {
       ...mapAssetSummary(asset),
@@ -533,8 +547,19 @@ export async function getAssetById(assetId) {
   });
 }
 
-export async function getAssetSourcePath(assetId) {
+export async function getAssetSourcePath(assetId, ownerId = '', { allowAny = false } = {}) {
   return withDatabase(async (db) => {
+    if (!allowAny && ownerId) {
+      const asset = await db.asset.findFirst({
+        where: {
+          id: assetId,
+          ownerId: String(ownerId || '').trim()
+        },
+        select: { id: true }
+      });
+      if (!asset) return null;
+    }
+
     const file = await db.assetFile.findFirst({
       where: {
         assetId,

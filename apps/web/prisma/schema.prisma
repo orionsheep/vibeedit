@@ -7,6 +7,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id            String        @id @default(cuid())
+  email         String        @unique
+  passwordHash  String
+  role          String        @default("user")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  projects      Project[]     @relation("ProjectOwner")
+  assets        Asset[]       @relation("AssetOwner")
+  authSessions  AuthSession[]
+}
+
+model AuthSession {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
 model ProjectCategory {
   id        String    @id @default(cuid())
   name      String    @unique
@@ -17,6 +41,7 @@ model ProjectCategory {
 
 model Project {
   id              String             @id @default(cuid())
+  ownerId         String?
   name            String
   description     String?
   categoryId      String?
@@ -26,6 +51,7 @@ model Project {
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   lastOpenedAt    DateTime?
+  owner           User?              @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   category        ProjectCategory?   @relation(fields: [categoryId], references: [id])
   projectAssets   ProjectAsset[]
   timelines       Timeline[]
@@ -37,6 +63,7 @@ model Project {
   captionOverrides ProjectCaptionOverride[]
   editState       ProjectEditState?
 
+  @@index([ownerId])
   @@index([categoryId])
   @@index([lastOpenedAt])
 }
@@ -58,6 +85,7 @@ model ProjectEditState {
 
 model Asset {
   id              String         @id @default(cuid())
+  ownerId         String?
   kind            String         @default("video")
   status          String         @default("ready")
   title           String
@@ -72,6 +100,7 @@ model Asset {
   metadata        Json?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
+  owner           User?          @relation("AssetOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   files           AssetFile[]
   projectAssets   ProjectAsset[]
   captions        Caption[]
@@ -79,6 +108,7 @@ model Asset {
   timelineClips   TimelineClip[]
   jobs            Job[]
 
+  @@index([ownerId])
   @@index([status])
   @@index([createdAt])
 }

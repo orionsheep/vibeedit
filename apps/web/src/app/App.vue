@@ -3,9 +3,15 @@
     <nav class="nav" v-if="showNav">
       <h1 class="logo">VIBEEDIT</h1>
       <div class="nav-links">
-        <router-link to="/projects">项目</router-link>
-        <router-link to="/library">素材库</router-link>
-        <router-link to="/dashboard">快速上传</router-link>
+        <router-link v-if="authStore.isAuthenticated" to="/projects">项目</router-link>
+        <router-link v-if="authStore.isAuthenticated" to="/library">素材库</router-link>
+        <router-link v-if="authStore.isAuthenticated" to="/dashboard">快速上传</router-link>
+      </div>
+      <div class="nav-user" v-if="authStore.isAuthenticated">
+        <span>{{ authStore.user?.email }}</span>
+        <button class="logout-btn" :disabled="authStore.loading" @click="handleLogout">
+          {{ authStore.loading ? '退出中...' : '退出' }}
+        </button>
       </div>
     </nav>
     <main class="main" :class="{ 'full-height': isWorkspace, 'no-padding': isFullPage }">
@@ -14,23 +20,26 @@
   </div>
 </template>
 
-<script>
-export default {
-  computed: {
-    isWorkspace() {
-      const path = this.$route.path;
-      return path.includes('/projects/');
-    },
-    isFullPage() {
-      const path = this.$route.path;
-      return path === '/' || path === '/docs';
-    },
-    showNav() {
-      const path = this.$route.path;
-      return path !== '/' && path !== '/docs' && !path.includes('/projects/');
-    }
-  }
-};
+<script setup>
+import { computed } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { useAuthStore } from '../features/auth/stores/authStore';
+
+const route = useRoute();
+const router = useRouter();
+const authStore = useAuthStore();
+
+const isWorkspace = computed(() => route.path.includes('/projects/'));
+const isFullPage = computed(() => ['/','/docs','/login','/register'].includes(route.path));
+const showNav = computed(() => {
+  const path = route.path;
+  return authStore.isAuthenticated && path !== '/' && path !== '/docs' && path !== '/login' && path !== '/register' && !path.includes('/projects/');
+});
+
+async function handleLogout() {
+  await authStore.logout();
+  await router.push('/login');
+}
 </script>
 
 <style>
@@ -127,6 +136,24 @@ html {
 .nav-links a.router-link-active {
   background: #00d4ff;
   color: #000;
+}
+
+.nav-user {
+  position: absolute;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #9cb0bf;
+}
+
+.logout-btn {
+  border: 1px solid #304151;
+  background: #0d151d;
+  color: #dff5ff;
+  padding: 6px 10px;
+  cursor: pointer;
 }
 
 .main {
