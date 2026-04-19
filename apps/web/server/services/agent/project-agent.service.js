@@ -30,6 +30,34 @@ class AgentRunCancelledError extends Error {
   }
 }
 
+function normalizeSessionText(text = '') {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+}
+
+function stripMarkdownForSessionSummary(text = '') {
+  return normalizeSessionText(text)
+    .replace(/```[\s\S]*?```/g, ' [代码块已省略] ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\|.*\|$/gm, ' [表格行已省略] ')
+    .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateSessionSummary(text = '', maxChars = 220) {
+  const normalized = String(text || '').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+}
+
 function summarizeTimelineSignature(timeline = null) {
   const clips = Array.isArray(timeline?.clips) ? timeline.clips : [];
   return JSON.stringify({
@@ -72,13 +100,20 @@ async function readProjectMutationSignature(projectId) {
 }
 
 function mergeSessionSummary(previousSummary, userMessage, assistantReply, appliedChanges = []) {
-  const lines = [String(previousSummary || '').trim()].filter(Boolean);
-  lines.push([
-    `用户要求：${String(userMessage || '').trim()}`,
-    appliedChanges.length ? `执行动作：${appliedChanges.map((item) => item.change || item.type || '修改').join('、')}` : '',
-    `结果：${String(assistantReply || '').trim()}`
-  ].filter(Boolean).join(' | '));
-  return lines.join('\n').split('\n').slice(-8).join('\n');
+  const previousLines = normalizeSessionText(previousSummary)
+    .split('\n')
+    .map((line) => truncateSessionSummary(stripMarkdownForSessionSummary(line), 240))
+    .filter(Boolean)
+    .slice(-5);
+  const actionSummary = appliedChanges.length
+    ? truncateSessionSummary(appliedChanges.map((item) => item.change || item.type || '修改').join('、'), 100)
+    : '';
+  const mergedLine = [
+    `用户:${truncateSessionSummary(stripMarkdownForSessionSummary(userMessage), 120)}`,
+    actionSummary ? `动作:${actionSummary}` : '',
+    `结果:${truncateSessionSummary(stripMarkdownForSessionSummary(assistantReply), 220)}`
+  ].filter(Boolean).join(' | ');
+  return [...previousLines, mergedLine].slice(-6).join('\n');
 }
 
 async function appendAcceptedAssistantReply({ sessionId, runId, reply, run = null }) {
@@ -189,6 +224,41 @@ function isRecoverableMutationError(error) {
     message.includes('socket hang up') ||
     message.includes('econnreset')
   );
+}
+
+function isPromptTooLongError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('prompt is too long') ||
+    message.includes('context length') ||
+    message.includes('maximum context') ||
+    message.includes('too many tokens')
+  );
+}
+
+async function runAgentWithAutoContextCompression(args = {}) {
+  try {
+    return await runClaudeAgentSession({
+      ...args,
+      forceCompactContext: false
+    });
+  } catch (error) {
+    if (!isPromptTooLongError(error)) {
+      throw error;
+    }
+    await appendAgentEvent({
+      sessionId: args.sessionId,
+      runId: args.runId,
+      type: 'stage',
+      step: 'context_compact_retry',
+      message: '检测到上下文过长，已自动压缩历史并重新执行本轮请求。',
+      payload: {}
+    });
+    return runClaudeAgentSession({
+      ...args,
+      forceCompactContext: true
+    });
+  }
 }
 
 function didAppliedChangeSucceed(change = {}) {
@@ -389,7 +459,7 @@ async function runProjectAgentInternal({
 
     let result;
     try {
-      result = await runClaudeAgentSession({
+      result = await runAgentWithAutoContextCompression({
         projectId,
         sessionId,
         runId: run.id,
@@ -416,7 +486,7 @@ async function runProjectAgentInternal({
           payload: {}
         });
         try {
-          result = await runClaudeAgentSession({
+          result = await runAgentWithAutoContextCompression({
             projectId,
             sessionId,
             runId: run.id,
@@ -464,7 +534,7 @@ async function runProjectAgentInternal({
           message: '检测到上一轮没有真正改到项目，正在自动发起第二轮执行。',
           payload: {}
         });
-        const retriedResult = await runClaudeAgentSession({
+        const retriedResult = await runAgentWithAutoContextCompression({
           projectId,
           sessionId,
           runId: run.id,

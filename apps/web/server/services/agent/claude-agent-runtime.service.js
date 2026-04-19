@@ -23,6 +23,20 @@ import {
 } from './agent-session.service.js';
 
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script', 'live_slicing']);
+const MEMORY_PROFILES = {
+  standard: {
+    summaryChars: 1200,
+    recentMessageChars: 360,
+    recentMessageCount: 8,
+    recentTotalChars: 2600
+  },
+  compact: {
+    summaryChars: 420,
+    recentMessageChars: 180,
+    recentMessageCount: 4,
+    recentTotalChars: 900
+  }
+};
 
 function loadClaudeMdInstructions() {
   try {
@@ -32,6 +46,63 @@ function loadClaudeMdInstructions() {
   } catch {
     return '';
   }
+}
+
+function normalizeMemoryText(text = '') {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+}
+
+function stripMarkdownForMemory(text = '') {
+  return normalizeMemoryText(text)
+    .replace(/```[\s\S]*?```/g, ' [代码块已省略] ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\|.*\|$/gm, ' [表格行已省略] ')
+    .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateMemoryText(text = '', maxChars = 240) {
+  const normalized = String(text || '').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+}
+
+function compressSessionMessage(message = {}, { profile = 'standard' } = {}) {
+  const limits = MEMORY_PROFILES[profile] || MEMORY_PROFILES.standard;
+  const prefix = message.role === 'assistant' ? 'Agent' : '用户';
+  const content = truncateMemoryText(stripMarkdownForMemory(message.content), limits.recentMessageChars);
+  return content ? `${prefix}: ${content}` : '';
+}
+
+function shouldCompactConversationMemory(sessionDetail, { mode = 'custom' } = {}) {
+  const summaryChars = String(sessionDetail?.summary || '').length;
+  const messages = Array.isArray(sessionDetail?.messages) ? sessionDetail.messages : [];
+  const totalChars = summaryChars + messages.reduce((sum, message) => sum + String(message?.content || '').length, 0);
+  const hasHugeMessage = messages.some((message) => String(message?.content || '').length > 4200);
+  if (summaryChars > 3200) return true;
+  if (messages.length > 28) return true;
+  if (totalChars > 14000) return true;
+  if (hasHugeMessage) return true;
+  return String(mode || '').trim() === 'live_slicing' && totalChars > 18000;
+}
+
+function isPromptTooLongError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('prompt is too long') ||
+    message.includes('context length') ||
+    message.includes('maximum context') ||
+    message.includes('too many tokens')
+  );
 }
 
 function buildSystemPrompt({
@@ -119,17 +190,30 @@ function buildSystemPrompt({
   ].filter(Boolean).join('\n\n');
 }
 
-function buildConversationMemory(sessionDetail, currentPrompt = '') {
-  const summary = String(sessionDetail?.summary || '').trim();
+function buildConversationMemory(sessionDetail, { profile = 'standard' } = {}) {
+  const limits = MEMORY_PROFILES[profile] || MEMORY_PROFILES.standard;
+  const summary = truncateMemoryText(stripMarkdownForMemory(sessionDetail?.summary), limits.summaryChars);
   const recentMessages = (sessionDetail?.messages || [])
-    .slice(-12)
-    .map((message) => `${message.role === 'assistant' ? 'Agent' : '用户'}: ${String(message.content || '').trim()}`)
-    .filter(Boolean);
+    .slice(-18)
+    .reverse()
+    .reduce((accumulator, message) => {
+      if (accumulator.length >= limits.recentMessageCount) {
+        return accumulator;
+      }
+      const compressed = compressSessionMessage(message, { profile });
+      if (!compressed) return accumulator;
+      const usedChars = accumulator.reduce((sum, item) => sum + item.length, 0);
+      if (usedChars + compressed.length > limits.recentTotalChars) {
+        return accumulator;
+      }
+      accumulator.push(compressed);
+      return accumulator;
+    }, [])
+    .reverse();
 
   return [
     summary ? `会话摘要：\n${summary}` : '',
-    recentMessages.length ? `最近对话：\n${recentMessages.join('\n')}` : '',
-    currentPrompt ? `本轮新要求：\n${currentPrompt}` : ''
+    recentMessages.length ? `最近对话：\n${recentMessages.join('\n')}` : ''
   ].filter(Boolean).join('\n\n');
 }
 
@@ -141,14 +225,15 @@ function buildUserPrompt({
   sessionDetail = null,
   assembleRetryPass = false,
   pauseOnlyRequest = false,
-  requestProfile = null
+  requestProfile = null,
+  memoryProfile = 'standard'
 }) {
   const lines = [];
   lines.push(`当前模式：${mode}`);
   if (topic) lines.push(`主题：${topic}`);
   if (Number(targetMinutes || 0) > 0) lines.push(`目标分钟数：${Number(targetMinutes)}`);
   lines.push(`用户要求：${String(prompt || '').trim() || `执行 ${mode}`}`);
-  const memoryText = buildConversationMemory(sessionDetail, String(prompt || '').trim());
+  const memoryText = buildConversationMemory(sessionDetail, { profile: memoryProfile });
   if (memoryText) lines.push(memoryText);
   if (pauseOnlyRequest) {
     lines.push('这轮目标只是在当前结果上清理停顿/间隙并少量清理独立口头禅，不要顺手删整句、删整段、去重整块或重做口播结构。');
@@ -371,7 +456,8 @@ export async function runClaudeAgentSession({
   onEvent = () => {},
   signal,
   approvedHighRisk = true,
-  persistAssistantMessage = true
+  persistAssistantMessage = true,
+  forceCompactContext = false
 }) {
   const requestProfile = classifyProjectAgentRequest({ mode, prompt, topic, targetMinutes });
   const normalizedMode = requestProfile.effectiveMode;
@@ -406,6 +492,19 @@ export async function runClaudeAgentSession({
   const requestedModel = getProjectAgentModel();
   const pauseOnlyRequest = requestIsPauseOnly({ prompt, topic });
   let bumpProgress = () => {};
+  const shouldPreemptivelyCompactContext = shouldCompactConversationMemory(sessionDetail, { mode: normalizedMode });
+  const autoCompactContext = forceCompactContext || shouldPreemptivelyCompactContext;
+  const memoryProfile = autoCompactContext ? 'compact' : 'standard';
+
+  if (autoCompactContext && resumeSessionId) {
+    resumeSessionId = '';
+    await touchAgentSession(sessionId, {
+      memory: {
+        ...(sessionDetail.memory || {}),
+        claude_sdk_session_id: ''
+      }
+    });
+  }
 
   for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
     const config = loadConfig();
@@ -429,7 +528,7 @@ export async function runClaudeAgentSession({
     const appliedChanges = [];
     const pendingConfirmation = { current: null };
     const mutatedProject = { current: false };
-    let claudeSessionId = assembleRetryPass ? '' : resumeSessionId;
+    let claudeSessionId = assembleRetryPass || autoCompactContext ? '' : resumeSessionId;
     let finalResultText = '';
     let forcedReviewHandoff = false;
     const mcpToolNames = selectToolNames({ mode: normalizedMode, prompt, assembleRetryPass });
@@ -575,6 +674,20 @@ export async function runClaudeAgentSession({
           }
         });
         bumpProgress();
+        if (autoCompactContext) {
+          await emit({
+            type: 'stage',
+            step: 'context_compacted',
+            message: forceCompactContext
+              ? '检测到上下文过长，已自动压缩会话历史并从精简上下文重新执行。'
+              : '当前会话历史较长，已自动启用精简上下文，避免模型提示词过长。',
+            payload: {
+              force_compacted: Boolean(forceCompactContext),
+              message_count: Array.isArray(sessionDetail?.messages) ? sessionDetail.messages.length : 0,
+              summary_chars: String(sessionDetail?.summary || '').length
+            }
+          });
+        }
         if (assembleRetryPass) {
           await emit({
             type: 'stage',
@@ -609,7 +722,7 @@ export async function runClaudeAgentSession({
 
         fs.mkdirSync(runtimeDir, { recursive: true });
         stream = query({
-          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest, requestProfile }),
+          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest, requestProfile, memoryProfile }),
           options: {
             cwd: getProjectRoot(),
             permissionMode: 'bypassPermissions',
@@ -881,6 +994,9 @@ export async function runClaudeAgentSession({
       lastError = error;
       const message = String(error?.message || '');
       const hasMutatedProject = mutatedProject.current;
+      if (isPromptTooLongError(error) && !hasMutatedProject) {
+        throw error;
+      }
       if (message.includes('No conversation found with session ID') && resumeSessionId) {
         if (hasMutatedProject) {
           break;
