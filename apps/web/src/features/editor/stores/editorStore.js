@@ -253,8 +253,8 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   function clearSelectionState() {
-    selectedWords.value.clear();
-    selectedGaps.value.clear();
+    selectedWords.value = new Set();
+    selectedGaps.value = new Set();
   }
 
   function clearHistory() {
@@ -353,7 +353,7 @@ export const useEditorStore = defineStore('editor', () => {
     });
 
     deletedWords.value = nextDeleted;
-    deletedGaps.value.clear();
+    deletedGaps.value = new Set();
     clearSelectionState();
     detectGaps();
     sanitizeDeletedGaps();
@@ -383,8 +383,8 @@ export const useEditorStore = defineStore('editor', () => {
     timingRepairApplied.value = repaired.applied;
     wordSourceRevision.value += 1;
     detectGaps();
-    deletedWords.value.clear();
-    deletedGaps.value.clear();
+    deletedWords.value = new Set();
+    deletedGaps.value = new Set();
     clearSelectionState();
     clearHistory();
   }
@@ -399,8 +399,8 @@ export const useEditorStore = defineStore('editor', () => {
     timingRepairApplied.value = false;
     wordSourceRevision.value += 1;
     detectGaps();
-    deletedWords.value.clear();
-    deletedGaps.value.clear();
+    deletedWords.value = new Set();
+    deletedGaps.value = new Set();
     if (Array.isArray(payload.deletedWordIndices)) {
       setDeletedWordsState(payload.deletedWordIndices, true);
     } else if (Array.isArray(payload.keepRanges) && payload.keepRanges.length) {
@@ -459,21 +459,28 @@ export const useEditorStore = defineStore('editor', () => {
   function selectWordRange(startIdx, endIdx) {
     const min = Math.min(startIdx, endIdx);
     const max = Math.max(startIdx, endIdx);
+    const nextSelectedWords = new Set();
+    const nextSelectedGaps = new Set();
+    const gapIndexByAfterWord = new Map();
 
-    // Clear previous selection and set new range (exact range, no auto-expansion)
-    selectedWords.value.clear();
-    selectedGaps.value.clear();
+    for (const gap of gaps.value) {
+      gapIndexByAfterWord.set(gap.afterWord, gap.index);
+    }
+
     for (let i = min; i <= max; i++) {
-      selectedWords.value.add(i);
+      nextSelectedWords.add(i);
     }
 
     // Also select gaps within the range
     for (let i = min; i < max; i++) {
-      const gapAfter = gaps.value.find(g => g.afterWord === i && g.beforeWord <= max);
-      if (gapAfter) {
-        selectedGaps.value.add(gapAfter.index);
+      const gapIndex = gapIndexByAfterWord.get(i);
+      if (Number.isInteger(gapIndex)) {
+        nextSelectedGaps.add(gapIndex);
       }
     }
+
+    selectedWords.value = nextSelectedWords;
+    selectedGaps.value = nextSelectedGaps;
   }
 
   /**
@@ -481,10 +488,13 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function toggleWordSelection(index, shiftKey, metaKey, ctrlKey) {
     if (!shiftKey && !metaKey && !ctrlKey) {
-      selectedWords.value.clear();
-      selectedGaps.value.clear();
+      selectedWords.value = new Set([index]);
+      selectedGaps.value = new Set();
+      return;
     }
-    selectedWords.value.add(index);
+    const nextSelectedWords = new Set(selectedWords.value);
+    nextSelectedWords.add(index);
+    selectedWords.value = nextSelectedWords;
   }
 
   /**
@@ -492,10 +502,13 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function toggleGapSelection(gapIndex, shiftKey, metaKey, ctrlKey) {
     if (!shiftKey && !metaKey && !ctrlKey) {
-      selectedWords.value.clear();
-      selectedGaps.value.clear();
+      selectedWords.value = new Set();
+      selectedGaps.value = new Set([gapIndex]);
+      return;
     }
-    selectedGaps.value.add(gapIndex);
+    const nextSelectedGaps = new Set(selectedGaps.value);
+    nextSelectedGaps.add(gapIndex);
+    selectedGaps.value = nextSelectedGaps;
   }
 
   /**
@@ -674,10 +687,10 @@ export const useEditorStore = defineStore('editor', () => {
   function reset() {
     words.value = [];
     gaps.value = [];
-    deletedWords.value.clear();
-    deletedGaps.value.clear();
-    selectedWords.value.clear();
-    selectedGaps.value.clear();
+    deletedWords.value = new Set();
+    deletedGaps.value = new Set();
+    selectedWords.value = new Set();
+    selectedGaps.value = new Set();
     isPlaying.value = false;
     currentTime.value = 0;
     duration.value = 0;

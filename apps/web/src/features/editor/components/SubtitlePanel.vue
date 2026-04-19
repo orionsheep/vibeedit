@@ -261,6 +261,10 @@ let jumpFocusTimer = null;
 const isDragging = ref(false);
 const dragStartIndex = ref(-1);
 const isGapDrag = ref(false);
+const dragMoved = ref(false);
+let dragAnimationFrame = null;
+let queuedDragRange = null;
+let appliedDragRangeKey = '';
 const contextMenuStyle = computed(() => ({
   left: `${contextMenu.value.x}px`,
   top: `${contextMenu.value.y}px`
@@ -396,11 +400,46 @@ function getGapStyle(gap) {
   };
 }
 
+function resetDragSelectionState() {
+  dragMoved.value = false;
+  queuedDragRange = null;
+  appliedDragRangeKey = '';
+  if (dragAnimationFrame) {
+    cancelAnimationFrame(dragAnimationFrame);
+    dragAnimationFrame = null;
+  }
+}
+
+function flushDragSelection() {
+  if (!queuedDragRange) return;
+
+  const { startIdx, endIdx } = queuedDragRange;
+  queuedDragRange = null;
+  const rangeKey = `${startIdx}:${endIdx}`;
+
+  if (rangeKey === appliedDragRangeKey) return;
+
+  appliedDragRangeKey = rangeKey;
+  editorStore.selectWordRange(startIdx, endIdx);
+}
+
+function scheduleDragSelection(startIdx, endIdx) {
+  queuedDragRange = { startIdx, endIdx };
+  if (dragAnimationFrame) return;
+
+  dragAnimationFrame = requestAnimationFrame(() => {
+    dragAnimationFrame = null;
+    flushDragSelection();
+  });
+}
+
 function handleWordMouseDown(event, index) {
+  if (event.button !== 0) return;
   event.preventDefault();
   isDragging.value = true;
   isGapDrag.value = false;
   dragStartIndex.value = index;
+  resetDragSelectionState();
 
   // Don't select on mousedown - wait for mouseup or drag
   // This prevents the initial selection from conflicting with drag selection
@@ -408,23 +447,35 @@ function handleWordMouseDown(event, index) {
 
 function handleWordMouseEnter(event, index) {
   if (isDragging.value && !isGapDrag.value) {
-    // If dragging started from empty area (-1), start selection from this word
-    const startIdx = dragStartIndex.value === -1 ? index : dragStartIndex.value;
-    editorStore.selectWordRange(startIdx, index);
+    if (dragStartIndex.value === -1) {
+      dragStartIndex.value = index;
+    }
+
+    const startIdx = dragStartIndex.value;
+    if (startIdx < 0) return;
+
+    dragMoved.value = dragMoved.value || startIdx !== index;
+    scheduleDragSelection(startIdx, index);
   }
 }
 
 function handleWordMouseUp(event, index) {
+  if (event.button !== 0) return;
+  flushDragSelection();
+
   // End of drag - selection is already set by mouseEnter
   isDragging.value = false;
 
   // If not dragging (just a click), seek to this word
-  if (dragStartIndex.value === index) {
+  if (!dragMoved.value && dragStartIndex.value === index) {
     emit('seekTo', words.value[index].start_time);
   }
+
+  resetDragSelectionState();
 }
 
 function handleContainerMouseDown(event) {
+  if (event.button !== 0) return;
   closeContextMenu();
   // Click on empty area - clear selection and prepare for drag selection
   if (
@@ -436,14 +487,17 @@ function handleContainerMouseDown(event) {
     isDragging.value = true;
     isGapDrag.value = false;
     dragStartIndex.value = -1; // -1 means dragging started from empty area
+    resetDragSelectionState();
   }
 }
 
 function handleGapMouseDown(event, gapIndex) {
+  if (event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
   isDragging.value = false;
   isGapDrag.value = true;
+  resetDragSelectionState();
 
   const { shiftKey, metaKey, ctrlKey } = event;
   editorStore.toggleGapSelection(gapIndex, shiftKey, metaKey, ctrlKey);
@@ -469,7 +523,6 @@ function primeSelectionForContext(targetType, targetIndex) {
 }
 
 function openWordContextMenu(event, index) {
-  primeSelectionForContext('word', index);
   contextMenu.value = {
     visible: true,
     x: event.clientX,
@@ -480,7 +533,6 @@ function openWordContextMenu(event, index) {
 }
 
 function openGapContextMenu(event, gapIndex) {
-  primeSelectionForContext('gap', gapIndex);
   contextMenu.value = {
     visible: true,
     x: event.clientX,
@@ -567,9 +619,11 @@ function updateGapThreshold(event) {
 
 // Global mouse events for drag selection
 function handleMouseUp() {
+  flushDragSelection();
   isDragging.value = false;
   isGapDrag.value = false;
   dragStartIndex.value = -1;
+  resetDragSelectionState();
 }
 
 function handleDocumentClick() {
@@ -626,6 +680,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  resetDragSelectionState();
   document.removeEventListener('mouseup', handleMouseUp);
   document.removeEventListener('click', handleDocumentClick);
   document.removeEventListener('keydown', handleKeyDown);

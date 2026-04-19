@@ -2501,6 +2501,7 @@ function handleAssetDragStart(assetId) {
 
 function handleAssetDragOver(_assetId) {
   if (!draggedAssetId.value) return;
+  if (dragOverAssetId.value === _assetId) return;
   dragOverAssetId.value = _assetId;
 }
 
