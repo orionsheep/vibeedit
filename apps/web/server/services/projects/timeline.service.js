@@ -187,11 +187,7 @@ export async function getProjectTimeline(projectId) {
           include: {
             asset: {
               include: {
-                files: true,
-                captions: {
-                  orderBy: { createdAt: 'desc' },
-                  take: 1
-                }
+                files: true
               }
             }
           }
