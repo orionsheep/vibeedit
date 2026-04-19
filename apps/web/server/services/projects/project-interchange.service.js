@@ -778,9 +778,7 @@ export async function exportProjectSliceXmlBundle(projectId) {
     const bundleId = uuidv4().substring(0, 8);
     const bundleBaseName = `${sanitizeFilename(project.name)}_slice_xml_bundle_${bundleId}`;
     const bundleDir = path.join(packagesDir, bundleBaseName);
-    const xmlDir = path.join(bundleDir, 'xml');
-
-    await fs.promises.mkdir(xmlDir, { recursive: true });
+    await fs.promises.mkdir(bundleDir, { recursive: true });
 
     const manifest = {
       project_id: project.id,
@@ -796,7 +794,7 @@ export async function exportProjectSliceXmlBundle(projectId) {
       const sliceTitle = String(timeline.settings?.title || timeline.name || `切片 ${index + 1}`).trim() || `切片 ${index + 1}`;
       const ordinal = String(index + 1).padStart(2, '0');
       const filename = `${ordinal}_${sanitizeFilename(sliceTitle, `slice_${ordinal}`)}.xml`;
-      const outputPath = path.join(xmlDir, filename);
+      const outputPath = path.join(bundleDir, filename);
       const sourceInfoByAssetId = await collectSourceInfoByAssetId(timeline.clips);
       const content = buildPremiereXml({
         project: {
@@ -824,7 +822,7 @@ export async function exportProjectSliceXmlBundle(projectId) {
     }
 
     await fs.promises.writeFile(
-      path.join(bundleDir, 'manifest.json'),
+      path.join(bundleDir, '_manifest.json'),
       JSON.stringify(manifest, null, 2),
       'utf-8'
     );

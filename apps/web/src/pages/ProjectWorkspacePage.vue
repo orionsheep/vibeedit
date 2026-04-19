@@ -244,6 +244,7 @@
         <main class="editor-panel" @contextmenu.stop>
           <section class="subtitle-workspace">
             <SubtitlePanel
+              ref="subtitlePanelRef"
               class="project-subtitle-panel"
               :workspace-mode="workspaceMode"
               :project-slices="projectSlices"
@@ -462,6 +463,7 @@ const savingSnapshot = ref(false);
 const exportMenuOpen = ref(false);
 const autosaveTimer = ref(null);
 const previewPlayerRef = ref(null);
+const subtitlePanelRef = ref(null);
 const projectUploadInputRef = ref(null);
 const uploadingProjectAssets = ref(false);
 const projectUploadProgress = ref(0);
@@ -1570,11 +1572,20 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   if (!targetId) return;
   const immediateRanges = getKnownSliceRanges(targetId);
   selectedSliceId.value = targetId;
+  const animateSliceJump = async (range) => {
+    if (!jumpToSliceStart || !range) return;
+    await nextTick();
+    subtitlePanelRef.value?.scrollToTime?.(Number(range.start || 0), {
+      behavior: 'smooth',
+      highlight: true
+    });
+  };
   if (jumpToSliceStart) {
     const firstRange = immediateRanges[0] || null;
     if (firstRange) {
       editorStore.setCurrentTime(Number(firstRange.start || 0));
       syncPreviewToCurrentTime({ preservePlayback: false });
+      animateSliceJump(firstRange).catch(() => {});
     }
   }
   const detail = await ensureSelectedSliceDetail(targetId, { force: false });
@@ -1586,6 +1597,7 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
     const firstRange = resolvedRanges[0] || null;
     if (firstRange) {
       editorStore.setCurrentTime(Number(firstRange.start || 0));
+      await animateSliceJump(firstRange);
     }
   }
   await nextTick();
@@ -2277,6 +2289,11 @@ async function handleExportInterchange(format) {
   try {
     if (timelineDirty.value) {
       await saveTimeline();
+    }
+    if (format === 'premiere_xml' && isLiveSlicingMode.value && projectSlices.value.length > 1) {
+      exportingInterchangeFormat.value = '';
+      await handleExportSliceXmlBundle();
+      return;
     }
     if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
       throw new Error('请先选择一个切片再导出交换文件');

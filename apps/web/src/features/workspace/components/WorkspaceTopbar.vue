@@ -38,22 +38,18 @@
           <button class="context-item" :disabled="isExportingAny" @click="$emit('export-package')">
             {{ exportingPackage ? '工程包导出中...' : '导出工程包' }}
           </button>
-          <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'premiere_xml')">
-            {{ exportingInterchangeFormat === 'premiere_xml' ? 'XML 导出中...' : '导出 Premiere / Resolve XML' }}
+          <button
+            class="context-item"
+            :disabled="isExportingAny"
+            @click="handleXmlExport"
+          >
+            {{ xmlExportLabel }}
           </button>
           <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'edl')">
             {{ exportingInterchangeFormat === 'edl' ? 'EDL 导出中...' : '导出通用 EDL' }}
           </button>
           <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'capcut_srt')">
             {{ exportingInterchangeFormat === 'capcut_srt' ? 'SRT 导出中...' : '导出剪映 / CapCut SRT' }}
-          </button>
-          <button
-            v-if="isLiveSlicingMode && projectSlicesLength"
-            class="context-item"
-            :disabled="isExportingAny"
-            @click="$emit('export-slice-xml-bundle')"
-          >
-            {{ exportingSliceXmlBundle ? '切片 XML 打包中...' : '导出全部切片 XML 包' }}
           </button>
         </div>
       </div>
@@ -62,7 +58,9 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   canOpenDocumentPreview: {
     type: Boolean,
     default: false
@@ -137,7 +135,7 @@ defineProps({
   }
 });
 
-defineEmits([
+const emit = defineEmits([
   'delete-project',
   'export-interchange',
   'export-package',
@@ -149,6 +147,33 @@ defineEmits([
   'toggle-export-menu',
   'trigger-package-import'
 ]);
+
+const exportingXmlBundle = computed(() => (
+  props.isLiveSlicingMode &&
+  props.projectSlicesLength > 1 &&
+  props.exportingSliceXmlBundle
+));
+
+const xmlExportLabel = computed(() => {
+  if (exportingXmlBundle.value) {
+    return '切片 XML 打包中...';
+  }
+  if (props.exportingInterchangeFormat === 'premiere_xml') {
+    return 'XML 导出中...';
+  }
+  if (props.isLiveSlicingMode && props.projectSlicesLength > 1) {
+    return '导出全部切片 XML 包';
+  }
+  return '导出 Premiere / Resolve XML';
+});
+
+function handleXmlExport() {
+  if (props.isLiveSlicingMode && props.projectSlicesLength > 1) {
+    emit('export-slice-xml-bundle');
+    return;
+  }
+  emit('export-interchange', 'premiere_xml');
+}
 </script>
 
 <style scoped>

@@ -151,6 +151,7 @@
                   deleted: isWordDeleted(item.index),
                   selected: isWordSelected(item.index),
                   current: item.index === currentWordIndex,
+                  'jump-focused': item.index === jumpFocusedWordIndex,
                   'in-active-slice': Boolean(item.word.slice_active),
                   'has-slice-fill': Boolean(item.word.slice_markers?.length)
                 }"
@@ -251,6 +252,8 @@ const confirmDialog = ref({
   danger: false
 });
 let confirmDialogAction = null;
+const jumpFocusedWordIndex = ref(-1);
+let jumpFocusTimer = null;
 
 // Drag selection state
 const isDragging = ref(false);
@@ -625,12 +628,16 @@ onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClick);
   document.removeEventListener('keydown', handleKeyDown);
   editorContainer.value?.removeEventListener('scroll', handleEditorScroll);
+  if (jumpFocusTimer) {
+    clearTimeout(jumpFocusTimer);
+    jumpFocusTimer = null;
+  }
 });
 
 watch(currentWordIndex, (newIndex) => {
   if (newIndex < 0) return;
   requestAnimationFrame(() => {
-    keepCurrentWordInView(newIndex);
+    keepCurrentWordInView(newIndex, { behavior: 'smooth' });
   });
 });
 
@@ -692,7 +699,7 @@ function seekToWord(word) {
   emit('seekTo', word.start_time);
 }
 
-function keepCurrentWordInView(index) {
+function keepCurrentWordInView(index, { behavior = 'smooth', highlight = false } = {}) {
   const container = editorContainer.value;
   if (!container) return;
 
@@ -711,9 +718,48 @@ function keepCurrentWordInView(index) {
   const targetTop = container.scrollTop + offsetWithinContainer - container.clientHeight * 0.4;
   container.scrollTo({
     top: Math.max(0, targetTop),
-    behavior: 'auto'
+    behavior
   });
+
+  if (highlight) {
+    if (jumpFocusTimer) {
+      clearTimeout(jumpFocusTimer);
+      jumpFocusTimer = null;
+    }
+    jumpFocusedWordIndex.value = index;
+    jumpFocusTimer = window.setTimeout(() => {
+      jumpFocusedWordIndex.value = -1;
+      jumpFocusTimer = null;
+    }, 900);
+  }
 }
+
+function findNearestWordIndexForTime(seconds) {
+  const target = Number(seconds || 0);
+  const sourceWords = Array.isArray(words.value) ? words.value : [];
+  if (!sourceWords.length) return -1;
+
+  for (let index = 0; index < sourceWords.length; index += 1) {
+    const word = sourceWords[index];
+    const start = Number(word?.start_time || 0);
+    const end = Number(word?.end_time || start);
+    if (target >= start && target <= end) return index;
+    if (target < start) return index;
+  }
+
+  return sourceWords.length - 1;
+}
+
+function scrollToTime(seconds, { behavior = 'smooth', highlight = true } = {}) {
+  const index = findNearestWordIndexForTime(seconds);
+  if (index < 0) return -1;
+  keepCurrentWordInView(index, { behavior, highlight });
+  return index;
+}
+
+defineExpose({
+  scrollToTime
+});
 </script>
 
 <script>
@@ -1056,6 +1102,13 @@ export default {
 .word.current:not(.selected) {
   background: rgba(0, 212, 255, 0.15);
   background-size: 100% 2px;
+}
+
+.word.jump-focused:not(.selected) {
+  box-shadow:
+    inset 0 -2px 0 var(--word-slice-color, rgba(0, 212, 255, 0.85)),
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 18px rgba(0, 212, 255, 0.22);
 }
 
 .word .time-hint {
