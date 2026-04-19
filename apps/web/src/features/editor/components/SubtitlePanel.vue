@@ -139,10 +139,9 @@
 
       <div class="editor-container" ref="editorContainer" @mousedown="handleContainerMouseDown">
         <div class="text-content">
-          <span
+          <template
             v-for="chunk in wordRenderChunks"
             :key="chunk.id"
-            class="text-chunk"
           >
             <template v-for="item in chunk.items" :key="item.key">
               <span
@@ -189,7 +188,7 @@
                 <span class="gap-label">{{ item.gap.duration.toFixed(1) }}s</span>
               </span>
             </template>
-          </span>
+          </template>
         </div>
       </div>
 
@@ -425,8 +424,7 @@ function handleContainerMouseDown(event) {
   // Click on empty area - clear selection and prepare for drag selection
   if (
     event.target === editorContainer.value ||
-    event.target.classList.contains('text-content') ||
-    event.target.classList.contains('text-chunk')
+    event.target.classList.contains('text-content')
   ) {
     editorStore.clearSelection();
     // Set up for drag selection from this point
@@ -1010,16 +1008,6 @@ export default {
   white-space: pre-wrap;
   word-wrap: break-word;
   user-select: none;
-}
-
-.text-chunk {
-  display: inline-block;
-  max-width: 100%;
-  vertical-align: top;
-  line-height: inherit;
-  font-size: inherit;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 220px;
 }
 
 .word {
