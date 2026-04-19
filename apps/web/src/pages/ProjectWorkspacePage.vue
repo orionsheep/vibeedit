@@ -957,7 +957,7 @@ const canOpenDocumentPreview = computed(() => {
   if (isLiveSlicingMode.value) {
     return Boolean(projectSlices.value.length);
   }
-  return Boolean(masterDocumentSection.value.blocks.length || masterDocumentSection.value.fullText);
+  return Boolean(masterDocumentSection.value.paragraphs?.length || masterDocumentSection.value.fullText);
 });
 
 const documentActionLabel = computed(() => (
