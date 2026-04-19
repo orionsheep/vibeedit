@@ -200,7 +200,7 @@ export async function createAgentRunRecord({ projectId, sessionId, mode, prompt,
     }
 
     if (activeRun) {
-      throw new Error('This agent session already has an active run');
+      throw new Error('当前会话已有任务在执行，请等待完成或先停止当前任务。');
     }
 
     const run = await db.agentRun.create({

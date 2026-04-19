@@ -1513,6 +1513,11 @@ function handleGlobalWorkspaceKeydown(event) {
 }
 
 async function runAgent() {
+  if (runningAgent.value || stoppingAgent.value) return;
+  runningAgent.value = true;
+  stoppingAgent.value = false;
+  cancelRequestedRunId.value = '';
+  agentRunAbortController.value = new AbortController();
   if (autosaveTimer.value) {
     clearTimeout(autosaveTimer.value);
     autosaveTimer.value = null;
@@ -1524,12 +1529,7 @@ async function runAgent() {
     });
   }
   await ensureAgentSessionLoaded();
-  runningAgent.value = true;
-  stoppingAgent.value = false;
-  cancelRequestedRunId.value = '';
-  agentRunAbortController.value = new AbortController();
   const userMessage = agentPrompt.value.trim() || `执行 ${agentActionLabel.value}`;
-  messages.value.push({ id: `local_u_${Date.now()}`, role: 'user', content: userMessage });
   liveRunEvents.value = [];
   activeRunId.value = '';
   activeRunStatus.value = '准备执行';
@@ -1591,23 +1591,17 @@ async function runAgent() {
     }, agentRunAbortController.value.signal);
     agentPrompt.value = '';
     await Promise.all([loadWorkspace(), loadSnapshots(), ensureAgentSessionLoaded()]);
-    if (result?.reply && !messages.value.find((item) => item.content === result.reply && item.role === 'assistant')) {
-      messages.value.push({
-        id: `local_a_${Date.now()}`,
-        role: 'assistant',
-        content: result.reply
-      });
-    }
   } catch (err) {
     const message = err.response?.data?.error || err.message || '';
     if (String(message).toLowerCase().includes('abort') || String(message).toLowerCase().includes('cancel')) {
       Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
     } else {
-    messages.value.push({
-      id: `e_${Date.now()}`,
-      role: 'assistant',
+      await Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
+      messages.value.push({
+        id: `e_${Date.now()}`,
+        role: 'assistant',
         content: `执行失败：${message}`
-    });
+      });
     }
   } finally {
     runningAgent.value = false;

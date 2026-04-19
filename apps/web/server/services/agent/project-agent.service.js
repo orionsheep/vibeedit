@@ -12,37 +12,21 @@ import {
   getProjectAgentModel,
   getProjectAgentProvider
 } from './glm-claude-rotation.service.js';
+import {
+  classifyProjectAgentRequest,
+  normalizeProjectAgentMode
+} from './project-agent-intent.service.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
 import { getProjectEditState } from '../projects/project-edit-state.service.js';
 
 const activeRunAbortControllers = new Map();
 const cancellationRequestedRuns = new Set();
-const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
-const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏)/i;
 
 class AgentRunCancelledError extends Error {
   constructor(message = 'Agent run cancelled') {
     super(message);
     this.name = 'AgentRunCancelledError';
   }
-}
-
-function normalizeMode(mode) {
-  const value = String(mode || 'custom').trim().toLowerCase() || 'custom';
-  if (!SUPPORTED_PROJECT_AGENT_MODES.has(value)) {
-    throw new Error(`Unsupported project agent mode: ${value}. Only custom and assemble_script are supported.`);
-  }
-  return value;
-}
-
-function inferEffectiveMode(mode, prompt = '', topic = '') {
-  const normalizedMode = normalizeMode(mode);
-  if (normalizedMode === 'assemble_script') return normalizedMode;
-  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
-  if (ASSEMBLE_SCRIPT_INTENT_PATTERN.test(text)) {
-    return 'assemble_script';
-  }
-  return normalizedMode;
 }
 
 function summarizeTimelineSignature(timeline = null) {
@@ -275,22 +259,13 @@ async function runProjectAgentInternal({
     throw new Error('Agent session not found');
   }
 
-  const requestedMode = normalizeMode(mode);
-  const normalizedMode = inferEffectiveMode(requestedMode, prompt, topic);
+  const requestProfile = classifyProjectAgentRequest({ mode, prompt, topic, targetMinutes });
+  const requestedMode = normalizeProjectAgentMode(mode);
+  const normalizedMode = requestProfile.effectiveMode;
   const requestedProvider = getProjectAgentProvider();
   const requestedModel = getProjectAgentModel();
   let forcedRetryUsed = false;
   const userPrompt = String(prompt || '').trim() || `执行 ${normalizedMode}`;
-
-  await appendAgentMessage({
-    sessionId,
-    role: 'user',
-    content: userPrompt,
-    metadata: {
-      mode: normalizedMode,
-      requested_mode: requestedMode
-    }
-  });
 
   const run = await createAgentRunRecord({
     projectId,
@@ -308,6 +283,17 @@ async function runProjectAgentInternal({
       requested_mode: requestedMode
     }
   });
+  await appendAgentMessage({
+    sessionId,
+    runId: run.id,
+    role: 'user',
+    content: userPrompt,
+    metadata: {
+      mode: normalizedMode,
+      requested_mode: requestedMode,
+      routing_reason: requestProfile.routingReason || ''
+    }
+  });
 
   const mutationSignatureBefore = await readProjectMutationSignature(projectId);
   const abortController = new AbortController();
@@ -316,15 +302,23 @@ async function runProjectAgentInternal({
 
   try {
     if (requestedMode !== normalizedMode) {
+      const routingMessage = requestProfile.routingReason === 'assemble_script_intent'
+        ? '检测到口播剪辑意图，已自动切换到口播拼稿主链。'
+        : requestProfile.routingReason === 'read_only_project_query'
+          ? '检测到当前请求是读取/分析型项目问题，已切换到自由指令只读模式，不会强行改时间线。'
+          : requestProfile.routingReason === 'non_assemble_project_task'
+            ? '检测到当前请求不是口播拼稿，而是通用项目任务，已切换到自由指令模式处理。'
+          : '检测到当前请求不是剪辑改动任务，已切换到自由指令模式处理。';
       await appendAgentEvent({
         sessionId,
         runId: run.id,
         type: 'stage',
         step: 'mode_routed',
-        message: `检测到口播剪辑意图，已自动切换到口播拼稿主链。`,
+        message: routingMessage,
         payload: {
           requested_mode: requestedMode,
-          effective_mode: normalizedMode
+          effective_mode: normalizedMode,
+          routing_reason: requestProfile.routingReason || ''
         }
       });
     }

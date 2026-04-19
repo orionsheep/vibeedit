@@ -12,6 +12,9 @@ import {
 } from './glm-claude-rotation.service.js';
 import { TOOL_DEFINITIONS, createProjectAgentMcpServer } from './claude-agent-mcp.service.js';
 import {
+  classifyProjectAgentRequest
+} from './project-agent-intent.service.js';
+import {
   appendAgentEvent,
   appendAgentMessage,
   getProjectAgentSession,
@@ -20,7 +23,6 @@ import {
 } from './agent-session.service.js';
 
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script']);
-const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏)/i;
 
 function loadClaudeMdInstructions() {
   try {
@@ -32,17 +34,13 @@ function loadClaudeMdInstructions() {
   }
 }
 
-function inferEffectiveMode(mode = 'custom', prompt = '', topic = '') {
-  const normalizedMode = String(mode || 'custom').trim().toLowerCase() || 'custom';
-  if (normalizedMode === 'assemble_script') return normalizedMode;
-  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
-  if (ASSEMBLE_SCRIPT_INTENT_PATTERN.test(text)) {
-    return 'assemble_script';
-  }
-  return normalizedMode;
-}
-
-function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRetryPass = false, pauseOnlyRequest = false } = {}) {
+function buildSystemPrompt({
+  mode = 'custom',
+  preferencePrompt = '',
+  assembleRetryPass = false,
+  pauseOnlyRequest = false,
+  requestProfile = null
+} = {}) {
   const normalizedMode = String(mode || 'custom').trim();
   const claudeMd = loadClaudeMdInstructions();
   const modeInstruction = normalizedMode === 'assemble_script'
@@ -76,11 +74,16 @@ function buildSystemPrompt({ mode = 'custom', preferencePrompt = '', assembleRet
           : ''
       ].join('\n')
     : [
-        '你在做自定义项目剪辑任务，应直接基于当前项目真实时间线和字幕流调用工具。',
-        '新的用户要求默认是在当前结果上继续做局部修改，不要默认重来或恢复完整项目，除非用户明确这样要求。',
-        '默认保持当前顺序，不要擅自重排句子或素材顺序，除非用户明确要求。',
-        '如果用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序；不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。',
-        '任何写操作完成前，都必须做一轮强制自我审查：重新读取当前结果，逐项检查顺序、通顺度、逻辑完整性、断句自然度、重复残留、停顿/口气词处理和误删风险，并确认调序时没有破坏单素材内部顺序，确认全部通过后再结束。'
+        '你现在处于自由指令模式，它是一个全能的 Claude Code 项目助理，不只是剪辑流水线触发器。',
+        '如果用户是在问普通问题，且不需要项目上下文，直接回答即可；不要为了调用工具而调用工具。',
+        '如果用户是在问当前项目、当前时间线、当前字幕、剪辑后逐字稿或当前成片状态，你应先读取必要工具，再给出准确答案；这种读取/分析型请求默认不要改动项目。',
+        '如果用户明确要求修改项目、导出、保存快照或执行某个工具目标，你再调用工具落地，并且只做用户明确要求的变更。',
+        '当用户要“剪辑后的逐字稿 / 最终稿 / 当前字幕全文”时，优先读取 get_script_blocks 的当前完整脚本；只有在确实需要逐句核对时，再补读 get_subtitle_blocks。',
+        '当用户只是在问“删了什么 / 剩下什么 / 当前版本怎么样”，优先读取 get_project_context、get_timeline_detail、get_script_blocks 等只读工具，不要把问题误当成继续剪辑。',
+        '只有明确编辑请求才需要修改时间线；读取、解释、总结、问答和项目分析不要求产生任何实际改动。',
+        requestProfile?.requiresMutation
+          ? '若本轮属于写操作，完成前仍需重新读取结果自查，确认顺序、通顺、逻辑和误删风险没有被破坏。'
+          : '若本轮属于只读或问答请求，不要为了凑“完成感”去修改项目。'
       ].join('\n');
 
   return [
@@ -116,7 +119,16 @@ function buildConversationMemory(sessionDetail, currentPrompt = '') {
   ].filter(Boolean).join('\n\n');
 }
 
-function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0, sessionDetail = null, assembleRetryPass = false, pauseOnlyRequest = false }) {
+function buildUserPrompt({
+  mode = 'custom',
+  prompt = '',
+  topic = '',
+  targetMinutes = 0,
+  sessionDetail = null,
+  assembleRetryPass = false,
+  pauseOnlyRequest = false,
+  requestProfile = null
+}) {
   const lines = [];
   lines.push(`当前模式：${mode}`);
   if (topic) lines.push(`主题：${topic}`);
@@ -127,7 +139,15 @@ function buildUserPrompt({ mode = 'custom', prompt = '', topic = '', targetMinut
   if (pauseOnlyRequest) {
     lines.push('这轮目标只是在当前结果上清理停顿/间隙并少量清理独立口头禅，不要顺手删整句、删整段、去重整块或重做口播结构。');
   }
-  lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  if (String(mode || '').trim() === 'assemble_script') {
+    lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+  } else if (requestProfile?.explicitReadOnlyProjectQuery) {
+    lines.push('这是一条只读型项目请求：不要修改项目，不要删除或恢复任何内容。若用户要剪辑后的逐字稿、最终稿、当前字幕全文，优先调用 get_script_blocks 一次读完整当前脚本，再直接输出。若用户要知道当前删了什么、剩下什么或当前版本状态，优先调用 get_project_context、get_timeline_detail、必要时补充 get_script_blocks，再据实回答。');
+  } else if (requestProfile?.requiresMutation) {
+    lines.push('这是一条自定义项目操作请求：需要通过工具真实落地，但只做用户明确要求的动作。默认保持当前结果和当前顺序，不要顺手重做整版，也不要扩展成口播拼稿。完成后请简要说明做了什么，并在必要时重新读取结果确认没有误伤。');
+  } else {
+    lines.push('这是一条普通问答或解释请求。如果不需要项目上下文，直接回答即可；不要为了调用工具而调用工具。如果你确实需要引用当前项目信息，再调用最少量的只读工具补充事实。');
+  }
   if (assembleRetryPass && String(mode || '').trim() === 'assemble_script') {
     lines.push('上一轮没有真正修改项目或没有完成自审清单。这一轮禁止只读取候选摘要后结束，必须自己读完整脚本块、读完整字幕块，再调用一次 get_assemble_candidates，然后真正调用删改工具。');
   }
@@ -234,14 +254,6 @@ function buildAssembleRecoveryReply(appliedChanges = [], recoveryReason = '') {
   ].join('\n');
 }
 
-function requestRequiresToolUse({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0 } = {}) {
-  if (String(mode || '').trim() === 'assemble_script') return true;
-  if (Number(targetMinutes || 0) > 0) return true;
-  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
-  if (!text) return false;
-  return /(读取|查看|项目|上下文|素材|时间线|字幕|搜索|删除|恢复|导出|快照|拼稿|口播|停顿|间隙|空白|节奏|冗余|改写|替换|调整|排序|移除|保存|重写|修改|剪辑|剪一下|精简)/.test(text);
-}
-
 function didChangeApply(change = {}) {
   return change?.success !== false && change?.changed !== false;
 }
@@ -277,16 +289,6 @@ function isTimelineEditingChange(change = {}) {
     'remove_pauses',
     'clear_deleted'
   ]).has(tool);
-}
-
-function requestRequiresMutation({ mode = 'custom', prompt = '', topic = '', targetMinutes = 0 } = {}) {
-  const normalizedMode = String(mode || '').trim();
-  if (normalizedMode === 'assemble_script') return true;
-  if (normalizedMode !== 'custom') return false;
-  if (Number(targetMinutes || 0) > 0) return true;
-  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
-  if (!text) return false;
-  return /(拼稿|删除|恢复|导出|快照|去重|删掉|移除|改写|替换|调整|排序|口播|停顿|间隙|空白|节奏|改成|清理|压缩|精简|去掉|重写|修改)/.test(text);
 }
 
 function requestExplicitPauseCleanup({ prompt = '', topic = '' } = {}) {
@@ -352,7 +354,8 @@ export async function runClaudeAgentSession({
   approvedHighRisk = true,
   persistAssistantMessage = true
 }) {
-  const normalizedMode = inferEffectiveMode(mode, prompt, topic);
+  const requestProfile = classifyProjectAgentRequest({ mode, prompt, topic, targetMinutes });
+  const normalizedMode = requestProfile.effectiveMode;
   if (!SUPPORTED_PROJECT_AGENT_MODES.has(normalizedMode)) {
     throw new Error(`Unsupported project agent mode: ${normalizedMode}. Only custom and assemble_script are supported.`);
   }
@@ -456,7 +459,7 @@ export async function runClaudeAgentSession({
           maxTurns: 24,
           resume: claudeSessionId || undefined,
           abortController,
-          systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest }),
+          systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest, requestProfile }),
           mcpServers: {
             autoedit: mcpServer
           },
@@ -587,7 +590,7 @@ export async function runClaudeAgentSession({
 
         fs.mkdirSync(runtimeDir, { recursive: true });
         stream = query({
-          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest }),
+          prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest, requestProfile }),
           options: {
             cwd: getProjectRoot(),
             permissionMode: 'bypassPermissions',
@@ -596,7 +599,7 @@ export async function runClaudeAgentSession({
             maxTurns: 120,
             resume: claudeSessionId || undefined,
             abortController,
-            systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest }),
+            systemPrompt: buildSystemPrompt({ mode: normalizedMode, preferencePrompt, assembleRetryPass, pauseOnlyRequest, requestProfile }),
             mcpServers: {
               autoedit: mcpServer
             },
@@ -745,8 +748,8 @@ export async function runClaudeAgentSession({
         }
 
         let reviewResult = null;
-        const requiresToolUse = requestRequiresToolUse({ mode: normalizedMode, prompt, topic, targetMinutes });
-        const requiresMutation = requestRequiresMutation({ mode: normalizedMode, prompt, topic, targetMinutes });
+        const requiresToolUse = requestProfile.requiresToolUse;
+        const requiresMutation = requestProfile.requiresMutation;
         const requiresPauseCleanup = requestExplicitPauseCleanup({ prompt, topic });
         const pauseOnlyCleanup = requestIsPauseOnly({ prompt, topic });
         if (requiresToolUse && !appliedChanges.length) {
