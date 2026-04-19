@@ -509,6 +509,7 @@ const documentPreviewVisible = ref(false);
 const documentPreviewLoading = ref(false);
 const documentPreviewSectionId = ref('master');
 const sliceDocumentCache = ref({});
+const sliceDetailRequestMap = new Map();
 const contextMenu = ref({
   visible: false,
   x: 0,
@@ -1346,6 +1347,23 @@ function sliceRangesFromTimelineItem(timelineItem) {
     .filter((range) => Number(range.end || 0) - Number(range.start || 0) > 0.05);
 }
 
+function getCachedSliceDetail(sliceId) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) return null;
+  if (selectedSliceDetail.value?.id === targetId) {
+    return selectedSliceDetail.value;
+  }
+  return sliceDocumentCache.value[targetId] || projectSlices.value.find((slice) => slice.id === targetId) || null;
+}
+
+function getKnownSliceRanges(sliceId) {
+  const detail = getCachedSliceDetail(sliceId);
+  if (Array.isArray(detail?.ranges) && detail.ranges.length) {
+    return mergeRanges(detail.ranges);
+  }
+  return mergeRanges(sliceRangesFromTimelineItem(detail));
+}
+
 async function ensureProjectAssetWordsLoaded(assetIds = [], { force = false } = {}) {
   const targetIds = force ? assetIds : assetIds.filter((assetId) => !assetWordsMap.value[assetId]);
   if (!targetIds.length) return;
@@ -1639,12 +1657,20 @@ async function ensureSelectedSliceDetail(sliceId, { force = false } = {}) {
     selectedSliceDetail.value = null;
     return null;
   }
-  if (!force && selectedSliceDetail.value?.id === targetId) {
-    return selectedSliceDetail.value;
+  const cached = getCachedSliceDetail(targetId);
+  if (!force && cached?.id === targetId && cached !== projectSlices.value.find((slice) => slice.id === targetId)) {
+    selectedSliceDetail.value = cached;
+    return cached;
+  }
+  const inFlight = sliceDetailRequestMap.get(targetId);
+  if (!force && inFlight) {
+    return inFlight;
   }
   loadingSliceDetail.value = true;
+  const request = getProjectSlice(projectId.value, targetId);
+  sliceDetailRequestMap.set(targetId, request);
   try {
-    const detail = await getProjectSlice(projectId.value, targetId);
+    const detail = await request;
     selectedSliceDetail.value = detail;
     sliceDocumentCache.value = {
       ...sliceDocumentCache.value,
@@ -1652,6 +1678,7 @@ async function ensureSelectedSliceDetail(sliceId, { force = false } = {}) {
     };
     return detail;
   } finally {
+    sliceDetailRequestMap.delete(targetId);
     loadingSliceDetail.value = false;
   }
 }
@@ -1659,25 +1686,60 @@ async function ensureSelectedSliceDetail(sliceId, { force = false } = {}) {
 async function ensureSliceDocumentLoaded(sliceId, { force = false } = {}) {
   const targetId = String(sliceId || '').trim();
   if (!targetId) return null;
-  if (!force && sliceDocumentCache.value[targetId]) {
-    return sliceDocumentCache.value[targetId];
-  }
-  if (!force && selectedSliceDetail.value?.id === targetId) {
+  const cached = getCachedSliceDetail(targetId);
+  if (!force && cached?.id === targetId && cached !== projectSlices.value.find((slice) => slice.id === targetId)) {
     sliceDocumentCache.value = {
       ...sliceDocumentCache.value,
-      [targetId]: selectedSliceDetail.value
+      [targetId]: cached
     };
-    return selectedSliceDetail.value;
+    return cached;
   }
-  const detail = await getProjectSlice(projectId.value, targetId);
-  sliceDocumentCache.value = {
-    ...sliceDocumentCache.value,
-    [targetId]: detail
-  };
-  if (selectedSliceId.value === targetId) {
-    selectedSliceDetail.value = detail;
+  const inFlight = sliceDetailRequestMap.get(targetId);
+  if (inFlight) {
+    return inFlight;
   }
-  return detail;
+  const request = getProjectSlice(projectId.value, targetId)
+    .then((detail) => {
+      sliceDocumentCache.value = {
+        ...sliceDocumentCache.value,
+        [targetId]: detail
+      };
+      if (selectedSliceId.value === targetId) {
+        selectedSliceDetail.value = detail;
+      }
+      return detail;
+    })
+    .finally(() => {
+      sliceDetailRequestMap.delete(targetId);
+    });
+  sliceDetailRequestMap.set(targetId, request);
+  return request;
+}
+
+function preloadSliceDetails(sliceIds = []) {
+  const uniqueIds = [...new Set((Array.isArray(sliceIds) ? sliceIds : []).map((sliceId) => String(sliceId || '').trim()).filter(Boolean))];
+  if (!uniqueIds.length) return;
+
+  uniqueIds.forEach((sliceId) => {
+    if (getCachedSliceDetail(sliceId)?.id === sliceId) return;
+    if (sliceDetailRequestMap.has(sliceId)) return;
+    const request = getProjectSlice(projectId.value, sliceId)
+      .then((detail) => {
+        sliceDocumentCache.value = {
+          ...sliceDocumentCache.value,
+          [sliceId]: detail
+        };
+        if (selectedSliceId.value === sliceId) {
+          selectedSliceDetail.value = detail;
+        }
+        return detail;
+      })
+      .catch(() => null)
+      .finally(() => {
+        sliceDetailRequestMap.delete(sliceId);
+      });
+    sliceDetailRequestMap.set(sliceId, request);
+  });
 }
 
 async function refreshProjectSlices({ preserveSelection = true, skipFetch = false } = {}) {
@@ -1691,7 +1753,8 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
 
   const hasSelected = preserveSelection && nextSlices.some((slice) => slice.id === selectedSliceId.value);
   if (hasSelected) {
-    await ensureSelectedSliceDetail(selectedSliceId.value, { force: true });
+    await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
+    preloadSliceDetails(nextSlices.map((slice) => slice.id));
     return nextSlices;
   }
 
@@ -1709,9 +1772,10 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
 
   if (isLiveSlicingMode.value || selectedSliceId.value) {
     selectedSliceId.value = nextSlices[0].id;
-    await ensureSelectedSliceDetail(selectedSliceId.value, { force: true });
+    await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
   }
 
+  preloadSliceDetails(nextSlices.map((slice) => slice.id));
   syncEditorWithProjectTimeline();
   return nextSlices;
 }
@@ -1719,11 +1783,22 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
 async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   const targetId = String(sliceId || '').trim();
   if (!targetId) return;
+  const immediateRanges = getKnownSliceRanges(targetId);
   selectedSliceId.value = targetId;
-  const detail = await ensureSelectedSliceDetail(targetId, { force: true });
+  if (jumpToSliceStart) {
+    const firstRange = immediateRanges[0] || null;
+    if (firstRange) {
+      editorStore.setCurrentTime(Number(firstRange.start || 0));
+      syncPreviewToCurrentTime({ preservePlayback: false });
+    }
+  }
+  const detail = await ensureSelectedSliceDetail(targetId, { force: false });
   syncEditorWithProjectTimeline();
   if (jumpToSliceStart) {
-    const firstRange = detail?.ranges?.[0] || null;
+    const resolvedRanges = Array.isArray(detail?.ranges) && detail.ranges.length
+      ? mergeRanges(detail.ranges)
+      : immediateRanges;
+    const firstRange = resolvedRanges[0] || null;
     if (firstRange) {
       editorStore.setCurrentTime(Number(firstRange.start || 0));
     }
@@ -1748,6 +1823,7 @@ async function openDocumentPreview(preferredSectionId = '') {
     documentPreviewSectionId.value = targetId;
     if (targetId) {
       await ensureSliceDocumentLoaded(targetId, { force: false });
+      preloadSliceDetails(projectSlices.value.map((slice) => slice.id));
     }
   } finally {
     documentPreviewLoading.value = false;
@@ -1882,7 +1958,7 @@ async function removeSelectedSlice() {
 }
 
 function handleSliceChipSelect(sliceId) {
-  selectSlice(sliceId).catch(() => {});
+  selectSlice(sliceId, { jumpToSliceStart: true }).catch(() => {});
 }
 
 async function loadWorkspace() {

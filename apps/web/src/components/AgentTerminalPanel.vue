@@ -88,7 +88,7 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue';
-import MarkdownIt from 'markdown-it';
+import { renderAgentMarkdown } from '../utils/agentMarkdown';
 
 const props = defineProps({
   messages: { type: Array, default: () => [] },
@@ -119,14 +119,8 @@ const emit = defineEmits([
 
 const scrollRef = ref(null);
 const isComposing = ref(false);
-const markdown = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: true
-});
-
 function renderMarkdown(content = '') {
-  return markdown.render(String(content || ''));
+  return renderAgentMarkdown(content);
 }
 
 function scrollToBottom() {

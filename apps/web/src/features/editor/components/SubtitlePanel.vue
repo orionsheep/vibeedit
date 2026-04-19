@@ -139,51 +139,57 @@
 
       <div class="editor-container" ref="editorContainer" @mousedown="handleContainerMouseDown">
         <div class="text-content">
-          <template v-for="(word, index) in words" :key="index">
-            <span
-              class="word"
-              :class="{
-                deleted: isWordDeleted(index),
-                selected: isWordSelected(index),
-                current: index === currentWordIndex,
-                'in-active-slice': Boolean(word.slice_active),
-                'has-slice-fill': Boolean(word.slice_markers?.length)
-              }"
-              :style="getWordStyle(word)"
-              :data-index="index"
-              :data-start="word.start_time"
-              :data-end="word.end_time"
-              @mousedown="handleWordMouseDown($event, index)"
-              @mouseenter="handleWordMouseEnter($event, index)"
-              @mouseup="handleWordMouseUp($event, index)"
-              @dblclick="toggleDeleteWord(index)"
-              @contextmenu.prevent.stop="openWordContextMenu($event, index)"
-            >
-              {{ word.text }}
-              <span class="time-hint">{{ formatTime(word.start_time) }}</span>
-            </span>
+          <div
+            v-for="chunk in wordRenderChunks"
+            :key="chunk.id"
+            class="text-chunk"
+          >
+            <template v-for="item in chunk.items" :key="item.key">
+              <span
+                v-if="item.type === 'word'"
+                class="word"
+                :class="{
+                  deleted: isWordDeleted(item.index),
+                  selected: isWordSelected(item.index),
+                  current: item.index === currentWordIndex,
+                  'in-active-slice': Boolean(item.word.slice_active),
+                  'has-slice-fill': Boolean(item.word.slice_markers?.length)
+                }"
+                :style="getWordStyle(item.word)"
+                :data-index="item.index"
+                :data-start="item.word.start_time"
+                :data-end="item.word.end_time"
+                @mousedown="handleWordMouseDown($event, item.index)"
+                @mouseenter="handleWordMouseEnter($event, item.index)"
+                @mouseup="handleWordMouseUp($event, item.index)"
+                @dblclick="toggleDeleteWord(item.index)"
+                @contextmenu.prevent.stop="openWordContextMenu($event, item.index)"
+              >
+                {{ item.word.text }}
+                <span class="time-hint">{{ formatTime(item.word.start_time) }}</span>
+              </span>
 
-            <!-- Render gap after this word if exists -->
-            <span
-              v-if="getGapAfterWord(index)"
-              class="gap"
-              :class="{
-                deleted: isGapDeleted(getGapAfterWord(index).index),
-                selected: isGapSelected(getGapAfterWord(index).index),
-                'cross-asset': isCrossAssetGap(getGapAfterWord(index))
-              }"
-              :style="getGapStyle(getGapAfterWord(index))"
-              :data-gap-index="getGapAfterWord(index).index"
-              :title="`间隙 ${formatTime(getGapAfterWord(index).duration)}`"
-              @mousedown="handleGapMouseDown($event, getGapAfterWord(index).index)"
-              @click="handleGapClick($event, getGapAfterWord(index))"
-              @dblclick="toggleDeleteGap(getGapAfterWord(index).index)"
-              @contextmenu.prevent.stop="openGapContextMenu($event, getGapAfterWord(index).index)"
-            >
-              <span class="gap-line"></span>
-              <span class="gap-label">{{ getGapAfterWord(index).duration.toFixed(1) }}s</span>
-            </span>
-          </template>
+              <span
+                v-else
+                class="gap"
+                :class="{
+                  deleted: isGapDeleted(item.gapIndex),
+                  selected: isGapSelected(item.gapIndex),
+                  'cross-asset': isCrossAssetGap(item.gap)
+                }"
+                :style="getGapStyle(item.gap)"
+                :data-gap-index="item.gapIndex"
+                :title="`间隙 ${formatTime(item.gap.duration)}`"
+                @mousedown="handleGapMouseDown($event, item.gapIndex)"
+                @click="handleGapClick($event, item.gap)"
+                @dblclick="toggleDeleteGap(item.gapIndex)"
+                @contextmenu.prevent.stop="openGapContextMenu($event, item.gapIndex)"
+              >
+                <span class="gap-line"></span>
+                <span class="gap-label">{{ item.gap.duration.toFixed(1) }}s</span>
+              </span>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -208,6 +214,8 @@ import { useEditorStore } from '../stores/editorStore';
 
 const editorStore = useEditorStore();
 const { words, gaps, config, currentWordIndex, totalWords, keptWords, hasSelection } = storeToRefs(editorStore);
+const WORD_CHUNK_LIMIT = 140;
+const WORD_CHUNK_CHAR_LIMIT = 320;
 
 // Helper functions to check if a word/gap is deleted or selected
 // Access store properties directly to preserve reactivity
@@ -263,9 +271,62 @@ function formatTime(seconds) {
 }
 
 function getGapAfterWord(index) {
-  if (!gaps.value || gaps.value.length === 0) return null;
-  return gaps.value.find(g => g.afterWord === index);
+  return gapByAfterWord.value.get(index) || null;
 }
+
+const gapByAfterWord = computed(() => {
+  const map = new Map();
+  for (const gap of gaps.value || []) {
+    map.set(gap.afterWord, gap);
+  }
+  return map;
+});
+
+const wordRenderChunks = computed(() => {
+  const chunked = [];
+  let items = [];
+  let wordCount = 0;
+  let charCount = 0;
+
+  const pushChunk = () => {
+    if (!items.length) return;
+    chunked.push({
+      id: `chunk_${chunked.length}_${items[0].key}_${items[items.length - 1].key}`,
+      items
+    });
+    items = [];
+    wordCount = 0;
+    charCount = 0;
+  };
+
+  (words.value || []).forEach((word, index) => {
+    items.push({
+      type: 'word',
+      key: `word_${index}`,
+      index,
+      word
+    });
+    wordCount += 1;
+    charCount += String(word?.text || '').length;
+
+    const gap = gapByAfterWord.value.get(index);
+    if (gap) {
+      items.push({
+        type: 'gap',
+        key: `gap_${gap.index}`,
+        gapIndex: gap.index,
+        gap
+      });
+    }
+
+    if (wordCount >= WORD_CHUNK_LIMIT || charCount >= WORD_CHUNK_CHAR_LIMIT) {
+      pushChunk();
+    }
+  });
+
+  pushChunk();
+  return chunked;
+});
 
 function buildSliceFill(markers = []) {
   const palette = (Array.isArray(markers) ? markers : [])
@@ -362,7 +423,11 @@ function handleWordMouseUp(event, index) {
 function handleContainerMouseDown(event) {
   closeContextMenu();
   // Click on empty area - clear selection and prepare for drag selection
-  if (event.target === editorContainer.value || event.target.classList.contains('text-content')) {
+  if (
+    event.target === editorContainer.value ||
+    event.target.classList.contains('text-content') ||
+    event.target.classList.contains('text-chunk')
+  ) {
     editorStore.clearSelection();
     // Set up for drag selection from this point
     isDragging.value = true;
@@ -945,6 +1010,11 @@ export default {
   white-space: pre-wrap;
   word-wrap: break-word;
   user-select: none;
+}
+
+.text-chunk {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
 }
 
 .word {
