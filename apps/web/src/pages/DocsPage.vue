@@ -43,7 +43,6 @@ npm run dev:all</code></pre>
       <section id="routes">
         <h2>页面</h2>
         <ul>
-          <li><code>/dashboard</code>：素材上传与初始化页</li>
           <li><code>/projects</code>：项目列表</li>
           <li><code>/library</code>：素材库</li>
           <li><code>/projects/:projectId/edit</code>：项目级字幕编辑与 Agent 工作台</li>

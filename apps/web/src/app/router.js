@@ -1,14 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import LandingPage from '../pages/LandingPage.vue';
-import DocsPage from '../pages/DocsPage.vue';
-import UploadPage from '../pages/UploadPage.vue';
-import ProjectsPage from '../pages/ProjectsPage.vue';
-import LibraryPage from '../pages/LibraryPage.vue';
-import ProjectWorkspacePage from '../pages/ProjectWorkspacePage.vue';
-import LoginPage from '../pages/LoginPage.vue';
-import RegisterPage from '../pages/RegisterPage.vue';
-import AccountSettingsPage from '../pages/AccountSettingsPage.vue';
 import { useAuthStore } from '../features/auth/stores/authStore';
+
+const LandingPage = () => import('../pages/LandingPage.vue');
+const DocsPage = () => import('../pages/DocsPage.vue');
+const ProjectsPage = () => import('../pages/ProjectsPage.vue');
+const LibraryPage = () => import('../pages/LibraryPage.vue');
+const ProjectWorkspacePage = () => import('../pages/ProjectWorkspacePage.vue');
+const LoginPage = () => import('../pages/LoginPage.vue');
+const RegisterPage = () => import('../pages/RegisterPage.vue');
+const AccountSettingsPage = () => import('../pages/AccountSettingsPage.vue');
 
 const routes = [
   { path: '/', name: 'Landing', component: LandingPage, meta: { public: true } },
@@ -20,7 +20,7 @@ const routes = [
   { path: '/settings', name: 'AccountSettings', component: AccountSettingsPage },
   { path: '/projects/:projectId', name: 'Project', component: ProjectWorkspacePage },
   { path: '/projects/:projectId/edit', name: 'ProjectWorkspace', component: ProjectWorkspacePage },
-  { path: '/dashboard', name: 'Dashboard', component: UploadPage }
+  { path: '/dashboard', redirect: '/library' }
 ];
 
 const router = createRouter({

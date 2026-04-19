@@ -210,7 +210,7 @@ npm run build
 - 项目列表：`/projects`
 - 素材库：`/library`
 - 项目工作台：`/projects/:projectId/edit`
-- 兼容入口：`/dashboard`
+- 旧地址 `/dashboard` 会自动跳转到 `/library`
 
 ## 配置
 

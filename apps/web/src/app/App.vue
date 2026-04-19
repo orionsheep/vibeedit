@@ -5,7 +5,6 @@
       <div class="nav-links">
         <router-link v-if="authStore.isAuthenticated" to="/projects">项目</router-link>
         <router-link v-if="authStore.isAuthenticated" to="/library">素材库</router-link>
-        <router-link v-if="authStore.isAuthenticated" to="/dashboard">快速上传</router-link>
         <router-link v-if="authStore.isAuthenticated" to="/settings">账号</router-link>
       </div>
       <div class="nav-user" v-if="authStore.isAuthenticated">

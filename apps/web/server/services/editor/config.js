@@ -18,6 +18,7 @@ const CONFIG_DIR = process.env.AUTOEDIT_CONFIG_DIR
 const CONFIG_FILE = process.env.AUTOEDIT_CONFIG_FILE
   ? path.resolve(process.env.AUTOEDIT_CONFIG_FILE)
   : path.join(CONFIG_DIR, 'config.json');
+const CONFIG_CACHE_TTL_MS = 1000;
 const DEFAULT_CONFIG = {
   output_dir: os.tmpdir(),
   workspace_dir: process.env.AUTOEDIT_WORKSPACE_DIR || path.join(os.homedir(), '.autoedit', 'workspace'),
@@ -61,6 +62,10 @@ const DEFAULT_CONFIG = {
   ai_highlight_max_seconds: 180,
 };
 
+let cachedConfig = null;
+let cachedConfigExpiresAt = 0;
+let cachedConfigMtimeMs = -1;
+
 function loadJsonFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
   try {
@@ -71,15 +76,47 @@ function loadJsonFile(filePath) {
   }
 }
 
+function readConfigMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
+function buildConfigSnapshot() {
+  const config = { ...DEFAULT_CONFIG };
+  Object.assign(config, loadJsonFile(CONFIG_FILE));
+  return config;
+}
+
+export function invalidateConfigCache() {
+  cachedConfig = null;
+  cachedConfigExpiresAt = 0;
+  cachedConfigMtimeMs = -1;
+}
+
 /**
  * Load AutoEdit configuration
  * @returns {Object} Configuration object
  */
-export function loadConfig() {
-  const config = { ...DEFAULT_CONFIG };
-  Object.assign(config, loadJsonFile(CONFIG_FILE));
+export function loadConfig({ force = false } = {}) {
+  const now = Date.now();
 
-  return config;
+  if (!force && cachedConfig && now < cachedConfigExpiresAt) {
+    return cachedConfig;
+  }
+
+  const currentMtimeMs = readConfigMtime(CONFIG_FILE);
+  if (!force && cachedConfig && currentMtimeMs === cachedConfigMtimeMs) {
+    cachedConfigExpiresAt = now + CONFIG_CACHE_TTL_MS;
+    return cachedConfig;
+  }
+
+  cachedConfig = buildConfigSnapshot();
+  cachedConfigMtimeMs = currentMtimeMs;
+  cachedConfigExpiresAt = now + CONFIG_CACHE_TTL_MS;
+  return cachedConfig;
 }
 
 export function getProjectRoot() {

@@ -35,10 +35,10 @@ test_*.py
 .DS_Store
 
 # Local workspace / generated data
-storage/
-workspace/
-uploads/
-tmp/
+/storage/
+/workspace/
+/uploads/
+/tmp/
 *.log
 
 # Database runtime / dump data must never be committed

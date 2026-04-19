@@ -23,77 +23,43 @@
     <div v-if="isLoading" class="state-shell">正在加载项目工作台...</div>
     <div v-else-if="error" class="state-shell error">{{ error }}</div>
     <div v-else class="workspace-shell">
-      <header class="workspace-topbar">
-        <div class="topbar-left">
-          <router-link class="brand-link" to="/projects">VIBEEDIT</router-link>
-          <nav class="workspace-nav">
-            <router-link to="/projects">项目</router-link>
-            <router-link to="/library">素材库</router-link>
-          </nav>
-          <div class="project-identity">
-            <strong>{{ project?.name }}</strong>
-            <span>{{ project?.description || '多素材字幕时间线工作台' }}</span>
-          </div>
-        </div>
-
-        <div class="topbar-right">
-          <span v-if="timelineDirty" class="stat-chip warning">未保存</span>
-          <button class="ghost-btn danger-ghost-btn" :disabled="deletingProject" @click="deleteCurrentProject">
-            {{ deletingProject ? '删除中...' : '删除项目' }}
-          </button>
-          <button class="ghost-btn" @click="reloadTimeline">重载</button>
-          <button class="ghost-btn" :disabled="!timelineDirty || savingTimeline" @click="saveTimeline">
-            {{ savingTimeline ? '保存中...' : '保存时间线' }}
-          </button>
-          <button class="ghost-btn" :disabled="importingProjectPackage" @click="triggerProjectPackageImport">
-            {{ importingProjectPackage ? `导入中 ${projectPackageImportProgress}%` : '导入工程包' }}
-          </button>
-          <button class="ghost-btn" :disabled="!canOpenDocumentPreview" @click="openDocumentPreview()">
-            {{ documentTriggerLabel }}
-          </button>
-          <input
-            ref="projectPackageImportInputRef"
-            class="project-upload-input"
-            type="file"
-            accept=".zip,application/zip"
-            @change="handleProjectPackageImportSelection"
-          />
-          <div class="export-menu-shell" @click.stop>
-            <button
-              class="primary-btn export-trigger"
-              :disabled="isExportingAny"
-              @click="toggleExportMenu"
-            >
-              {{ exportTriggerLabel }}
-            </button>
-            <div v-if="exportMenuOpen" class="export-menu">
-              <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuVideo">
-                {{ exportingVideo ? '视频导出中...' : '导出视频' }}
-              </button>
-              <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuPackage">
-                {{ exportingPackage ? '工程包导出中...' : '导出工程包' }}
-              </button>
-              <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuInterchange('premiere_xml')">
-                {{ exportingInterchangeFormat === 'premiere_xml' ? 'XML 导出中...' : '导出 Premiere / Resolve XML' }}
-              </button>
-              <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuInterchange('edl')">
-                {{ exportingInterchangeFormat === 'edl' ? 'EDL 导出中...' : '导出通用 EDL' }}
-              </button>
-              <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuInterchange('capcut_srt')">
-                {{ exportingInterchangeFormat === 'capcut_srt' ? 'SRT 导出中...' : '导出剪映 / CapCut SRT' }}
-              </button>
-              <button
-                v-if="isLiveSlicingMode && projectSlices.length"
-                class="context-item"
-                :disabled="isExportingAny"
-                @click="handleExportMenuSliceXmlBundle"
-              >
-                {{ exportingSliceXmlBundle ? '切片 XML 打包中...' : '导出全部切片 XML 包' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
+      <WorkspaceTopbar
+        :project-name="project?.name || ''"
+        :project-description="project?.description || ''"
+        :timeline-dirty="timelineDirty"
+        :deleting-project="deletingProject"
+        :saving-timeline="savingTimeline"
+        :importing-project-package="importingProjectPackage"
+        :project-package-import-progress="projectPackageImportProgress"
+        :can-open-document-preview="canOpenDocumentPreview"
+        :document-trigger-label="documentTriggerLabel"
+        :export-trigger-label="exportTriggerLabel"
+        :export-menu-open="exportMenuOpen"
+        :is-exporting-any="isExportingAny"
+        :exporting-video="exportingVideo"
+        :exporting-package="exportingPackage"
+        :exporting-interchange-format="exportingInterchangeFormat"
+        :is-live-slicing-mode="isLiveSlicingMode"
+        :project-slices-length="projectSlices.length"
+        :exporting-slice-xml-bundle="exportingSliceXmlBundle"
+        @delete-project="deleteCurrentProject"
+        @reload-timeline="reloadTimeline"
+        @save-timeline="saveTimeline"
+        @trigger-package-import="triggerProjectPackageImport"
+        @open-document="openDocumentPreview()"
+        @toggle-export-menu="toggleExportMenu"
+        @export-video="handleExportMenuVideo"
+        @export-package="handleExportMenuPackage"
+        @export-interchange="handleExportMenuInterchange"
+        @export-slice-xml-bundle="handleExportMenuSliceXmlBundle"
+      />
+      <input
+        ref="projectPackageImportInputRef"
+        class="project-upload-input"
+        type="file"
+        accept=".zip,application/zip"
+        @change="handleProjectPackageImportSelection"
+      />
 
       <div ref="workspaceBodyRef" class="workspace-body" :style="workspaceLayoutStyle">
         <aside ref="sidebarRef" class="sidebar" :class="{ collapsed: sidebarCollapsed }" :style="sidebarStyle" @contextmenu.stop>
@@ -387,6 +353,15 @@ import DocumentPreviewModal from '../components/DocumentPreviewModal.vue';
 import SubtitlePanel from '../features/editor/components/SubtitlePanel.vue';
 import TimelineStrip from '../features/editor/components/TimelineStrip.vue';
 import ProjectCompositionPreview from '../features/editor/components/ProjectCompositionPreview.vue';
+import WorkspaceTopbar from '../features/workspace/components/WorkspaceTopbar.vue';
+import { useWorkspacePaneLayout } from '../features/workspace/composables/useWorkspacePaneLayout.js';
+import {
+  buildDocumentParagraphs,
+  buildTranscriptBlocksFromEditorWords,
+  formatRangeLabel,
+  normalizeDocumentBlocks
+} from '../features/workspace/utils/documentPreview.js';
+import { clamp, formatDuration, mergeRanges, roundTime, subtractRanges } from '../features/workspace/utils/rangeMath.js';
 import { useEditorStore } from '../features/editor/stores/editorStore';
 import { getLibraryAssetWords, retranscribeLibraryAsset } from '../features/library/api/libraryApi';
 import {
@@ -501,8 +476,6 @@ const projectPackageImportProgress = ref(0);
 const draggedAssetId = ref('');
 const dragOverAssetId = ref('');
 const editorBaselineSignature = ref('');
-const sidebarCollapsed = ref(false);
-const agentCollapsed = ref(false);
 const stoppingAgent = ref(false);
 const cancelRequestedRunId = ref('');
 const agentRunAbortController = ref(null);
@@ -519,13 +492,20 @@ const contextMenu = ref({
   assetId: ''
 });
 let confirmDialogAction = null;
-const panelSizes = ref({
-  sidebarWidth: 230,
-  agentWidth: 420,
-  previewHeight: 180
-});
-const workspaceBodyRef = ref(null);
-const sidebarRef = ref(null);
+const {
+  agentCollapsed,
+  panelSizes,
+  persistPanelSizes,
+  sidebarCollapsed,
+  sidebarRef,
+  sidebarStyle,
+  startResize,
+  toggleAgentCollapsed,
+  toggleSidebarCollapsed,
+  workspaceBodyRef,
+  workspaceLayoutStyle,
+  initializePaneLayout
+} = useWorkspacePaneLayout(projectId);
 
 const assetJobMap = computed(() => {
   const map = {};
@@ -729,15 +709,6 @@ const previewLabel = computed(() => {
   return `${clip.asset_title} · ${formatDuration(clip.source_start)} - ${formatDuration(clip.source_end)}`;
 });
 
-const workspaceLayoutStyle = computed(() => ({
-  '--sidebar-width': `${sidebarCollapsed.value ? 34 : panelSizes.value.sidebarWidth}px`,
-  '--agent-width': `${agentCollapsed.value ? 34 : panelSizes.value.agentWidth}px`
-}));
-
-const sidebarStyle = computed(() => ({
-  '--sidebar-preview-height': `${panelSizes.value.previewHeight}px`
-}));
-
 const contextMenuStyle = computed(() => ({
   left: `${contextMenu.value.x}px`,
   top: `${contextMenu.value.y}px`
@@ -800,118 +771,6 @@ const liveSliceSelectionHint = computed(() => {
   }
   return `已选 ${manualSliceSelectionRanges.value.length} 段 · ${formatDuration(manualSliceSelectionDuration.value)}，可新建切片，或加入/移出当前切片。`;
 });
-
-function buildTranscriptBlocksFromEditorWords(words = [], {
-  deletedWords = new Set(),
-  deletedGaps = new Set(),
-  hardGapThreshold = 1.1,
-  maxBlockChars = 90
-} = {}) {
-  const sourceWords = Array.isArray(words) ? words : [];
-  const blocks = [];
-  let current = null;
-  let lastKeptIndex = -1;
-
-  const pushCurrent = () => {
-    if (!current || !String(current.text || '').trim()) return;
-    blocks.push({
-      id: `doc_block_${blocks.length + 1}`,
-      start: roundTime(current.start),
-      end: roundTime(current.end),
-      text: current.text
-    });
-    current = null;
-  };
-
-  for (let index = 0; index < sourceWords.length; index += 1) {
-    if (deletedWords.has(index)) continue;
-    const word = sourceWords[index];
-    const previousWord = lastKeptIndex >= 0 ? sourceWords[lastKeptIndex] : null;
-    const gapDuration = previousWord
-      ? Number(word.start_time || 0) - Number(previousWord.end_time || previousWord.start_time || 0)
-      : 0;
-    const shouldBreak = Boolean(
-      current && (
-        deletedGaps.has(lastKeptIndex) ||
-        gapDuration >= hardGapThreshold ||
-        (/[。！？!?；;]$/.test(String(previousWord?.text || '')) && current.text.length >= 20) ||
-        current.text.length >= maxBlockChars
-      )
-    );
-
-    if (!current || shouldBreak) {
-      pushCurrent();
-      current = {
-        start: Number(word.start_time || 0),
-        end: Number(word.end_time || word.start_time || 0),
-        text: ''
-      };
-    }
-
-    current.text += String(word.text || '');
-    current.end = Number(word.end_time || word.start_time || current.end);
-    lastKeptIndex = index;
-  }
-
-  pushCurrent();
-  return blocks;
-}
-
-function normalizeDocumentBlocks(blocks = []) {
-  return (Array.isArray(blocks) ? blocks : [])
-    .map((block, index) => ({
-      id: block.id || `doc_block_${index + 1}`,
-      start: Number(block.start || 0),
-      end: Number(block.end || block.start || 0),
-      text: String(block.text || '').trim()
-    }))
-    .filter((block) => block.text);
-}
-
-function buildDocumentParagraphs(blocks = [], {
-  minParagraphChars = 120,
-  maxParagraphChars = 260
-} = {}) {
-  const normalized = normalizeDocumentBlocks(blocks);
-  if (!normalized.length) return [];
-
-  const paragraphs = [];
-  let current = '';
-
-  const pushCurrent = () => {
-    const text = String(current || '').trim();
-    if (!text) return;
-    paragraphs.push(text);
-    current = '';
-  };
-
-  for (const block of normalized) {
-    const text = String(block.text || '').trim();
-    if (!text) continue;
-    const candidate = current ? `${current}${text}` : text;
-    const shouldBreak = Boolean(
-      current && (
-        current.length >= maxParagraphChars ||
-        (current.length >= minParagraphChars && /[。！？!?；;]$/.test(current))
-      )
-    );
-
-    if (shouldBreak) {
-      pushCurrent();
-      current = text;
-      continue;
-    }
-
-    current = candidate;
-  }
-
-  pushCurrent();
-  return paragraphs;
-}
-
-function formatRangeLabel(start, end) {
-  return `${formatDuration(start)} - ${formatDuration(end)}`;
-}
 
 const masterDocumentSection = computed(() => {
   const blocks = buildTranscriptBlocksFromEditorWords(editorStore.words || [], {
@@ -1031,83 +890,6 @@ const agentPlaceholder = computed(() => {
   if (agentMode.value === 'live_slicing') return '例如：先分析全文，给我 4 个适合发短视频的平台切片候选，每条控制在 30-50 秒。';
   return '输入你对整个项目时间线的要求。';
 });
-
-function roundTime(value) {
-  return Number(Number(value || 0).toFixed(3));
-}
-
-function mergeRanges(ranges = []) {
-  const normalized = (Array.isArray(ranges) ? ranges : [])
-    .map((range) => ({
-      start: roundTime(Number(range?.start || 0)),
-      end: roundTime(Number(range?.end || 0))
-    }))
-    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end - range.start > 0.05)
-    .sort((left, right) => left.start - right.start);
-
-  if (!normalized.length) return [];
-
-  const merged = [normalized[0]];
-  for (let index = 1; index < normalized.length; index += 1) {
-    const current = normalized[index];
-    const previous = merged[merged.length - 1];
-    if (current.start <= previous.end + 0.05) {
-      previous.end = roundTime(Math.max(previous.end, current.end));
-      continue;
-    }
-    merged.push({ ...current });
-  }
-  return merged;
-}
-
-function subtractRanges(baseRanges = [], removeRanges = []) {
-  const source = mergeRanges(baseRanges);
-  const cuts = mergeRanges(removeRanges);
-  if (!source.length || !cuts.length) return source;
-
-  const result = [];
-  for (const base of source) {
-    let fragments = [{ ...base }];
-    for (const cut of cuts) {
-      const nextFragments = [];
-      for (const fragment of fragments) {
-        const overlapStart = Math.max(fragment.start, cut.start);
-        const overlapEnd = Math.min(fragment.end, cut.end);
-        if (overlapEnd - overlapStart <= 0.001) {
-          nextFragments.push(fragment);
-          continue;
-        }
-        if (overlapStart - fragment.start > 0.05) {
-          nextFragments.push({
-            start: fragment.start,
-            end: roundTime(overlapStart)
-          });
-        }
-        if (fragment.end - overlapEnd > 0.05) {
-          nextFragments.push({
-            start: roundTime(overlapEnd),
-            end: fragment.end
-          });
-        }
-      }
-      fragments = nextFragments;
-      if (!fragments.length) break;
-    }
-    result.push(...fragments);
-  }
-  return mergeRanges(result);
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function formatDuration(seconds) {
-  const safe = Number(seconds || 0);
-  const mins = Math.floor(safe / 60);
-  const secs = Math.floor(safe % 60);
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
 
 function formatDateTime(value) {
   if (!value) return '刚刚';
@@ -2785,123 +2567,8 @@ async function handleConfirmDialogConfirm() {
   }
 }
 
-function getLayoutStorageKey() {
-  return `autoedit:project-workspace-layout:${projectId.value}`;
-}
-
-function loadStoredPanelSizes() {
-  try {
-    const raw = window.localStorage.getItem(getLayoutStorageKey());
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    panelSizes.value = {
-      sidebarWidth: Number(parsed.sidebarWidth) || 230,
-      agentWidth: Number(parsed.agentWidth) || 420,
-      previewHeight: Number(parsed.previewHeight) || 180
-    };
-    sidebarCollapsed.value = Boolean(parsed.sidebarCollapsed);
-    agentCollapsed.value = Boolean(parsed.agentCollapsed);
-  } catch {
-    // ignore invalid local state
-  }
-}
-
-function persistPanelSizes() {
-  try {
-    window.localStorage.setItem(getLayoutStorageKey(), JSON.stringify({
-      ...panelSizes.value,
-      sidebarCollapsed: sidebarCollapsed.value,
-      agentCollapsed: agentCollapsed.value
-    }));
-  } catch {
-    // ignore persistence errors
-  }
-}
-
-function applyPanelSizeStyles(sizes = panelSizes.value) {
-  if (workspaceBodyRef.value) {
-    workspaceBodyRef.value.style.setProperty('--sidebar-width', `${sidebarCollapsed.value ? 34 : sizes.sidebarWidth}px`);
-    workspaceBodyRef.value.style.setProperty('--agent-width', `${agentCollapsed.value ? 34 : sizes.agentWidth}px`);
-  }
-
-  if (sidebarRef.value) {
-    sidebarRef.value.style.setProperty('--sidebar-preview-height', `${sizes.previewHeight}px`);
-  }
-}
-
-function startResize(kind, event) {
-  event.preventDefault();
-  if (kind === 'sidebar' && sidebarCollapsed.value) {
-    sidebarCollapsed.value = false;
-  }
-  if (kind === 'agent' && agentCollapsed.value) {
-    agentCollapsed.value = false;
-  }
-  const startX = event.clientX;
-  const startY = event.clientY;
-  const startSizes = { ...panelSizes.value };
-  const draftSizes = { ...startSizes };
-  let resizeFrameId = null;
-
-  const scheduleStyleApply = () => {
-    if (resizeFrameId) return;
-    resizeFrameId = requestAnimationFrame(() => {
-      resizeFrameId = null;
-      applyPanelSizeStyles(draftSizes);
-    });
-  };
-
-  const handleMove = (moveEvent) => {
-    const deltaX = moveEvent.clientX - startX;
-    const deltaY = moveEvent.clientY - startY;
-
-    if (kind === 'sidebar') {
-      draftSizes.sidebarWidth = clamp(startSizes.sidebarWidth + deltaX, 180, 360);
-    } else if (kind === 'agent') {
-      draftSizes.agentWidth = clamp(startSizes.agentWidth - deltaX, 320, 620);
-    } else if (kind === 'preview') {
-      draftSizes.previewHeight = clamp(startSizes.previewHeight + deltaY, 110, 320);
-    }
-
-    scheduleStyleApply();
-  };
-
-  const handleUp = () => {
-    document.removeEventListener('mousemove', handleMove);
-    document.removeEventListener('mouseup', handleUp);
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    if (resizeFrameId) {
-      cancelAnimationFrame(resizeFrameId);
-      resizeFrameId = null;
-    }
-    panelSizes.value = { ...draftSizes };
-    applyPanelSizeStyles(panelSizes.value);
-    persistPanelSizes();
-  };
-
-  document.body.style.cursor = kind === 'preview' ? 'row-resize' : 'col-resize';
-  document.body.style.userSelect = 'none';
-  document.addEventListener('mousemove', handleMove);
-  document.addEventListener('mouseup', handleUp);
-}
-
-function toggleSidebarCollapsed() {
-  sidebarCollapsed.value = !sidebarCollapsed.value;
-  applyPanelSizeStyles();
-  persistPanelSizes();
-}
-
-function toggleAgentCollapsed() {
-  agentCollapsed.value = !agentCollapsed.value;
-  applyPanelSizeStyles();
-  persistPanelSizes();
-}
-
 watch(projectId, async () => {
-  loadStoredPanelSizes();
-  await nextTick();
-  applyPanelSizeStyles();
+  await initializePaneLayout();
   await loadWorkspace();
   await ensureAgentSessionLoaded();
 });
@@ -2990,9 +2657,7 @@ watch(projectSlices, (slices) => {
 }, { deep: true });
 
 onMounted(async () => {
-  loadStoredPanelSizes();
-  await nextTick();
-  applyPanelSizeStyles();
+  await initializePaneLayout();
   await loadWorkspace();
   await ensureAgentSessionLoaded();
   document.addEventListener('click', closeContextMenu);
@@ -3046,144 +2711,19 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-.workspace-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 14px;
-  border-bottom: 1px solid #192531;
-  background: rgba(8, 13, 20, 0.94);
-}
-
-.topbar-left,
-.topbar-right {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.brand-link {
-  text-decoration: none;
-  color: #88ecff;
-  font-family: 'Space Mono', ui-monospace, monospace;
-  font-size: 13px;
-  letter-spacing: 0.12em;
-}
-
-.workspace-nav {
-  display: flex;
-  gap: 4px;
-}
-
-.workspace-nav a {
-  text-decoration: none;
-  color: #8fa4b4;
-  padding: 5px 8px;
-  font-size: 12px;
-  border: 1px solid transparent;
-}
-
-.workspace-nav a.router-link-active {
-  color: #eff7ff;
-  border-color: #243443;
-  background: #0b141d;
-}
-
-.project-identity {
-  min-width: 0;
-  display: grid;
-}
-
-.project-identity strong {
-  font-size: 13px;
-}
-
-.project-identity span {
-  color: #7f95a7;
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 360px;
-}
-
-.stat-chip {
-  border: 1px solid #223141;
-  background: #0a1118;
-  color: #b8ccdb;
-  padding: 5px 7px;
-  font-size: 11px;
-}
-
-.stat-chip.warning {
-  color: #ffcf7a;
-  border-color: #5f4b1f;
-}
-
-.ghost-btn,
-.primary-btn,
 .text-link {
-  border: 1px solid #243443;
-  background: #0c141c;
-  color: #edf5fb;
-  padding: 7px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #8fe7ff;
+  padding: 0;
   font-size: 11px;
   cursor: pointer;
 }
 
-.primary-btn {
-  background: #16c5ff;
-  border-color: #16c5ff;
-  color: #071018;
-  font-weight: 700;
-}
-
-.ghost-btn:disabled,
-.primary-btn:disabled,
+.text-link:disabled,
 .context-item:disabled {
   opacity: 0.7;
   cursor: not-allowed;
-}
-
-.danger-ghost-btn {
-  color: #ff9aa4;
-  border-color: #5b2831;
-  background: #1a0d12;
-}
-
-.danger-ghost-btn:hover:not(:disabled) {
-  color: #ffe6ea;
-  border-color: #8d3947;
-  background: #271117;
-}
-
-.export-menu-shell {
-  position: relative;
-}
-
-.export-trigger {
-  min-width: 78px;
-}
-
-.export-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 35;
-  min-width: 168px;
-  border: 1px solid #20303f;
-  background: #091019;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
-}
-
-.text-link {
-  border-color: transparent;
-  background: transparent;
-  color: #8fe7ff;
-  padding: 0;
 }
 
 .workspace-body {
