@@ -196,8 +196,38 @@ export async function listProjectJobs(projectId) {
   return response.data.jobs || [];
 }
 
-export async function exportProjectVideo(projectId) {
-  const response = await axios.post(`${API_BASE}/${projectId}/exports/video`);
+export async function listProjectSlices(projectId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/slices`);
+  return response.data.slices || [];
+}
+
+export async function getProjectSlice(projectId, sliceId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/slices/${sliceId}`);
+  return response.data.slice;
+}
+
+export async function createProjectSlice(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/slices`, payload);
+  return response.data.slice;
+}
+
+export async function updateProjectSlice(projectId, sliceId, payload = {}) {
+  const response = await axios.put(`${API_BASE}/${projectId}/slices/${sliceId}`, payload);
+  return response.data.slice;
+}
+
+export async function deleteProjectSlice(projectId, sliceId) {
+  const response = await axios.delete(`${API_BASE}/${projectId}/slices/${sliceId}`);
+  return response.data.slice;
+}
+
+export async function suggestProjectSlices(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/slices/suggest`, payload);
+  return response.data;
+}
+
+export async function exportProjectVideo(projectId, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/exports/video`, payload);
   return response.data;
 }
 
@@ -206,8 +236,8 @@ export async function exportProjectPackage(projectId, payload = {}) {
   return response.data;
 }
 
-export async function exportProjectInterchange(projectId, format) {
-  const response = await axios.post(`${API_BASE}/${projectId}/exports/interchange`, { format });
+export async function exportProjectInterchange(projectId, format, payload = {}) {
+  const response = await axios.post(`${API_BASE}/${projectId}/exports/interchange`, { format, ...payload });
   return response.data;
 }
 

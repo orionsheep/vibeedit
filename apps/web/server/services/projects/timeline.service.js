@@ -490,11 +490,13 @@ export async function saveProjectCaptionOverride(projectId, assetId, { transcrip
   });
 }
 
-export async function createTimelineSnapshot(projectId, { source = 'system', note = null } = {}) {
+export async function createTimelineSnapshot(projectId, { source = 'system', note = null, timelineId = '' } = {}) {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({ where: { id: projectId } });
     const timeline = await db.timeline.findFirst({
-      where: { projectId, isPrimary: true },
+      where: timelineId
+        ? { projectId, id: timelineId }
+        : { projectId, isPrimary: true },
       include: {
         clips: {
           orderBy: { sortOrder: 'asc' },

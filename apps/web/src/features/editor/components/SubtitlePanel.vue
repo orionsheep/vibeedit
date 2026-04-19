@@ -72,7 +72,8 @@
               :class="{
                 deleted: isWordDeleted(index),
                 selected: isWordSelected(index),
-                current: index === currentWordIndex
+                current: index === currentWordIndex,
+                'in-active-slice': Boolean(word.slice_active)
               }"
               :style="getWordStyle(word)"
               :data-index="index"
@@ -84,6 +85,15 @@
               @dblclick="toggleDeleteWord(index)"
               @contextmenu.prevent.stop="openWordContextMenu($event, index)"
             >
+              <span v-if="word.slice_markers?.length" class="slice-marker-stack">
+                <span
+                  v-for="marker in word.slice_markers.slice(0, 3)"
+                  :key="`${word.id || index}_${marker.id}`"
+                  class="slice-marker"
+                  :style="{ '--slice-marker-color': marker.color || '#4cc2ff' }"
+                  :title="marker.title || ''"
+                ></span>
+              </span>
               {{ word.text }}
               <span class="time-hint">{{ formatTime(word.start_time) }}</span>
             </span>
@@ -202,11 +212,13 @@ function getGapAfterWord(index) {
 }
 
 function getWordStyle(word) {
-  if (!word?.asset_color && !word?.asset_soft) return null;
-  return {
+  const style = {
     '--word-asset-color': word.asset_color || 'transparent',
-    '--word-asset-soft': word.asset_soft || 'transparent'
+    '--word-asset-soft': word.asset_soft || 'transparent',
+    '--word-slice-color': word?.slice_active_color || 'transparent'
   };
+  if (!word?.asset_color && !word?.asset_soft && !word?.slice_active_color) return null;
+  return style;
 }
 
 function isCrossAssetGap(gap) {
@@ -693,8 +705,8 @@ export default {
 }
 
 .word {
-  display: inline;
-  padding: 2px 0 3px;
+  display: inline-block;
+  padding: 5px 0 3px;
   margin: 0 1px;
   border-radius: 0;
   cursor: pointer;
@@ -708,6 +720,10 @@ export default {
   background-repeat: no-repeat;
   background-position: left calc(100% - 1px);
   background-size: 100% 1px;
+}
+
+.word.in-active-slice:not(.selected):not(.deleted) {
+  box-shadow: inset 0 -3px 0 var(--word-slice-color, transparent);
 }
 
 .word:hover:not(.selected) {
@@ -728,6 +744,22 @@ export default {
 .word.current:not(.selected) {
   background: rgba(0, 212, 255, 0.15);
   background-size: 100% 2px;
+}
+
+.slice-marker-stack {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.slice-marker {
+  width: 9px;
+  height: 2px;
+  background: var(--slice-marker-color, #4cc2ff);
+  opacity: 0.95;
 }
 
 .word .time-hint {

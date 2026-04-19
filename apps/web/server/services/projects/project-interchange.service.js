@@ -185,7 +185,27 @@ async function probeMediaInfo(sourcePath, { pathurl = '' } = {}) {
   });
 }
 
-async function loadProjectInterchangeData(projectId) {
+function readTimelineKind(timeline = null) {
+  if (timeline?.isPrimary) return 'master';
+  const settings = timeline?.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return 'aux';
+  return String(settings.kind || 'aux').trim() || 'aux';
+}
+
+function selectTimelineForInterchange(project, timelineId = '') {
+  const requestedTimelineId = String(timelineId || '').trim();
+  const timelines = Array.isArray(project?.timelines) ? project.timelines : [];
+  if (requestedTimelineId) {
+    const requested = timelines.find((timeline) => timeline.id === requestedTimelineId);
+    if (!requested) {
+      throw new Error('Requested timeline not found');
+    }
+    return requested;
+  }
+  return timelines.find((timeline) => timeline.isPrimary) || timelines[0] || null;
+}
+
+async function loadProjectInterchangeData(projectId, timelineId = '') {
   await ensureProjectEditStateConsistency(projectId);
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({
@@ -207,7 +227,9 @@ async function loadProjectInterchangeData(projectId) {
           }
         },
         timelines: {
-          where: { isPrimary: true },
+          where: timelineId
+            ? { id: String(timelineId || '').trim() }
+            : undefined,
           include: {
             clips: {
               orderBy: { sortOrder: 'asc' },
@@ -230,6 +252,11 @@ async function loadProjectInterchangeData(projectId) {
 
     if (!project) {
       throw new Error('Project not found');
+    }
+
+    const timeline = selectTimelineForInterchange(project, timelineId);
+    if (!timeline) {
+      throw new Error('Project timeline is empty');
     }
 
     return project;
@@ -536,15 +563,48 @@ export function buildEdl({ project, clips, sourceInfoByAssetId }) {
 }
 
 function buildEditedWords(sourceState = {}) {
+  return buildEditedWordsForRanges(sourceState);
+}
+
+function normalizeProjectRanges(ranges = []) {
+  return (Array.isArray(ranges) ? ranges : [])
+    .map((range) => ({
+      start: roundTime(Number(range?.start ?? range?.timeline_start ?? range?.original_project_start ?? 0)),
+      end: roundTime(Number(range?.end ?? range?.timeline_end ?? range?.original_project_end ?? 0))
+    }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end - range.start > 0.05)
+    .sort((left, right) => left.start - right.start);
+}
+
+export function buildTimelineProjectRanges(clips = []) {
+  return normalizeProjectRanges((Array.isArray(clips) ? clips : []).map((clip) => ({
+    start: Number(clip.metadata?.original_project_start ?? clip.metadata?.originalProjectStart ?? clip.timelineStartSeconds ?? clip.timeline_start ?? 0),
+    end: Number(clip.metadata?.original_project_end ?? clip.metadata?.originalProjectEnd ?? clip.timelineEndSeconds ?? clip.timeline_end ?? 0)
+  })));
+}
+
+function buildEditedWordsForRanges(sourceState = {}, ranges = null) {
   const deletedWordKeys = new Set(sourceState.deleted_word_keys || []);
   const deletedGapKeys = new Set(sourceState.deleted_gap_keys || []);
   const words = Array.isArray(sourceState.words) ? sourceState.words : [];
+  const selectedRanges = normalizeProjectRanges(ranges);
+  const hasRangeFilter = selectedRanges.length > 0;
   const kept = [];
   let cursor = 0;
+
+  const getRangeIndexForWord = (word) => {
+    if (!hasRangeFilter) return 0;
+    return selectedRanges.findIndex((range) => (
+      Number(word.start_time || 0) < range.end &&
+      Number(word.end_time || word.start_time || 0) > range.start
+    ));
+  };
 
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     if (deletedWordKeys.has(word.word_key)) continue;
+    const currentRangeIndex = getRangeIndexForWord(word);
+    if (hasRangeFilter && currentRangeIndex === -1) continue;
 
     const duration = Math.max(0.01, Number(word.source_end_time || 0) - Number(word.source_start_time || 0));
     const editedStart = roundTime(cursor);
@@ -563,6 +623,13 @@ function buildEditedWords(sourceState = {}) {
     if (deletedWordKeys.has(nextWord.word_key)) {
       continue;
     }
+    const nextRangeIndex = getRangeIndexForWord(nextWord);
+    if (hasRangeFilter && nextRangeIndex === -1) {
+      continue;
+    }
+    if (hasRangeFilter && nextRangeIndex !== currentRangeIndex) {
+      continue;
+    }
     if (deletedGapKeys.has(word.gap_key_after)) {
       continue;
     }
@@ -573,8 +640,8 @@ function buildEditedWords(sourceState = {}) {
   return kept;
 }
 
-export function buildCapCutSrt(sourceState = {}) {
-  const words = buildEditedWords(sourceState);
+export function buildCapCutSrt(sourceState = {}, ranges = null) {
+  const words = buildEditedWordsForRanges(sourceState, ranges);
   if (!words.length) {
     throw new Error('No subtitle cues available for SRT export');
   }
@@ -624,14 +691,15 @@ export function buildProjectInterchangeArtifacts({
   sourceInfoByAssetId,
   sourceState = null
 }) {
+  const ranges = buildTimelineProjectRanges(clips);
   return {
     premiereXml: buildPremiereXml({ project, clips, sourceInfoByAssetId }),
     edl: buildEdl({ project, clips, sourceInfoByAssetId }),
-    capcutSrt: sourceState ? buildCapCutSrt(sourceState) : ''
+    capcutSrt: sourceState ? buildCapCutSrt(sourceState, ranges) : ''
   };
 }
 
-export async function exportProjectInterchangeFile(projectId, format = 'premiere_xml') {
+export async function exportProjectInterchangeFile(projectId, format = 'premiere_xml', { timelineId = '' } = {}) {
   const config = PROJECT_INTERCHANGE_FORMATS[format];
   if (!config) {
     throw new Error(`Unsupported project export format: ${format}`);
@@ -639,28 +707,31 @@ export async function exportProjectInterchangeFile(projectId, format = 'premiere
 
   const job = await createJob({
     type: 'export.interchange',
-    payload: { projectId, format },
+    payload: { projectId, format, timelineId },
     projectId,
     message: `Queued ${config.label} export`
   });
 
   try {
     await markJobRunning(job.id, `Preparing ${config.label}`);
-    const project = await loadProjectInterchangeData(projectId);
-    const timeline = project.timelines[0];
+    const project = await loadProjectInterchangeData(projectId, timelineId);
+    const timeline = selectTimelineForInterchange(project, timelineId);
     if (!timeline || !timeline.clips.length) {
       throw new Error('Project timeline is empty');
     }
 
     const { exportsDir } = ensureStorageDirs();
     const outputId = uuidv4().substring(0, 8);
-    const filename = `${sanitizeFilename(project.name)}_${outputId}.${config.extension}`;
+    const baseName = readTimelineKind(timeline) === 'slice'
+      ? `${project.name}_${timeline.settings?.title || timeline.name}`
+      : project.name;
+    const filename = `${sanitizeFilename(baseName)}_${outputId}.${config.extension}`;
     const outputPath = path.join(exportsDir, filename);
 
     let content = '';
     if (format === 'capcut_srt') {
       const sourceState = await loadProjectEditSource(projectId);
-      content = buildCapCutSrt(sourceState);
+      content = buildCapCutSrt(sourceState, buildTimelineProjectRanges(timeline.clips));
     } else {
       const sourceInfoByAssetId = await collectSourceInfoByAssetId(timeline.clips);
       content = format === 'edl'

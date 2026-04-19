@@ -41,7 +41,27 @@ function exportClipSegment(sourcePath, clip, outputPath) {
   });
 }
 
-async function loadProjectExportData(projectId) {
+function readTimelineKind(timeline = null) {
+  if (timeline?.isPrimary) return 'master';
+  const settings = timeline?.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return 'aux';
+  return String(settings.kind || 'aux').trim() || 'aux';
+}
+
+function selectTimelineForExport(project, timelineId = '') {
+  const requestedTimelineId = String(timelineId || '').trim();
+  const timelines = Array.isArray(project?.timelines) ? project.timelines : [];
+  if (requestedTimelineId) {
+    const requested = timelines.find((timeline) => timeline.id === requestedTimelineId);
+    if (!requested) {
+      throw new Error('Requested timeline not found');
+    }
+    return requested;
+  }
+  return timelines.find((timeline) => timeline.isPrimary) || timelines[0] || null;
+}
+
+async function loadProjectExportData(projectId, timelineId = '') {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({
       where: { id: projectId },
@@ -62,7 +82,9 @@ async function loadProjectExportData(projectId) {
           }
         },
         timelines: {
-          where: { isPrimary: true },
+          where: timelineId
+            ? { id: String(timelineId || '').trim() }
+            : undefined,
           include: {
             clips: {
               orderBy: { sortOrder: 'asc' },
@@ -81,20 +103,25 @@ async function loadProjectExportData(projectId) {
       throw new Error('Project not found');
     }
 
+    const timeline = selectTimelineForExport(project, timelineId);
+    if (!timeline) {
+      throw new Error('Project timeline is empty');
+    }
+
     return project;
   });
 }
 
-export async function exportProjectTimelineVideo(projectId) {
+export async function exportProjectTimelineVideo(projectId, { timelineId = '' } = {}) {
   const job = await createJob({
     type: 'export.video',
-    payload: { projectId },
+    payload: { projectId, timelineId },
     projectId,
     message: 'Queued project video export'
   });
 
-  const project = await loadProjectExportData(projectId);
-  const timeline = project.timelines[0];
+  const project = await loadProjectExportData(projectId, timelineId);
+  const timeline = selectTimelineForExport(project, timelineId);
   if (!timeline || !timeline.clips.length) {
     await failJob(job.id, new Error('Project timeline is empty'));
     throw new Error('Project timeline is empty');
@@ -102,7 +129,10 @@ export async function exportProjectTimelineVideo(projectId) {
 
   const { exportsDir } = ensureStorageDirs();
   const exportId = uuidv4().substring(0, 8);
-  const outputPath = path.join(exportsDir, `${sanitizeFilename(project.name)}_${exportId}.mp4`);
+  const baseName = readTimelineKind(timeline) === 'slice'
+    ? `${project.name}_${timeline.settings?.title || timeline.name}`
+    : project.name;
+  const outputPath = path.join(exportsDir, `${sanitizeFilename(baseName)}_${exportId}.mp4`);
   const concatListPath = path.join(exportsDir, `concat_${exportId}.txt`);
   const tempSegments = [];
 
@@ -156,20 +186,22 @@ export async function exportProjectTimelineVideo(projectId) {
   }
 }
 
-export async function exportProjectPackage(projectId, { includeSourceMedia = true } = {}) {
+export async function exportProjectPackage(projectId, { includeSourceMedia = true, timelineId = '' } = {}) {
   const job = await createJob({
     type: 'export.project_package',
-    payload: { projectId, includeSourceMedia },
+    payload: { projectId, includeSourceMedia, timelineId },
     projectId,
     message: 'Queued project package export'
   });
 
-  const project = await loadProjectExportData(projectId);
+  const project = await loadProjectExportData(projectId, timelineId);
   try {
+    const selectedTimeline = selectTimelineForExport(project, timelineId);
     await markJobRunning(job.id, 'Creating OTIO snapshot');
     const snapshot = await createTimelineSnapshot(projectId, {
       source: 'package_export',
-      note: 'Project package export'
+      note: 'Project package export',
+      timelineId: selectedTimeline?.id || ''
     });
     const editState = await getProjectEditState(projectId);
     const sourceState = await loadProjectEditSource(projectId);
@@ -193,7 +225,10 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
       exported_at: new Date().toISOString(),
       include_source_media: includeSourceMedia,
       asset_count: project.projectAssets.length,
-      clip_count: project.timelines[0]?.clips?.length || 0
+      clip_count: selectedTimeline?.clips?.length || 0,
+      timeline_id: selectedTimeline?.id || null,
+      timeline_kind: readTimelineKind(selectedTimeline),
+      timeline_title: selectedTimeline?.settings?.title || selectedTimeline?.name || null
     };
 
     await fs.promises.writeFile(
@@ -241,9 +276,8 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
       'utf-8'
     );
 
-    const primaryTimeline = project.timelines[0];
-    if (primaryTimeline?.clips?.length) {
-      const sourceInfoByAssetId = await collectSourceInfoByAssetId(primaryTimeline.clips, {
+    if (selectedTimeline?.clips?.length) {
+      const sourceInfoByAssetId = await collectSourceInfoByAssetId(selectedTimeline.clips, {
         pathurlResolver: ({ sourcePath }) => (
           includeSourceMedia
             ? path.join(mediaDir, path.basename(sourcePath))
@@ -252,11 +286,13 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
       });
       const interchange = buildProjectInterchangeArtifacts({
         project,
-        clips: primaryTimeline.clips,
+        clips: selectedTimeline.clips,
         sourceInfoByAssetId,
         sourceState
       });
-      const interchangeBaseName = sanitizeFilename(project.name);
+      const interchangeBaseName = sanitizeFilename(readTimelineKind(selectedTimeline) === 'slice'
+        ? `${project.name}_${selectedTimeline.settings?.title || selectedTimeline.name}`
+        : project.name);
 
       await fs.promises.writeFile(
         path.join(projectDir, `${interchangeBaseName}.xml`),

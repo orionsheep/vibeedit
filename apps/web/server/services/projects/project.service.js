@@ -1,5 +1,18 @@
 import { withDatabase } from '../core/database.service.js';
 
+const DEFAULT_SLICE_COLOR = '#4cc2ff';
+
+function readTimelineSettings(timeline = null) {
+  const settings = timeline?.settings;
+  return settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
+}
+
+function readTimelineKind(timeline = null) {
+  if (timeline?.isPrimary) return 'master';
+  const settings = readTimelineSettings(timeline);
+  return String(settings.kind || 'aux').trim() || 'aux';
+}
+
 async function ensureCategory(db, categoryName) {
   const value = String(categoryName || '').trim();
   if (!value) return null;
@@ -89,17 +102,32 @@ function mapAssetCompact(asset) {
 }
 
 function mapTimelineCompact(timeline) {
+  const settings = readTimelineSettings(timeline);
+  const kind = readTimelineKind(timeline);
+  const color = String(settings.color || (kind === 'slice' ? DEFAULT_SLICE_COLOR : '')).trim();
+  const clips = Array.isArray(timeline.clips) ? timeline.clips : [];
   return {
     id: timeline.id,
     name: timeline.name,
+    title: String(settings.title || timeline.name || '').trim() || timeline.name,
     is_primary: timeline.isPrimary,
+    kind,
+    color: color || null,
+    description: String(settings.description || '').trim(),
+    summary: String(settings.summary || '').trim(),
+    source_timeline_id: String(settings.sourceTimelineId || settings.source_timeline_id || '').trim() || null,
+    generated_by: String(settings.generatedBy || settings.generated_by || '').trim() || null,
+    query: String(settings.query || '').trim(),
+    target_duration_seconds: Number(settings.targetDurationSeconds || settings.target_duration_seconds || 0) || 0,
+    clip_count: clips.length,
+    total_duration: Number(clips[clips.length - 1]?.timelineEndSeconds || 0),
     tracks: (timeline.tracks || []).map((track) => ({
       id: track.id,
       kind: track.kind,
       name: track.name,
       sort_order: track.sortOrder
     })),
-    clips: (timeline.clips || []).map((clip) => ({
+    clips: clips.map((clip) => ({
       id: clip.id,
       asset_id: clip.assetId,
       asset_title: clip.asset?.title || '',
@@ -109,7 +137,10 @@ function mapTimelineCompact(timeline) {
       timeline_start: clip.timelineStartSeconds,
       timeline_end: clip.timelineEndSeconds,
       sort_order: clip.sortOrder,
-      asset_source_url: clip.asset ? `/api/library/assets/${clip.assetId}/source` : null
+      asset_source_url: clip.asset ? `/api/library/assets/${clip.assetId}/source` : null,
+      original_project_start: Number(clip.metadata?.original_project_start ?? clip.metadata?.originalProjectStart ?? clip.timelineStartSeconds),
+      original_project_end: Number(clip.metadata?.original_project_end ?? clip.metadata?.originalProjectEnd ?? clip.timelineEndSeconds),
+      slice_group_index: Number(clip.metadata?.slice_group_index ?? clip.metadata?.sliceGroupIndex ?? 0)
     }))
   };
 }

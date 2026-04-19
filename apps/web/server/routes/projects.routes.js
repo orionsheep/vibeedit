@@ -11,6 +11,7 @@ import { listProjectEditHistories, recordProjectEditHistory } from '../services/
 import { exportProjectPackage, exportProjectTimelineVideo } from '../services/projects/project-export.service.js';
 import { exportProjectInterchangeFile, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
 import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
+import { createProjectSlice, deleteProjectSlice, getProjectSlice, listProjectSlices, suggestProjectSlices, updateProjectSlice } from '../services/projects/project-slice.service.js';
 import { cancelProjectAgentRun, confirmProjectAgentRun, runProjectAgentSessionWorkflow } from '../services/agent/project-agent.service.js';
 import { createProjectAgentSession, getProjectAgentSession, listProjectAgentSessions, listRunEvents } from '../services/agent/agent-session.service.js';
 import { ensureStorageDirs, ensureWorkspaceDirs } from '../services/editor/config.js';
@@ -423,6 +424,60 @@ router.post('/:projectId/timeline/snapshot', async (req, res) => {
   }
 });
 
+router.get('/:projectId/slices', async (req, res) => {
+  try {
+    const slices = await listProjectSlices(req.params.projectId);
+    res.json({ success: true, slices });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:projectId/slices', async (req, res) => {
+  try {
+    const slice = await createProjectSlice(req.params.projectId, req.body || {});
+    res.json({ success: true, slice });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:projectId/slices/suggest', async (req, res) => {
+  try {
+    const result = await suggestProjectSlices(req.params.projectId, req.body || {});
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:projectId/slices/:sliceId', async (req, res) => {
+  try {
+    const slice = await getProjectSlice(req.params.projectId, req.params.sliceId);
+    res.json({ success: true, slice });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/:projectId/slices/:sliceId', async (req, res) => {
+  try {
+    const slice = await updateProjectSlice(req.params.projectId, req.params.sliceId, req.body || {});
+    res.json({ success: true, slice });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/:projectId/slices/:sliceId', async (req, res) => {
+  try {
+    const slice = await deleteProjectSlice(req.params.projectId, req.params.sliceId);
+    res.json({ success: true, slice });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/:projectId/jobs', async (req, res) => {
   try {
     const jobs = await listJobsByProject(req.params.projectId);
@@ -565,7 +620,9 @@ router.get('/:projectId/agent/runs/:runId/events', async (req, res) => {
 
 router.post('/:projectId/exports/video', async (req, res) => {
   try {
-    const result = await exportProjectTimelineVideo(req.params.projectId);
+    const result = await exportProjectTimelineVideo(req.params.projectId, {
+      timelineId: String(req.body?.timelineId || '').trim()
+    });
     const filename = path.basename(result.outputPath);
     res.json({
       success: true,
@@ -579,7 +636,10 @@ router.post('/:projectId/exports/video', async (req, res) => {
 
 router.post('/:projectId/exports/package', async (req, res) => {
   try {
-    const result = await exportProjectPackage(req.params.projectId, req.body || {});
+    const result = await exportProjectPackage(req.params.projectId, {
+      ...(req.body || {}),
+      timelineId: String(req.body?.timelineId || '').trim()
+    });
     const filename = path.basename(result.zipPath);
     res.json({
       success: true,
@@ -599,7 +659,9 @@ router.post('/:projectId/exports/interchange', async (req, res) => {
       return res.status(400).json({ error: 'Unsupported export format' });
     }
 
-    const result = await exportProjectInterchangeFile(req.params.projectId, format);
+    const result = await exportProjectInterchangeFile(req.params.projectId, format, {
+      timelineId: String(req.body?.timelineId || '').trim()
+    });
     const filename = path.basename(result.outputPath);
     res.json({
       success: true,

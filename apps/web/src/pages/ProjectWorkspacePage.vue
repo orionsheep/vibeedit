@@ -229,6 +229,29 @@
         <div class="pane-resizer vertical" @mousedown="startResize('sidebar', $event)"></div>
 
         <main class="editor-panel" :style="editorPanelStyle" @contextmenu.stop>
+          <section class="workspace-mode-bar">
+            <div class="mode-toggle-group">
+              <button
+                class="mode-toggle-btn"
+                :class="{ active: workspaceMode === 'assemble_script' }"
+                @click="workspaceMode = 'assemble_script'"
+              >
+                口播剪稿
+              </button>
+              <button
+                class="mode-toggle-btn"
+                :class="{ active: workspaceMode === 'live_slicing' }"
+                @click="workspaceMode = 'live_slicing'"
+              >
+                直播切片
+              </button>
+            </div>
+            <div class="mode-toggle-copy">
+              <strong>{{ workspaceMode === 'live_slicing' ? '长视频切多条短片' : '单成片精修' }}</strong>
+              <span>{{ workspaceMode === 'live_slicing' ? liveSliceSummary : '在统一母片上删词、删停顿、压节奏。' }}</span>
+            </div>
+          </section>
+
           <section class="preview-slot">
             <div class="preview-card">
               <div class="preview-head">
@@ -238,11 +261,12 @@
               <div class="preview-frame">
                 <ProjectCompositionPreview
                   ref="previewPlayerRef"
-                  :clips="projectPreviewClips"
-                  :project-time="Number(editorStore.editedCurrentTime || 0)"
-                  :duration="Number(editorStore.editedDuration || 0)"
-                  :display-time="Number(editorStore.editedCurrentTime || 0)"
-                  :display-duration="Number(editorStore.editedDuration || 0)"
+                  :clips="activePreviewClips"
+                  :project-time="currentPreviewTime"
+                  :duration="currentPreviewDuration"
+                  :display-time="currentPreviewTime"
+                  :display-duration="currentPreviewDuration"
+                  :empty-label="isLiveSlicingMode ? '请选择一个切片，或先让系统分析生成候选切片。' : '当前项目时间线上还没有可预览的成片片段。'"
                   @project-time-update="handlePreviewProjectTimeUpdate"
                   @clip-change="handlePreviewClipChange"
                   @playing-change="handlePreviewPlayingChange"
@@ -253,7 +277,100 @@
 
           <div class="pane-resizer horizontal" @mousedown="startResize('preview', $event)"></div>
 
-          <section class="subtitle-workspace">
+          <section class="subtitle-workspace" :class="{ 'has-slice-workbench': isLiveSlicingMode }">
+            <div v-if="isLiveSlicingMode" class="slice-workbench">
+              <div class="slice-toolbar">
+                <div class="slice-toolbar-copy">
+                  <strong>直播切片</strong>
+                  <span>先分析母片，再生成多个独立切片。字幕面板中的色签表示词句命中了哪些切片。</span>
+                </div>
+                <div class="slice-toolbar-controls">
+                  <input
+                    v-model.trim="sliceQuery"
+                    class="slice-query-input"
+                    type="text"
+                    placeholder="例如：AI 排队、自动化、劳动价值、模型拥堵"
+                  />
+                  <input
+                    v-model.number="sliceCount"
+                    class="slice-count-input"
+                    type="number"
+                    min="1"
+                    max="8"
+                  />
+                  <button class="ghost-btn slice-toolbar-btn" :disabled="!canCreateSliceSuggestions" @click="analyzeLiveSlices({ create: false })">
+                    {{ loadingSliceSuggestions ? '分析中...' : '分析候选' }}
+                  </button>
+                  <button class="primary-btn slice-toolbar-btn" :disabled="!canCreateSliceSuggestions" @click="analyzeLiveSlices({ create: true })">
+                    {{ loadingSliceSuggestions ? '生成中...' : '直接生成切片' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="sliceSuggestions.length" class="slice-suggestion-strip">
+                <button
+                  v-for="(suggestion, index) in sliceSuggestions"
+                  :key="`suggestion_${index}`"
+                  class="slice-suggestion-card"
+                  @click="createSliceFromSuggestion(suggestion)"
+                >
+                  <span class="slice-suggestion-kicker">候选 {{ index + 1 }}</span>
+                  <strong>{{ suggestion.title }}</strong>
+                  <span>{{ formatDuration(suggestion.duration_seconds) }} · {{ suggestion.summary }}</span>
+                </button>
+              </div>
+
+              <div class="slice-rail">
+                <button
+                  v-for="slice in projectSlices"
+                  :key="slice.id"
+                  class="slice-chip"
+                  :class="{ active: selectedSliceId === slice.id }"
+                  :style="{
+                    '--slice-color': slice.color || '#4cc2ff',
+                    '--slice-soft': `${slice.color || '#4cc2ff'}22`
+                  }"
+                  @click="selectSlice(slice.id)"
+                >
+                  <span class="slice-chip-kicker">{{ formatDuration(slice.total_duration) }}</span>
+                  <strong>{{ slice.title }}</strong>
+                  <span>{{ slice.summary || slice.description || '点击查看该切片的正文与导出范围。' }}</span>
+                </button>
+              </div>
+
+              <div class="slice-transcript-shell">
+                <div class="slice-transcript-head">
+                  <div>
+                    <strong>{{ selectedSlice?.title || '未选择切片' }}</strong>
+                    <span>{{ selectedSlice ? `${formatDuration(selectedSlice.total_duration)} · ${selectedSlice.clip_count} 段` : '先从上方生成或选择一个切片。' }}</span>
+                  </div>
+                  <button
+                    v-if="selectedSliceId"
+                    class="ghost-btn danger-ghost-btn slice-delete-btn"
+                    :disabled="deletingSliceId === selectedSliceId"
+                    @click="removeSelectedSlice"
+                  >
+                    {{ deletingSliceId === selectedSliceId ? '删除中...' : '删除切片' }}
+                  </button>
+                </div>
+                <div v-if="loadingSliceDetail" class="slice-transcript-loading">正在加载切片文本...</div>
+                <div v-else-if="selectedSliceTranscriptText" class="slice-transcript-body">
+                  <div class="slice-transcript-preview">{{ selectedSliceTranscriptText }}</div>
+                  <div class="slice-transcript-blocks">
+                    <div
+                      v-for="block in selectedSliceTranscriptBlocks"
+                      :key="block.id"
+                      class="slice-transcript-block"
+                    >
+                      <span>{{ formatDuration(block.start) }} - {{ formatDuration(block.end) }}</span>
+                      <strong>{{ block.text }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="slice-transcript-empty">当前切片还没有可展示的正文。</div>
+              </div>
+            </div>
+
             <SubtitlePanel class="project-subtitle-panel" @seek-to="handleProjectSeek" />
             <TimelineStrip class="project-timeline-strip" />
             <div class="editor-status-bar">
@@ -270,7 +387,7 @@
                   <span>已删: {{ deletedWordCount }}字 + {{ formatDuration(deletedGapDuration) }}停顿</span>
                 </div>
                 <div class="status-item">
-                  <span>剪后时间: {{ formatDuration(editorStore.editedCurrentTime || 0) }} / {{ formatDuration(editorStore.editedDuration || 0) }}</span>
+                  <span>预览时间: {{ formatDuration(currentPreviewTime || 0) }} / {{ formatDuration(currentPreviewDuration || 0) }}</span>
                 </div>
               </div>
             </div>
@@ -345,12 +462,15 @@ import { getLibraryAssetWords, retranscribeLibraryAsset } from '../features/libr
 import {
   cancelProjectAgentRun,
   confirmProjectAgentRun,
+  createProjectSlice,
   createProjectAgentSession,
   createProjectSnapshot,
   deleteProject as deleteProjectRequest,
+  deleteProjectSlice,
   exportProjectInterchange,
   exportProjectPackage,
   exportProjectVideo,
+  getProjectSlice,
   listProjectAgentRunEvents,
   getProjectAgentSession,
   getProject,
@@ -358,11 +478,13 @@ import {
   getProjectTimeline,
   importProjectPackage,
   listProjectJobs,
+  listProjectSlices,
   listProjectAgentSessions,
   listProjectSnapshots,
   removeProjectAsset,
   reorderProjectAssets,
   runProjectAgentWithProgress,
+  suggestProjectSlices,
   uploadProjectAssets,
   updateProjectEditState
 } from '../features/projects/api/projectsApi';
@@ -406,9 +528,18 @@ const selectedRunEvents = ref([]);
 const loadingRunEvents = ref(false);
 const agentPanelTab = ref('chat');
 const agentMode = ref('assemble_script');
+const workspaceMode = ref('assemble_script');
 const agentPrompt = ref('');
 const topic = ref('');
 const targetMinutes = ref(1.5);
+const sliceQuery = ref('');
+const sliceCount = ref(4);
+const sliceSuggestions = ref([]);
+const loadingSliceSuggestions = ref(false);
+const selectedSliceId = ref('');
+const selectedSliceDetail = ref(null);
+const loadingSliceDetail = ref(false);
+const deletingSliceId = ref('');
 const runningAgent = ref(false);
 const exportingVideo = ref(false);
 const exportingPackage = ref(false);
@@ -489,11 +620,13 @@ const exportTriggerLabel = computed(() => {
   if (exportingInterchangeFormat.value === 'premiere_xml') return 'XML 导出中...';
   if (exportingInterchangeFormat.value === 'edl') return 'EDL 导出中...';
   if (exportingInterchangeFormat.value === 'capcut_srt') return 'SRT 导出中...';
-  return '导出';
+  return `导出 ${activeExportTargetLabel.value}`;
 });
 
 const orderedProjectAssets = computed(() => [...projectAssets.value]);
 const projectAssetsById = computed(() => Object.fromEntries(projectAssets.value.map((asset) => [asset.id, asset])));
+const projectSlices = computed(() => (project.value?.timelines || []).filter((timelineItem) => timelineItem.kind === 'slice'));
+const isLiveSlicingMode = computed(() => workspaceMode.value === 'live_slicing');
 
 const assetToneMap = computed(() => {
   const map = {};
@@ -608,10 +741,51 @@ const currentContextAsset = computed(() => {
 
 const previewKeepRanges = computed(() => buildProjectKeepRanges());
 const projectPreviewClips = computed(() => buildPreviewClipsFromRanges(previewKeepRanges.value));
+const selectedSlice = computed(() => {
+  if (!selectedSliceId.value) return null;
+  if (selectedSliceDetail.value?.id === selectedSliceId.value) {
+    return selectedSliceDetail.value;
+  }
+  return projectSlices.value.find((slice) => slice.id === selectedSliceId.value) || null;
+});
+const selectedSliceRanges = computed(() => {
+  if (Array.isArray(selectedSliceDetail.value?.ranges) && selectedSliceDetail.value.ranges.length) {
+    return selectedSliceDetail.value.ranges;
+  }
+  return (selectedSlice.value?.clips || [])
+    .map((clip) => ({
+      start: Number(clip.original_project_start || clip.timeline_start || 0),
+      end: Number(clip.original_project_end || clip.timeline_end || 0)
+    }))
+    .filter((range) => Number(range.end || 0) - Number(range.start || 0) > 0.05);
+});
+const selectedSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(selectedSliceRanges.value));
+const activePreviewClips = computed(() => (
+  isLiveSlicingMode.value && selectedSlicePreviewClips.value.length
+    ? selectedSlicePreviewClips.value
+    : projectPreviewClips.value
+));
+const currentPreviewDuration = computed(() => Number(activePreviewClips.value[activePreviewClips.value.length - 1]?.project_end || 0));
+const currentPreviewTime = computed(() => originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value));
+const selectedSliceTranscriptBlocks = computed(() => selectedSliceDetail.value?.transcript_blocks || []);
+const selectedSliceTranscriptText = computed(() => String(selectedSliceDetail.value?.transcript_text || '').trim());
+const liveSliceSummary = computed(() => {
+  if (!projectSlices.value.length) return '还没有切片';
+  if (!selectedSlice.value) return `${projectSlices.value.length} 个切片`;
+  return `${selectedSlice.value.title} · ${formatDuration(selectedSlice.value.total_duration || currentPreviewDuration.value)}`;
+});
+const canCreateSliceSuggestions = computed(() => orderedProjectAssets.value.length > 0 && !loadingSliceSuggestions.value);
+const activeExportTimelineId = computed(() => (isLiveSlicingMode.value ? String(selectedSliceId.value || '').trim() : ''));
+const activeExportTargetLabel = computed(() => {
+  if (activeExportTimelineId.value && selectedSlice.value) {
+    return `切片 · ${selectedSlice.value.title}`;
+  }
+  return '当前成片';
+});
 
 const previewLabel = computed(() => {
   const clip = activePreviewClip.value
-    || projectPreviewClips.value[findPreviewClipIndexForProjectTime(Number(editorStore.editedCurrentTime || 0))]
+    || activePreviewClips.value[findPreviewClipIndexForProjectTime(Number(currentPreviewTime.value || 0), activePreviewClips.value)]
     || null;
   if (!clip) return '当前项目没有可预览的成片片段';
   return `${clip.asset_title} · ${formatDuration(clip.source_start)} - ${formatDuration(clip.source_end)}`;
@@ -829,19 +1003,19 @@ function findClipRangeAtTime(time) {
   ) || null;
 }
 
-function findPreviewClipIndexForProjectTime(projectTime) {
+function findPreviewClipIndexForProjectTime(projectTime, clips = activePreviewClips.value) {
   const currentTime = Number(projectTime || 0);
-  let clipIndex = projectPreviewClips.value.findIndex((clip, index) => {
+  let clipIndex = clips.findIndex((clip, index) => {
     const start = Number(clip.project_start || 0);
     const end = Number(clip.project_end || start);
-    const isLastClip = index === projectPreviewClips.value.length - 1;
+    const isLastClip = index === clips.length - 1;
     return currentTime >= start && (isLastClip ? currentTime <= end : currentTime < end);
   });
   if (clipIndex !== -1) return clipIndex;
 
-  clipIndex = projectPreviewClips.value.findIndex((clip) => Number(clip.project_start || 0) >= currentTime);
-  if (clipIndex === -1 && projectPreviewClips.value.length && currentTime > Number(projectPreviewClips.value[projectPreviewClips.value.length - 1]?.project_end || 0)) {
-    return projectPreviewClips.value.length - 1;
+  clipIndex = clips.findIndex((clip) => Number(clip.project_start || 0) >= currentTime);
+  if (clipIndex === -1 && clips.length && currentTime > Number(clips[clips.length - 1]?.project_end || 0)) {
+    return clips.length - 1;
   }
   return clipIndex;
 }
@@ -850,44 +1024,52 @@ function seekPreviewToProjectTime(projectTime, autoplay = false) {
   previewPlayerRef.value?.seekToProjectTime(projectTime, autoplay);
 }
 
-function originalProjectTimeToEditedTime(projectTime) {
+function originalProjectTimeToPreviewTime(projectTime, clips = activePreviewClips.value) {
   const target = Number(projectTime || 0);
-  let cursor = 0;
+  if (!clips.length) return 0;
 
-  for (const range of previewKeepRanges.value) {
-    const start = Number(range.start || 0);
-    const end = Number(range.end || start);
-    const segmentDuration = Math.max(0, end - start);
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index];
+    const originalStart = Number(clip.original_project_start || clip.project_start || 0);
+    const originalEnd = Number(clip.original_project_end || originalStart);
+    const previewStart = Number(clip.project_start || 0);
+    const previewEnd = Number(clip.project_end || previewStart);
+    const clipDuration = Math.max(0.001, originalEnd - originalStart);
 
-    if (target <= start) {
-      return roundTime(cursor);
+    if (target <= originalStart) {
+      return roundTime(previewStart);
     }
-    if (target < end) {
-      return roundTime(cursor + Math.max(0, target - start));
+    if (target < originalEnd || index === clips.length - 1) {
+      const progress = Math.max(0, Math.min(1, (target - originalStart) / clipDuration));
+      return roundTime(previewStart + ((previewEnd - previewStart) * progress));
     }
-    cursor += segmentDuration;
   }
 
-  return roundTime(cursor);
+  return roundTime(Number(clips[clips.length - 1]?.project_end || 0));
 }
 
-function editedTimeToOriginalProjectTime(editedTime) {
-  let remaining = Math.max(0, Number(editedTime || 0));
-  const ranges = previewKeepRanges.value;
-  if (!ranges.length) return 0;
+function previewTimeToOriginalProjectTime(previewTime, clips = activePreviewClips.value) {
+  const target = Math.max(0, Number(previewTime || 0));
+  if (!clips.length) return 0;
 
-  for (const range of ranges) {
-    const start = Number(range.start || 0);
-    const end = Number(range.end || start);
-    const segmentDuration = Math.max(0, end - start);
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index];
+    const previewStart = Number(clip.project_start || 0);
+    const previewEnd = Number(clip.project_end || previewStart);
+    const originalStart = Number(clip.original_project_start || clip.project_start || 0);
+    const originalEnd = Number(clip.original_project_end || originalStart);
+    const previewDuration = Math.max(0.001, previewEnd - previewStart);
 
-    if (remaining <= segmentDuration) {
-      return roundTime(start + remaining);
+    if (target <= previewStart) {
+      return roundTime(originalStart);
     }
-    remaining -= segmentDuration;
+    if (target < previewEnd || index === clips.length - 1) {
+      const progress = Math.max(0, Math.min(1, (target - previewStart) / previewDuration));
+      return roundTime(originalStart + ((originalEnd - originalStart) * progress));
+    }
   }
 
-  return roundTime(Number(ranges[ranges.length - 1]?.end || 0));
+  return roundTime(Number(clips[clips.length - 1]?.original_project_end || 0));
 }
 
 function isPreviewPlaybackActive() {
@@ -895,13 +1077,12 @@ function isPreviewPlaybackActive() {
 }
 
 function syncPreviewToCurrentTime({ preservePlayback = isPreviewPlaybackActive() } = {}) {
-  if (!projectPreviewClips.value.length) {
+  if (!activePreviewClips.value.length) {
     activePreviewClip.value = null;
     previewPlayerRef.value?.pausePlayback?.();
     return;
   }
-  const fallbackTime = Number(projectPreviewClips.value[0]?.project_start || 0);
-  const currentTime = originalProjectTimeToEditedTime(Number(editorStore.currentTime || 0));
+  const currentTime = originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value);
   seekPreviewToProjectTime(currentTime, preservePlayback);
 }
 
@@ -921,6 +1102,15 @@ function normalizeAssetWords(words = []) {
     .sort((a, b) => a.start_time - b.start_time);
 }
 
+function sliceRangesFromTimelineItem(timelineItem) {
+  return (timelineItem?.clips || [])
+    .map((clip) => ({
+      start: Number(clip.original_project_start || clip.timeline_start || 0),
+      end: Number(clip.original_project_end || clip.timeline_end || 0)
+    }))
+    .filter((range) => Number(range.end || 0) - Number(range.start || 0) > 0.05);
+}
+
 async function ensureProjectAssetWordsLoaded(assetIds = [], { force = false } = {}) {
   const targetIds = force ? assetIds : assetIds.filter((assetId) => !assetWordsMap.value[assetId]);
   if (!targetIds.length) return;
@@ -935,6 +1125,12 @@ async function ensureProjectAssetWordsLoaded(assetIds = [], { force = false } = 
 
 function buildProjectWordStream() {
   const merged = [];
+  const sliceDescriptors = projectSlices.value.map((slice) => ({
+    id: slice.id,
+    title: slice.title || slice.name || '未命名切片',
+    color: slice.color || '#4cc2ff',
+    ranges: sliceRangesFromTimelineItem(slice)
+  }));
 
   for (const range of baselineAssetRanges.value) {
     const assetWords = assetWordsMap.value[range.asset_id] || [];
@@ -947,13 +1143,22 @@ function buildProjectWordStream() {
       const clippedSourceStart = Math.max(sourceStart, Number(range.source_start || 0));
       const clippedSourceEnd = Math.min(sourceEnd, Number(range.source_end || sourceEnd));
       if (clippedSourceEnd - clippedSourceStart <= 0.001) continue;
+      const projectStart = roundTime(Number(range.timeline_start || 0) + (clippedSourceStart - Number(range.source_start || 0)));
+      const projectEnd = roundTime(Number(range.timeline_start || 0) + (clippedSourceEnd - Number(range.source_start || 0)));
+      const sliceMarkers = sliceDescriptors
+        .filter((slice) => slice.ranges.some((sliceRange) => projectStart < sliceRange.end && projectEnd > sliceRange.start))
+        .map((slice) => ({
+          id: slice.id,
+          title: slice.title,
+          color: slice.color
+        }));
       merged.push({
         id: `${range.clip_id}:${word.id}`,
         word_key: word.id,
         gap_key_after: `${range.asset_id}:gap:${Number(word.asset_word_index || 0)}`,
         text: word.text,
-        start_time: roundTime(Number(range.timeline_start || 0) + (clippedSourceStart - Number(range.source_start || 0))),
-        end_time: roundTime(Number(range.timeline_start || 0) + (clippedSourceEnd - Number(range.source_start || 0))),
+        start_time: projectStart,
+        end_time: projectEnd,
         asset_id: range.asset_id,
         asset_title: range.asset_title,
         clip_id: range.clip_id,
@@ -962,7 +1167,12 @@ function buildProjectWordStream() {
         source_start_time: roundTime(clippedSourceStart),
         source_end_time: roundTime(clippedSourceEnd),
         asset_color: tone.border,
-        asset_soft: tone.soft
+        asset_soft: tone.soft,
+        slice_markers: sliceMarkers,
+        slice_active: selectedSliceId.value ? sliceMarkers.some((marker) => marker.id === selectedSliceId.value) : false,
+        slice_active_color: selectedSliceId.value
+          ? (sliceMarkers.find((marker) => marker.id === selectedSliceId.value)?.color || '')
+          : ''
       });
       appended += 1;
     }
@@ -1188,6 +1398,136 @@ async function bootstrapTimelineIfEmpty(projectData, timelineData) {
   });
 }
 
+async function ensureSelectedSliceDetail(sliceId, { force = false } = {}) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) {
+    selectedSliceDetail.value = null;
+    return null;
+  }
+  if (!force && selectedSliceDetail.value?.id === targetId) {
+    return selectedSliceDetail.value;
+  }
+  loadingSliceDetail.value = true;
+  try {
+    const detail = await getProjectSlice(projectId.value, targetId);
+    selectedSliceDetail.value = detail;
+    return detail;
+  } finally {
+    loadingSliceDetail.value = false;
+  }
+}
+
+async function refreshProjectSlices({ preserveSelection = true, skipFetch = false } = {}) {
+  if (!project.value) return [];
+  const masterTimelines = (project.value.timelines || []).filter((timelineItem) => timelineItem.kind !== 'slice');
+  const nextSlices = skipFetch ? projectSlices.value : await listProjectSlices(projectId.value);
+  project.value = {
+    ...project.value,
+    timelines: [...masterTimelines, ...nextSlices]
+  };
+
+  const hasSelected = preserveSelection && nextSlices.some((slice) => slice.id === selectedSliceId.value);
+  if (hasSelected) {
+    await ensureSelectedSliceDetail(selectedSliceId.value, { force: true });
+    return nextSlices;
+  }
+
+  if (!nextSlices.length) {
+    selectedSliceId.value = '';
+    selectedSliceDetail.value = null;
+    return nextSlices;
+  }
+
+  if (isLiveSlicingMode.value || selectedSliceId.value) {
+    selectedSliceId.value = nextSlices[0].id;
+    await ensureSelectedSliceDetail(selectedSliceId.value, { force: true });
+  }
+
+  return nextSlices;
+}
+
+async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) return;
+  selectedSliceId.value = targetId;
+  const detail = await ensureSelectedSliceDetail(targetId, { force: true });
+  if (jumpToSliceStart) {
+    const firstRange = detail?.ranges?.[0] || null;
+    if (firstRange) {
+      editorStore.setCurrentTime(Number(firstRange.start || 0));
+    }
+  }
+  await nextTick();
+  syncPreviewToCurrentTime({ preservePlayback: false });
+}
+
+async function analyzeLiveSlices({ create = false } = {}) {
+  if (!canCreateSliceSuggestions.value) return;
+  loadingSliceSuggestions.value = true;
+  try {
+    if (timelineDirty.value) {
+      await saveTimeline({
+        createSnapshot: false,
+        note: 'Pre-slice analysis sync'
+      });
+    }
+    const result = await suggestProjectSlices(projectId.value, {
+      query: sliceQuery.value.trim(),
+      count: Number(sliceCount.value || 4),
+      create
+    });
+    sliceSuggestions.value = result.suggestions || [];
+    if (create) {
+      await refreshProjectSlices({ preserveSelection: false });
+      const firstCreatedId = result.created?.[0]?.id || '';
+      if (firstCreatedId) {
+        await selectSlice(firstCreatedId);
+      }
+    }
+  } catch (sliceError) {
+    window.alert(sliceError.response?.data?.error || sliceError.message || '生成切片失败');
+  } finally {
+    loadingSliceSuggestions.value = false;
+  }
+}
+
+async function createSliceFromSuggestion(suggestion) {
+  if (!suggestion) return;
+  try {
+    if (timelineDirty.value) {
+      await saveTimeline({
+        createSnapshot: false,
+        note: 'Pre-slice create sync'
+      });
+    }
+    const created = await createProjectSlice(projectId.value, {
+      title: suggestion.title,
+      summary: suggestion.summary,
+      query: sliceQuery.value.trim(),
+      target_duration_seconds: suggestion.duration_seconds,
+      ranges: suggestion.ranges
+    });
+    await refreshProjectSlices({ preserveSelection: false });
+    await selectSlice(created.id);
+  } catch (sliceError) {
+    window.alert(sliceError.response?.data?.error || sliceError.message || '创建切片失败');
+  }
+}
+
+async function removeSelectedSlice() {
+  if (!selectedSliceId.value || deletingSliceId.value) return;
+  const deletingId = selectedSliceId.value;
+  deletingSliceId.value = deletingId;
+  try {
+    await deleteProjectSlice(projectId.value, deletingId);
+    await refreshProjectSlices({ preserveSelection: false });
+  } catch (sliceError) {
+    window.alert(sliceError.response?.data?.error || sliceError.message || '删除切片失败');
+  } finally {
+    deletingSliceId.value = '';
+  }
+}
+
 async function loadWorkspace() {
   isLoading.value = true;
   error.value = '';
@@ -1216,6 +1556,7 @@ async function loadWorkspace() {
     if (!selectedAssetId.value && orderedProjectAssets.value.length) {
       selectedAssetId.value = clipTimelineRanges.value[0]?.asset_id || orderedProjectAssets.value[0].id;
     }
+    await refreshProjectSlices({ preserveSelection: true, skipFetch: true });
     syncEditorWithProjectTimeline();
     await nextTick();
     syncPreviewToCurrentTime({ preservePlayback: false });
@@ -1417,9 +1758,9 @@ function handleProjectUploadDrop(event) {
 function selectAsset(assetId) {
   closeContextMenu();
   selectedAssetId.value = assetId;
-  const firstClipIndex = projectPreviewClips.value.findIndex((clip) => clip.asset_id === assetId);
+  const firstClipIndex = activePreviewClips.value.findIndex((clip) => clip.asset_id === assetId);
   if (firstClipIndex !== -1) {
-    const clip = projectPreviewClips.value[firstClipIndex];
+    const clip = activePreviewClips.value[firstClipIndex];
     seekPreviewToProjectTime(Number(clip.project_start || 0), false);
     editorStore.setCurrentTime(Number(clip.original_project_start || 0));
     return;
@@ -1428,6 +1769,7 @@ function selectAsset(assetId) {
   const clipRange = findFirstClipRangeForAsset(assetId);
   if (clipRange) {
     editorStore.setCurrentTime(Number(clipRange.timeline_start || 0));
+    syncPreviewToCurrentTime({ preservePlayback: false });
   }
 }
 
@@ -1476,11 +1818,11 @@ async function reloadTimeline() {
 
 function handleProjectSeek(projectTime) {
   editorStore.setCurrentTime(projectTime);
-  seekPreviewToProjectTime(originalProjectTimeToEditedTime(projectTime), false);
+  seekPreviewToProjectTime(originalProjectTimeToPreviewTime(projectTime, activePreviewClips.value), false);
 }
 
 function handlePreviewProjectTimeUpdate(projectTime) {
-  editorStore.setCurrentTime(editedTimeToOriginalProjectTime(projectTime));
+  editorStore.setCurrentTime(previewTimeToOriginalProjectTime(projectTime, activePreviewClips.value));
 }
 
 function handlePreviewClipChange(clip) {
@@ -1677,8 +2019,15 @@ async function handleExportVideo() {
     if (timelineDirty.value) {
       await saveTimeline();
     }
-    const result = await exportProjectVideo(projectId.value);
+    if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
+      throw new Error('请先选择一个切片再导出视频');
+    }
+    const result = await exportProjectVideo(projectId.value, {
+      timelineId: activeExportTimelineId.value || undefined
+    });
     window.open(result.download_url, '_blank', 'noopener');
+  } catch (exportError) {
+    window.alert(exportError.response?.data?.error || exportError.message || '导出视频失败');
   } finally {
     exportingVideo.value = false;
   }
@@ -1690,9 +2039,16 @@ async function handleExportPackage() {
     if (timelineDirty.value) {
       await saveTimeline();
     }
-    const result = await exportProjectPackage(projectId.value);
+    if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
+      throw new Error('请先选择一个切片再导出工程包');
+    }
+    const result = await exportProjectPackage(projectId.value, {
+      timelineId: activeExportTimelineId.value || undefined
+    });
     window.open(result.download_url, '_blank', 'noopener');
     await loadSnapshots();
+  } catch (exportError) {
+    window.alert(exportError.response?.data?.error || exportError.message || '导出工程包失败');
   } finally {
     exportingPackage.value = false;
   }
@@ -1704,8 +2060,15 @@ async function handleExportInterchange(format) {
     if (timelineDirty.value) {
       await saveTimeline();
     }
-    const result = await exportProjectInterchange(projectId.value, format);
+    if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
+      throw new Error('请先选择一个切片再导出交换文件');
+    }
+    const result = await exportProjectInterchange(projectId.value, format, {
+      timelineId: activeExportTimelineId.value || undefined
+    });
     window.open(result.download_url, '_blank', 'noopener');
+  } catch (exportError) {
+    window.alert(exportError.response?.data?.error || exportError.message || '导出交换文件失败');
   } finally {
     exportingInterchangeFormat.value = '';
   }
@@ -2101,7 +2464,7 @@ watch(processingAssetIds, (assetIds) => {
   }, 1800);
 }, { immediate: true });
 
-watch(projectPreviewClips, (clips) => {
+watch(activePreviewClips, (clips) => {
   if (!clips.length) {
     activePreviewClip.value = null;
     return;
@@ -2109,6 +2472,29 @@ watch(projectPreviewClips, (clips) => {
   nextTick(() => {
     syncPreviewToCurrentTime();
   });
+}, { deep: true });
+
+watch(workspaceMode, async (mode) => {
+  if (mode === 'live_slicing' && !selectedSliceId.value && projectSlices.value.length) {
+    await selectSlice(projectSlices.value[0].id, { jumpToSliceStart: false });
+    return;
+  }
+  await nextTick();
+  syncPreviewToCurrentTime({ preservePlayback: false });
+});
+
+watch(projectSlices, (slices) => {
+  if (!slices.length && selectedSliceId.value) {
+    selectedSliceId.value = '';
+    selectedSliceDetail.value = null;
+    return;
+  }
+  if (selectedSliceId.value && slices.some((slice) => slice.id === selectedSliceId.value)) {
+    return;
+  }
+  if (isLiveSlicingMode.value && slices.length) {
+    selectSlice(slices[0].id, { jumpToSliceStart: false }).catch(() => {});
+  }
 }, { deep: true });
 
 onMounted(async () => {
@@ -2691,7 +3077,56 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: var(--preview-height) 8px minmax(0, 1fr);
+  grid-template-rows: auto var(--preview-height) 8px minmax(0, 1fr);
+}
+
+.workspace-mode-bar {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #15212d;
+  background: #08111a;
+}
+
+.mode-toggle-group {
+  display: inline-flex;
+  border: 1px solid #213242;
+  background: #091019;
+}
+
+.mode-toggle-btn {
+  border: none;
+  background: transparent;
+  color: #8ca5b6;
+  padding: 7px 12px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.mode-toggle-btn.active {
+  background: rgba(22, 197, 255, 0.12);
+  color: #ecf6fb;
+  box-shadow: inset 0 0 0 1px #16c5ff;
+}
+
+.mode-toggle-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.mode-toggle-copy strong {
+  font-size: 12px;
+  color: #f4fbff;
+}
+
+.mode-toggle-copy span {
+  font-size: 10px;
+  color: #82a0b3;
 }
 
 .preview-slot,
@@ -2741,6 +3176,207 @@ onBeforeUnmount(() => {
 .subtitle-workspace {
   display: grid;
   grid-template-rows: minmax(0, 1fr) 100px 28px;
+}
+
+.subtitle-workspace.has-slice-workbench {
+  grid-template-rows: auto minmax(0, 1fr) 100px 28px;
+}
+
+.slice-workbench {
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid #13202c;
+  background:
+    linear-gradient(180deg, rgba(8, 17, 26, 0.98) 0%, rgba(10, 16, 24, 0.98) 100%);
+}
+
+.slice-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.slice-toolbar-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.slice-toolbar-copy strong {
+  font-size: 12px;
+  color: #f1fbff;
+}
+
+.slice-toolbar-copy span {
+  font-size: 10px;
+  color: #85a4b8;
+  line-height: 1.5;
+}
+
+.slice-toolbar-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.slice-query-input,
+.slice-count-input {
+  border: 1px solid #243443;
+  background: #091019;
+  color: #eef8fc;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.slice-query-input {
+  width: 300px;
+}
+
+.slice-count-input {
+  width: 58px;
+  text-align: center;
+}
+
+.slice-toolbar-btn {
+  min-height: 30px;
+}
+
+.slice-suggestion-strip,
+.slice-rail,
+.slice-transcript-blocks {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.slice-suggestion-card,
+.slice-chip {
+  flex: 0 0 220px;
+  border: 1px solid #233647;
+  background: #091019;
+  color: #eff8fd;
+  text-align: left;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.slice-suggestion-card:hover,
+.slice-chip:hover {
+  border-color: #4fcfff;
+  background: rgba(22, 197, 255, 0.08);
+}
+
+.slice-suggestion-kicker,
+.slice-chip-kicker {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6d889a;
+}
+
+.slice-suggestion-card strong,
+.slice-chip strong {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.slice-suggestion-card span:last-child,
+.slice-chip span:last-child {
+  font-size: 10px;
+  line-height: 1.55;
+  color: #91abbc;
+}
+
+.slice-chip {
+  border-color: color-mix(in srgb, var(--slice-color) 60%, #20303f);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--slice-color) 14%, #091019) 0%, #091019 100%);
+  box-shadow: inset 3px 0 0 var(--slice-color);
+}
+
+.slice-chip.active {
+  border-color: var(--slice-color);
+  background: color-mix(in srgb, var(--slice-color) 18%, #091019);
+}
+
+.slice-transcript-shell {
+  border: 1px solid #152332;
+  background: #08111a;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.slice-transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slice-transcript-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.slice-transcript-head strong {
+  font-size: 12px;
+  color: #f1fbff;
+}
+
+.slice-transcript-head span,
+.slice-transcript-loading,
+.slice-transcript-empty {
+  font-size: 10px;
+  color: #86a0b1;
+}
+
+.slice-delete-btn {
+  min-height: 28px;
+}
+
+.slice-transcript-body {
+  display: grid;
+  gap: 8px;
+}
+
+.slice-transcript-preview {
+  max-height: 56px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #e8f4f9;
+}
+
+.slice-transcript-blocks {
+  padding-bottom: 2px;
+}
+
+.slice-transcript-block {
+  flex: 0 0 220px;
+  border: 1px solid #20303f;
+  background: #091019;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.slice-transcript-block span {
+  font-size: 10px;
+  color: #74c9ff;
+}
+
+.slice-transcript-block strong {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #edf7fc;
 }
 
 .editor-status-bar {
