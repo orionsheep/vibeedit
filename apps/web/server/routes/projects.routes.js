@@ -9,7 +9,7 @@ import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, list
 import { getProjectEditState, realignProjectEditState, saveProjectEditState } from '../services/projects/project-edit-state.service.js';
 import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
 import { exportProjectPackage, exportProjectTimelineVideo } from '../services/projects/project-export.service.js';
-import { exportProjectInterchangeFile, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
+import { exportProjectInterchangeFile, exportProjectSliceXmlBundle, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
 import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
 import { createProjectSlice, deleteProjectSlice, getProjectSlice, listProjectSlices, suggestProjectSlices, updateProjectSlice } from '../services/projects/project-slice.service.js';
 import { cancelProjectAgentRun, confirmProjectAgentRun, runProjectAgentSessionWorkflow } from '../services/agent/project-agent.service.js';
@@ -670,6 +670,21 @@ router.post('/:projectId/exports/interchange', async (req, res) => {
       output_file: result.outputPath,
       download_url: `/api/projects/${req.params.projectId}/downloads/${filename}`,
       compatibility_note: result.compatibilityNote
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:projectId/exports/live-slices/xml-bundle', async (req, res) => {
+  try {
+    const result = await exportProjectSliceXmlBundle(req.params.projectId);
+    const filename = path.basename(result.zipPath);
+    res.json({
+      success: true,
+      zip_file: result.zipPath,
+      file_count: result.fileCount,
+      download_url: `/api/projects/${req.params.projectId}/downloads/${filename}`
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

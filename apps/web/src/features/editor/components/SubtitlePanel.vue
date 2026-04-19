@@ -85,6 +85,13 @@
           <div class="slice-inline-actions">
             <button
               class="editor-btn"
+              :disabled="!props.canOpenDocument"
+              @click="$emit('openDocument')"
+            >
+              文稿
+            </button>
+            <button
+              class="editor-btn"
               :disabled="!props.canCreateSliceFromSelection || props.sliceActionBusy"
               @click="$emit('createSliceFromSelection')"
             >
@@ -568,6 +575,7 @@ watch(currentWordIndex, (newIndex) => {
 const emit = defineEmits([
   'seekTo',
   'update:workspaceMode',
+  'openDocument',
   'createSliceFromSelection',
   'appendSelectionToSlice',
   'removeSelectionFromSlice',
@@ -604,6 +612,10 @@ const props = defineProps({
     default: false
   },
   canDeleteSelectedSlice: {
+    type: Boolean,
+    default: false
+  },
+  canOpenDocument: {
     type: Boolean,
     default: false
   },
@@ -647,6 +659,7 @@ export default {
   emits: [
     'seekTo',
     'update:workspaceMode',
+    'openDocument',
     'createSliceFromSelection',
     'appendSelectionToSlice',
     'removeSelectionFromSlice',

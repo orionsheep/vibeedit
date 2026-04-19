@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
+import { execFileSync } from 'child_process';
 import { pathToFileURL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { ensureStorageDirs } from '../editor/config.js';
@@ -748,6 +749,100 @@ export async function exportProjectInterchangeFile(projectId, format = 'premiere
       label: config.label,
       mimeType: config.mimeType,
       compatibilityNote: config.note
+    };
+  } catch (error) {
+    await failJob(job.id, error);
+    throw error;
+  }
+}
+
+export async function exportProjectSliceXmlBundle(projectId) {
+  const job = await createJob({
+    type: 'export.interchange_bundle',
+    payload: { projectId, format: 'premiere_xml', scope: 'all_slices' },
+    projectId,
+    message: 'Queued live slice XML bundle export'
+  });
+
+  try {
+    await markJobRunning(job.id, 'Preparing live slice XML bundle');
+    const project = await loadProjectInterchangeData(projectId);
+    const sliceTimelines = (project.timelines || [])
+      .filter((timeline) => readTimelineKind(timeline) === 'slice' && Array.isArray(timeline.clips) && timeline.clips.length);
+
+    if (!sliceTimelines.length) {
+      throw new Error('No slice timelines available for XML bundle export');
+    }
+
+    const { packagesDir } = ensureStorageDirs();
+    const bundleId = uuidv4().substring(0, 8);
+    const bundleBaseName = `${sanitizeFilename(project.name)}_slice_xml_bundle_${bundleId}`;
+    const bundleDir = path.join(packagesDir, bundleBaseName);
+    const xmlDir = path.join(bundleDir, 'xml');
+
+    await fs.promises.mkdir(xmlDir, { recursive: true });
+
+    const manifest = {
+      project_id: project.id,
+      project_name: project.name,
+      exported_at: new Date().toISOString(),
+      format: 'premiere_xml',
+      slice_count: sliceTimelines.length,
+      files: []
+    };
+
+    for (let index = 0; index < sliceTimelines.length; index += 1) {
+      const timeline = sliceTimelines[index];
+      const sliceTitle = String(timeline.settings?.title || timeline.name || `切片 ${index + 1}`).trim() || `切片 ${index + 1}`;
+      const ordinal = String(index + 1).padStart(2, '0');
+      const filename = `${ordinal}_${sanitizeFilename(sliceTitle, `slice_${ordinal}`)}.xml`;
+      const outputPath = path.join(xmlDir, filename);
+      const sourceInfoByAssetId = await collectSourceInfoByAssetId(timeline.clips);
+      const content = buildPremiereXml({
+        project: {
+          ...project,
+          name: `${project.name} · ${sliceTitle}`
+        },
+        clips: timeline.clips,
+        sourceInfoByAssetId
+      });
+
+      await fs.promises.writeFile(outputPath, content, 'utf-8');
+
+      const durationSeconds = timeline.clips.reduce((sum, clip) => (
+        sum + Math.max(0, Number(clip.sourceEndSeconds || 0) - Number(clip.sourceStartSeconds || 0))
+      ), 0);
+
+      manifest.files.push({
+        timeline_id: timeline.id,
+        title: sliceTitle,
+        filename,
+        duration_seconds: roundTime(durationSeconds)
+      });
+
+      await markJobRunning(job.id, `Bundled ${index + 1}/${sliceTimelines.length} slice XML files`);
+    }
+
+    await fs.promises.writeFile(
+      path.join(bundleDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2),
+      'utf-8'
+    );
+
+    const zipPath = `${bundleDir}.zip`;
+    execFileSync('zip', ['-r', zipPath, '.'], { cwd: bundleDir });
+
+    await completeJob(job.id, {
+      bundleDir,
+      zipPath,
+      fileCount: manifest.files.length
+    }, 'Live slice XML bundle export completed');
+
+    return {
+      success: true,
+      bundleDir,
+      zipPath,
+      fileCount: manifest.files.length
     };
   } catch (error) {
     await failJob(job.id, error);

@@ -10,6 +10,16 @@
       @confirm="handleConfirmDialogConfirm"
       @cancel="closeConfirmDialog"
     />
+    <DocumentPreviewModal
+      :visible="documentPreviewVisible"
+      :loading="documentPreviewLoading"
+      :title="documentPreviewTitle"
+      :subtitle="documentPreviewSubtitle"
+      :sections="documentPreviewSections"
+      :active-section-id="documentPreviewSectionId"
+      @close="documentPreviewVisible = false"
+      @select-section="handleDocumentSectionSelect"
+    />
     <div v-if="isLoading" class="state-shell">正在加载项目工作台...</div>
     <div v-else-if="error" class="state-shell error">{{ error }}</div>
     <div v-else class="workspace-shell">
@@ -37,6 +47,9 @@
           </button>
           <button class="ghost-btn" :disabled="importingProjectPackage" @click="triggerProjectPackageImport">
             {{ importingProjectPackage ? `导入中 ${projectPackageImportProgress}%` : '导入工程包' }}
+          </button>
+          <button class="ghost-btn" :disabled="!canOpenDocumentPreview" @click="openDocumentPreview()">
+            {{ documentTriggerLabel }}
           </button>
           <input
             ref="projectPackageImportInputRef"
@@ -68,6 +81,14 @@
               </button>
               <button class="context-item" :disabled="isExportingAny" @click="handleExportMenuInterchange('capcut_srt')">
                 {{ exportingInterchangeFormat === 'capcut_srt' ? 'SRT 导出中...' : '导出剪映 / CapCut SRT' }}
+              </button>
+              <button
+                v-if="isLiveSlicingMode && projectSlices.length"
+                class="context-item"
+                :disabled="isExportingAny"
+                @click="handleExportMenuSliceXmlBundle"
+              >
+                {{ exportingSliceXmlBundle ? '切片 XML 打包中...' : '导出全部切片 XML 包' }}
               </button>
             </div>
           </div>
@@ -265,8 +286,10 @@
               :can-append-selection-to-slice="canAppendSelectionToSlice"
               :can-remove-selection-from-slice="canRemoveSelectionFromSlice"
               :can-delete-selected-slice="Boolean(selectedSliceId)"
+              :can-open-document="canOpenDocumentPreview"
               :slice-action-busy="sliceMutationBusy"
               @update:workspace-mode="workspaceMode = $event"
+              @open-document="openDocumentPreview()"
               @create-slice-from-selection="createManualSliceFromSelection"
               @append-selection-to-slice="appendSelectionToCurrentSlice"
               @remove-selection-from-slice="removeSelectionFromCurrentSlice"
@@ -312,7 +335,10 @@
               :running-agent="runningAgent"
               :stopping-agent="stoppingAgent"
               :can-stop="Boolean(activeRunId)"
+              :can-open-document="canOpenDocumentPreview"
+              :document-action-label="documentActionLabel"
               @new-session="createFreshAgentSession"
+              @open-document="openDocumentPreview()"
               @toggle-collapse="toggleAgentCollapsed"
               @confirm="handleAgentConfirmation"
               @update:mode-value="agentMode = $event"
@@ -356,6 +382,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router';
 import AppConfirmDialog from '../components/AppConfirmDialog.vue';
 import AgentTerminalPanel from '../components/AgentTerminalPanel.vue';
+import DocumentPreviewModal from '../components/DocumentPreviewModal.vue';
 import SubtitlePanel from '../features/editor/components/SubtitlePanel.vue';
 import TimelineStrip from '../features/editor/components/TimelineStrip.vue';
 import ProjectCompositionPreview from '../features/editor/components/ProjectCompositionPreview.vue';
@@ -371,6 +398,7 @@ import {
   deleteProjectSlice,
   exportProjectInterchange,
   exportProjectPackage,
+  exportProjectSliceXmlBundle,
   exportProjectVideo,
   getProjectSlice,
   listProjectAgentRunEvents,
@@ -443,6 +471,7 @@ const runningAgent = ref(false);
 const exportingVideo = ref(false);
 const exportingPackage = ref(false);
 const exportingInterchangeFormat = ref('');
+const exportingSliceXmlBundle = ref(false);
 const deletingProject = ref(false);
 const confirmDialog = ref({
   visible: false,
@@ -476,6 +505,10 @@ const agentCollapsed = ref(false);
 const stoppingAgent = ref(false);
 const cancelRequestedRunId = ref('');
 const agentRunAbortController = ref(null);
+const documentPreviewVisible = ref(false);
+const documentPreviewLoading = ref(false);
+const documentPreviewSectionId = ref('master');
+const sliceDocumentCache = ref({});
 const contextMenu = ref({
   visible: false,
   x: 0,
@@ -511,7 +544,12 @@ const projectAssets = computed(() => (project.value?.projectAssets || []).map((r
   ingest_job: assetJobMap.value[relation.asset.id] || null
 })));
 
-const isExportingAny = computed(() => exportingVideo.value || exportingPackage.value || Boolean(exportingInterchangeFormat.value));
+const isExportingAny = computed(() => (
+  exportingVideo.value ||
+  exportingPackage.value ||
+  Boolean(exportingInterchangeFormat.value) ||
+  exportingSliceXmlBundle.value
+));
 
 const exportTriggerLabel = computed(() => {
   if (exportingVideo.value) return '视频导出中...';
@@ -519,6 +557,7 @@ const exportTriggerLabel = computed(() => {
   if (exportingInterchangeFormat.value === 'premiere_xml') return 'XML 导出中...';
   if (exportingInterchangeFormat.value === 'edl') return 'EDL 导出中...';
   if (exportingInterchangeFormat.value === 'capcut_srt') return 'SRT 导出中...';
+  if (exportingSliceXmlBundle.value) return '切片 XML 打包中...';
   return `导出 ${activeExportTargetLabel.value}`;
 });
 
@@ -674,6 +713,10 @@ const activeExportTargetLabel = computed(() => {
   return '当前成片';
 });
 
+const documentTriggerLabel = computed(() => (
+  isLiveSlicingMode.value ? '文稿 · 切片' : '文稿'
+));
+
 const previewLabel = computed(() => {
   const clip = activePreviewClip.value
     || activePreviewClips.value[findPreviewClipIndexForProjectTime(Number(currentPreviewTime.value || 0), activePreviewClips.value)]
@@ -752,6 +795,138 @@ const liveSliceSelectionHint = computed(() => {
       : '先选择一个切片，或在字幕里框选一段内容后新建切片。';
   }
   return `已选 ${manualSliceSelectionRanges.value.length} 段 · ${formatDuration(manualSliceSelectionDuration.value)}，可新建切片，或加入/移出当前切片。`;
+});
+
+function buildTranscriptBlocksFromEditorWords(words = [], {
+  deletedWords = new Set(),
+  deletedGaps = new Set(),
+  hardGapThreshold = 1.1,
+  maxBlockChars = 90
+} = {}) {
+  const sourceWords = Array.isArray(words) ? words : [];
+  const blocks = [];
+  let current = null;
+  let lastKeptIndex = -1;
+
+  const pushCurrent = () => {
+    if (!current || !String(current.text || '').trim()) return;
+    blocks.push({
+      id: `doc_block_${blocks.length + 1}`,
+      start: roundTime(current.start),
+      end: roundTime(current.end),
+      text: current.text
+    });
+    current = null;
+  };
+
+  for (let index = 0; index < sourceWords.length; index += 1) {
+    if (deletedWords.has(index)) continue;
+    const word = sourceWords[index];
+    const previousWord = lastKeptIndex >= 0 ? sourceWords[lastKeptIndex] : null;
+    const gapDuration = previousWord
+      ? Number(word.start_time || 0) - Number(previousWord.end_time || previousWord.start_time || 0)
+      : 0;
+    const shouldBreak = Boolean(
+      current && (
+        deletedGaps.has(lastKeptIndex) ||
+        gapDuration >= hardGapThreshold ||
+        (/[。！？!?；;]$/.test(String(previousWord?.text || '')) && current.text.length >= 20) ||
+        current.text.length >= maxBlockChars
+      )
+    );
+
+    if (!current || shouldBreak) {
+      pushCurrent();
+      current = {
+        start: Number(word.start_time || 0),
+        end: Number(word.end_time || word.start_time || 0),
+        text: ''
+      };
+    }
+
+    current.text += String(word.text || '');
+    current.end = Number(word.end_time || word.start_time || current.end);
+    lastKeptIndex = index;
+  }
+
+  pushCurrent();
+  return blocks;
+}
+
+function normalizeDocumentBlocks(blocks = []) {
+  return (Array.isArray(blocks) ? blocks : [])
+    .map((block, index) => ({
+      id: block.id || `doc_block_${index + 1}`,
+      start: Number(block.start || 0),
+      end: Number(block.end || block.start || 0),
+      text: String(block.text || '').trim()
+    }))
+    .filter((block) => block.text);
+}
+
+const masterDocumentSection = computed(() => {
+  const blocks = buildTranscriptBlocksFromEditorWords(editorStore.words || [], {
+    deletedWords: editorStore.deletedWords,
+    deletedGaps: editorStore.deletedGaps
+  });
+  const fullText = blocks.map((block) => block.text).join('\n\n');
+  return {
+    id: 'master',
+    title: isLiveSlicingMode.value ? '当前成片文稿' : '项目文稿',
+    kicker: `${formatDuration(currentPreviewDuration.value || 0)} · ${blocks.length || 0} 段`,
+    summary: fullText.slice(0, 120),
+    blocks,
+    fullText
+  };
+});
+
+const sliceDocumentSections = computed(() => projectSlices.value.map((slice) => {
+  const detail = selectedSliceDetail.value?.id === slice.id
+    ? selectedSliceDetail.value
+    : sliceDocumentCache.value[slice.id];
+  const blocks = normalizeDocumentBlocks(detail?.transcript_blocks || []);
+  const fullText = String(detail?.transcript_text || '').trim();
+  return {
+    id: slice.id,
+    title: slice.title || slice.name || '未命名切片',
+    kicker: `${formatDuration(slice.total_duration || detail?.total_duration || 0)} · ${blocks.length || 0} 段`,
+    summary: (blocks[0]?.text || fullText || '点击查看该切片文稿').slice(0, 120),
+    blocks,
+    fullText
+  };
+}));
+
+const documentPreviewSections = computed(() => (
+  isLiveSlicingMode.value ? sliceDocumentSections.value : [masterDocumentSection.value]
+));
+
+const canOpenDocumentPreview = computed(() => {
+  if (isLiveSlicingMode.value) {
+    return Boolean(projectSlices.value.length);
+  }
+  return Boolean(masterDocumentSection.value.blocks.length || masterDocumentSection.value.fullText);
+});
+
+const documentActionLabel = computed(() => (
+  isLiveSlicingMode.value ? '打开切片文稿' : '打开当前文稿'
+));
+
+const documentPreviewTitle = computed(() => (
+  isLiveSlicingMode.value ? '切片文稿预览' : '当前成片文稿'
+));
+
+const activeDocumentSection = computed(() => (
+  documentPreviewSections.value.find((section) => section.id === documentPreviewSectionId.value)
+  || documentPreviewSections.value[0]
+  || null
+));
+
+const documentPreviewSubtitle = computed(() => {
+  const section = activeDocumentSection.value;
+  if (!section) {
+    return isLiveSlicingMode.value ? '先生成切片，再打开文稿。' : '当前还没有可显示的文稿内容。';
+  }
+  return `${section.kicker || ''}${section.kicker && section.summary ? ' · ' : ''}${section.summary || ''}`;
 });
 
 const agentActionLabel = computed(() => {
@@ -1415,10 +1590,38 @@ async function ensureSelectedSliceDetail(sliceId, { force = false } = {}) {
   try {
     const detail = await getProjectSlice(projectId.value, targetId);
     selectedSliceDetail.value = detail;
+    sliceDocumentCache.value = {
+      ...sliceDocumentCache.value,
+      [targetId]: detail
+    };
     return detail;
   } finally {
     loadingSliceDetail.value = false;
   }
+}
+
+async function ensureSliceDocumentLoaded(sliceId, { force = false } = {}) {
+  const targetId = String(sliceId || '').trim();
+  if (!targetId) return null;
+  if (!force && sliceDocumentCache.value[targetId]) {
+    return sliceDocumentCache.value[targetId];
+  }
+  if (!force && selectedSliceDetail.value?.id === targetId) {
+    sliceDocumentCache.value = {
+      ...sliceDocumentCache.value,
+      [targetId]: selectedSliceDetail.value
+    };
+    return selectedSliceDetail.value;
+  }
+  const detail = await getProjectSlice(projectId.value, targetId);
+  sliceDocumentCache.value = {
+    ...sliceDocumentCache.value,
+    [targetId]: detail
+  };
+  if (selectedSliceId.value === targetId) {
+    selectedSliceDetail.value = detail;
+  }
+  return detail;
 }
 
 async function refreshProjectSlices({ preserveSelection = true, skipFetch = false } = {}) {
@@ -1439,8 +1642,14 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
   if (!nextSlices.length) {
     selectedSliceId.value = '';
     selectedSliceDetail.value = null;
+    sliceDocumentCache.value = {};
     return nextSlices;
   }
+
+  const validIds = new Set(nextSlices.map((slice) => slice.id));
+  sliceDocumentCache.value = Object.fromEntries(
+    Object.entries(sliceDocumentCache.value).filter(([sliceId]) => validIds.has(sliceId))
+  );
 
   if (isLiveSlicingMode.value || selectedSliceId.value) {
     selectedSliceId.value = nextSlices[0].id;
@@ -1465,6 +1674,42 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   }
   await nextTick();
   syncPreviewToCurrentTime({ preservePlayback: false });
+}
+
+async function openDocumentPreview(preferredSectionId = '') {
+  if (!canOpenDocumentPreview.value) return;
+
+  documentPreviewVisible.value = true;
+  documentPreviewLoading.value = true;
+
+  try {
+    if (!isLiveSlicingMode.value) {
+      documentPreviewSectionId.value = 'master';
+      return;
+    }
+
+    const targetId = String(preferredSectionId || selectedSliceId.value || projectSlices.value[0]?.id || '').trim();
+    documentPreviewSectionId.value = targetId;
+    if (targetId) {
+      await ensureSliceDocumentLoaded(targetId, { force: false });
+    }
+  } finally {
+    documentPreviewLoading.value = false;
+  }
+}
+
+async function handleDocumentSectionSelect(sectionId) {
+  const targetId = String(sectionId || '').trim();
+  if (!targetId) return;
+  documentPreviewSectionId.value = targetId;
+  if (isLiveSlicingMode.value) {
+    documentPreviewLoading.value = true;
+    try {
+      await ensureSliceDocumentLoaded(targetId, { force: false });
+    } finally {
+      documentPreviewLoading.value = false;
+    }
+  }
 }
 
 function buildManualSliceTitle() {
@@ -2130,6 +2375,24 @@ async function handleExportInterchange(format) {
   }
 }
 
+async function handleExportSliceXmlBundle() {
+  exportingSliceXmlBundle.value = true;
+  try {
+    if (timelineDirty.value) {
+      await saveTimeline();
+    }
+    if (!projectSlices.value.length) {
+      throw new Error('当前还没有可导出的切片');
+    }
+    const result = await exportProjectSliceXmlBundle(projectId.value);
+    window.open(result.download_url, '_blank', 'noopener');
+  } catch (exportError) {
+    window.alert(exportError.response?.data?.error || exportError.message || '导出切片 XML 包失败');
+  } finally {
+    exportingSliceXmlBundle.value = false;
+  }
+}
+
 function toggleExportMenu() {
   exportMenuOpen.value = !exportMenuOpen.value;
 }
@@ -2151,6 +2414,11 @@ async function handleExportMenuPackage() {
 async function handleExportMenuInterchange(format) {
   closeExportMenu();
   await handleExportInterchange(format);
+}
+
+async function handleExportMenuSliceXmlBundle() {
+  closeExportMenu();
+  await handleExportSliceXmlBundle();
 }
 
 function triggerProjectPackageImport() {

@@ -1,6 +1,7 @@
 <template>
   <div class="agent-terminal">
     <div class="terminal-toolbar">
+      <button class="terminal-link" :disabled="!canOpenDocument" @click="$emit('open-document')">文稿</button>
       <button class="terminal-link" :disabled="runningAgent" @click="$emit('new-session')">新会话</button>
       <button class="terminal-link" title="隐藏 Agent 栏" @click="$emit('toggle-collapse')">&gt;&gt;</button>
     </div>
@@ -19,7 +20,7 @@
 
       <template v-if="messages.length">
         <div
-          v-for="message in messages"
+          v-for="(message, index) in messages"
           :key="message.id"
           class="terminal-entry"
         >
@@ -32,6 +33,9 @@
             class="entry-markdown"
             v-html="renderMarkdown(message.content)"
           ></div>
+          <div v-if="message.role !== 'user' && canOpenDocument && index === messages.length - 1" class="entry-actions">
+            <button class="terminal-link" @click="$emit('open-document')">{{ documentActionLabel }}</button>
+          </div>
         </div>
       </template>
       <template v-else>
@@ -96,11 +100,14 @@ const props = defineProps({
   placeholder: { type: String, default: '' },
   runningAgent: { type: Boolean, default: false },
   stoppingAgent: { type: Boolean, default: false },
-  canStop: { type: Boolean, default: false }
+  canStop: { type: Boolean, default: false },
+  canOpenDocument: { type: Boolean, default: false },
+  documentActionLabel: { type: String, default: '打开文稿' }
 });
 
 const emit = defineEmits([
   'new-session',
+  'open-document',
   'toggle-collapse',
   'confirm',
   'run',
@@ -288,6 +295,10 @@ function handlePromptKeydown(event) {
   padding: 0 0 14px;
   margin-bottom: 14px;
   border-bottom: 1px solid #16232d;
+}
+
+.entry-actions {
+  margin-top: 10px;
 }
 
 .thinking-entry {
