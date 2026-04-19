@@ -10,6 +10,7 @@ const DEFAULT_PANEL_SIZES = {
 export function useWorkspacePaneLayout(projectId) {
   const sidebarCollapsed = ref(false);
   const agentCollapsed = ref(false);
+  const isPaneResizing = ref(false);
   const panelSizes = ref({ ...DEFAULT_PANEL_SIZES });
   const workspaceBodyRef = ref(null);
   const sidebarRef = ref(null);
@@ -69,6 +70,7 @@ export function useWorkspacePaneLayout(projectId) {
 
   function startResize(kind, event) {
     event.preventDefault();
+    isPaneResizing.value = true;
     if (kind === 'sidebar' && sidebarCollapsed.value) {
       sidebarCollapsed.value = false;
     }
@@ -116,6 +118,7 @@ export function useWorkspacePaneLayout(projectId) {
       panelSizes.value = { ...draftSizes };
       applyPanelSizeStyles(panelSizes.value);
       persistPanelSizes();
+      isPaneResizing.value = false;
     };
 
     document.body.style.cursor = kind === 'preview' ? 'row-resize' : 'col-resize';
@@ -144,6 +147,7 @@ export function useWorkspacePaneLayout(projectId) {
 
   return {
     agentCollapsed,
+    isPaneResizing,
     panelSizes,
     persistPanelSizes,
     sidebarCollapsed,

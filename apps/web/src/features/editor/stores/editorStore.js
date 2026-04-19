@@ -511,6 +511,27 @@ export const useEditorStore = defineStore('editor', () => {
     selectedGaps.value = nextSelectedGaps;
   }
 
+  function replaceSelection(wordIndices = [], gapIndices = []) {
+    selectedWords.value = new Set(
+      (Array.isArray(wordIndices) ? wordIndices : [])
+        .filter(index => Number.isInteger(index) && index >= 0 && index < words.value.length)
+    );
+
+    const validGapIndices = new Set(gaps.value.map(gap => gap.index));
+    selectedGaps.value = new Set(
+      (Array.isArray(gapIndices) ? gapIndices : [])
+        .filter(index => Number.isInteger(index) && validGapIndices.has(index))
+    );
+  }
+
+  function selectSingleWord(index) {
+    replaceSelection([index], []);
+  }
+
+  function selectSingleGap(gapIndex) {
+    replaceSelection([], [gapIndex]);
+  }
+
   /**
    * Delete selected words and gaps
    */
@@ -735,6 +756,9 @@ export const useEditorStore = defineStore('editor', () => {
     selectWordRange,
     toggleWordSelection,
     toggleGapSelection,
+    replaceSelection,
+    selectSingleWord,
+    selectSingleGap,
     deleteSelected,
     restoreSelected,
     toggleDeleteWord,

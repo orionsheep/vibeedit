@@ -1,5 +1,5 @@
 <template>
-  <div class="subtitle-editor">
+  <div class="subtitle-editor" :class="{ 'performance-mode': props.performanceMode }">
     <AppConfirmDialog
       :visible="confirmDialog.visible"
       :title="confirmDialog.title"
@@ -137,7 +137,15 @@
         </div>
       </div>
 
-      <div class="editor-container" ref="editorContainer" @mousedown="handleContainerMouseDown">
+      <div
+        class="editor-container"
+        ref="editorContainer"
+        @mousedown="handleEditorMouseDown"
+        @mousemove="handleEditorMouseMove"
+        @mouseup="handleEditorMouseUp"
+        @dblclick="handleEditorDoubleClick"
+        @contextmenu.prevent.stop="handleEditorContextMenu"
+      >
         <div class="text-content">
           <template
             v-for="chunk in wordRenderChunks"
@@ -149,9 +157,6 @@
                 class="word"
                 :class="{
                   deleted: isWordDeleted(item.index),
-                  selected: isWordSelected(item.index),
-                  current: item.index === currentWordIndex,
-                  'jump-focused': item.index === jumpFocusedWordIndex,
                   'in-active-slice': Boolean(item.word.slice_active),
                   'has-slice-fill': Boolean(item.word.slice_markers?.length)
                 }"
@@ -159,11 +164,6 @@
                 :data-index="item.index"
                 :data-start="item.word.start_time"
                 :data-end="item.word.end_time"
-                @mousedown="handleWordMouseDown($event, item.index)"
-                @mouseenter="handleWordMouseEnter($event, item.index)"
-                @mouseup="handleWordMouseUp($event, item.index)"
-                @dblclick="toggleDeleteWord(item.index)"
-                @contextmenu.prevent.stop="openWordContextMenu($event, item.index)"
               >
                 {{ item.word.text }}
                 <span class="time-hint">{{ formatTime(item.word.start_time) }}</span>
@@ -174,16 +174,11 @@
                 class="gap"
                 :class="{
                   deleted: isGapDeleted(item.gapIndex),
-                  selected: isGapSelected(item.gapIndex),
                   'cross-asset': isCrossAssetGap(item.gap)
                 }"
                 :style="getGapStyle(item.gap)"
                 :data-gap-index="item.gapIndex"
                 :title="`间隙 ${formatTime(item.gap.duration)}`"
-                @mousedown="handleGapMouseDown($event, item.gapIndex)"
-                @click="handleGapClick($event, item.gap)"
-                @dblclick="toggleDeleteGap(item.gapIndex)"
-                @contextmenu.prevent.stop="openGapContextMenu($event, item.gapIndex)"
               >
                 <span class="gap-line"></span>
                 <span class="gap-label">{{ item.gap.duration.toFixed(1) }}s</span>
@@ -209,32 +204,33 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import AppConfirmDialog from '../../../components/AppConfirmDialog.vue';
 import { useEditorStore } from '../stores/editorStore';
 
 const editorStore = useEditorStore();
-const { words, gaps, config, currentWordIndex, totalWords, keptWords, hasSelection } = storeToRefs(editorStore);
+const {
+  words,
+  gaps,
+  config,
+  currentWordIndex,
+  totalWords,
+  keptWords,
+  hasSelection,
+  selectedWords: selectedWordsRef,
+  selectedGaps: selectedGapsRef
+} = storeToRefs(editorStore);
 const WORD_CHUNK_LIMIT = 140;
 const WORD_CHUNK_CHAR_LIMIT = 320;
 
-// Helper functions to check if a word/gap is deleted or selected
-// Access store properties directly to preserve reactivity
+// Helper functions to check if a word/gap is deleted
 function isWordDeleted(index) {
   return editorStore.deletedWords.has(index);
 }
 
-function isWordSelected(index) {
-  return editorStore.selectedWords.has(index);
-}
-
 function isGapDeleted(gapIndex) {
   return editorStore.deletedGaps.has(gapIndex);
-}
-
-function isGapSelected(gapIndex) {
-  return editorStore.selectedGaps.has(gapIndex);
 }
 
 const editorContainer = ref(null);
@@ -256,6 +252,14 @@ const confirmDialog = ref({
 let confirmDialogAction = null;
 const jumpFocusedWordIndex = ref(-1);
 let jumpFocusTimer = null;
+const renderedWordElements = new Map();
+const renderedGapElements = new Map();
+let renderedSelectedWordIndices = new Set();
+let renderedSelectedGapIndices = new Set();
+let renderedCurrentWordIndex = -1;
+let renderedJumpFocusedWordIndex = -1;
+let previewSelectedWordIndices = new Set();
+let previewSelectedGapIndices = new Set();
 
 // Drag selection state
 const isDragging = ref(false);
@@ -276,10 +280,6 @@ function formatTime(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
-
-function getGapAfterWord(index) {
-  return gapByAfterWord.value.get(index) || null;
 }
 
 const gapByAfterWord = computed(() => {
@@ -400,10 +400,142 @@ function getGapStyle(gap) {
   };
 }
 
+function getClosestWordIndex(target) {
+  if (!(target instanceof Element)) return -1;
+  const element = target.closest('.word[data-index]');
+  if (!element) return -1;
+  return Number.parseInt(element.getAttribute('data-index') || '-1', 10);
+}
+
+function getClosestGapIndex(target) {
+  if (!(target instanceof Element)) return -1;
+  const element = target.closest('.gap[data-gap-index]');
+  if (!element) return -1;
+  return Number.parseInt(element.getAttribute('data-gap-index') || '-1', 10);
+}
+
+function buildSelectionSetsForRange(startIdx, endIdx) {
+  const min = Math.min(startIdx, endIdx);
+  const max = Math.max(startIdx, endIdx);
+  const nextWords = new Set();
+  const nextGaps = new Set();
+
+  for (let index = min; index <= max; index += 1) {
+    nextWords.add(index);
+  }
+
+  for (let index = min; index < max; index += 1) {
+    const gapIndex = gapByAfterWord.value.get(index)?.index;
+    if (Number.isInteger(gapIndex)) {
+      nextGaps.add(gapIndex);
+    }
+  }
+
+  return {
+    words: nextWords,
+    gaps: nextGaps
+  };
+}
+
+function refreshRenderedElementMaps() {
+  renderedWordElements.clear();
+  renderedGapElements.clear();
+  renderedSelectedWordIndices = new Set();
+  renderedSelectedGapIndices = new Set();
+  renderedCurrentWordIndex = -1;
+  renderedJumpFocusedWordIndex = -1;
+
+  const container = editorContainer.value;
+  if (!container) return;
+
+  container.querySelectorAll('.word[data-index]').forEach((element) => {
+    const index = Number.parseInt(element.getAttribute('data-index') || '-1', 10);
+    if (Number.isInteger(index) && index >= 0) {
+      renderedWordElements.set(index, element);
+    }
+  });
+
+  container.querySelectorAll('.gap[data-gap-index]').forEach((element) => {
+    const index = Number.parseInt(element.getAttribute('data-gap-index') || '-1', 10);
+    if (Number.isInteger(index) && index >= 0) {
+      renderedGapElements.set(index, element);
+    }
+  });
+}
+
+function syncIndexedClassSet(elementMap, previousSet, nextSet, className) {
+  previousSet.forEach((index) => {
+    if (!nextSet.has(index)) {
+      elementMap.get(index)?.classList.remove(className);
+    }
+  });
+
+  nextSet.forEach((index) => {
+    if (!previousSet.has(index)) {
+      elementMap.get(index)?.classList.add(className);
+    }
+  });
+
+  return new Set(nextSet);
+}
+
+function syncIndexedClass(elementMap, previousIndex, nextIndex, className) {
+  if (Number.isInteger(previousIndex) && previousIndex >= 0 && previousIndex !== nextIndex) {
+    elementMap.get(previousIndex)?.classList.remove(className);
+  }
+
+  if (Number.isInteger(nextIndex) && nextIndex >= 0 && previousIndex !== nextIndex) {
+    elementMap.get(nextIndex)?.classList.add(className);
+  }
+
+  return nextIndex;
+}
+
+function syncSelectionClasses(wordSet = selectedWordsRef.value, gapSet = selectedGapsRef.value) {
+  renderedSelectedWordIndices = syncIndexedClassSet(
+    renderedWordElements,
+    renderedSelectedWordIndices,
+    wordSet,
+    'selected'
+  );
+  renderedSelectedGapIndices = syncIndexedClassSet(
+    renderedGapElements,
+    renderedSelectedGapIndices,
+    gapSet,
+    'selected'
+  );
+}
+
+function syncCurrentWordClass(index = currentWordIndex.value) {
+  renderedCurrentWordIndex = syncIndexedClass(
+    renderedWordElements,
+    renderedCurrentWordIndex,
+    Number.isInteger(index) ? index : -1,
+    'current'
+  );
+}
+
+function syncJumpFocusedClass(index = jumpFocusedWordIndex.value) {
+  renderedJumpFocusedWordIndex = syncIndexedClass(
+    renderedWordElements,
+    renderedJumpFocusedWordIndex,
+    Number.isInteger(index) ? index : -1,
+    'jump-focused'
+  );
+}
+
+function syncRenderedVisualState() {
+  syncSelectionClasses();
+  syncCurrentWordClass();
+  syncJumpFocusedClass();
+}
+
 function resetDragSelectionState() {
   dragMoved.value = false;
   queuedDragRange = null;
   appliedDragRangeKey = '';
+  previewSelectedWordIndices = new Set();
+  previewSelectedGapIndices = new Set();
   if (dragAnimationFrame) {
     cancelAnimationFrame(dragAnimationFrame);
     dragAnimationFrame = null;
@@ -420,7 +552,10 @@ function flushDragSelection() {
   if (rangeKey === appliedDragRangeKey) return;
 
   appliedDragRangeKey = rangeKey;
-  editorStore.selectWordRange(startIdx, endIdx);
+  const previewSelection = buildSelectionSetsForRange(startIdx, endIdx);
+  previewSelectedWordIndices = previewSelection.words;
+  previewSelectedGapIndices = previewSelection.gaps;
+  syncSelectionClasses(previewSelectedWordIndices, previewSelectedGapIndices);
 }
 
 function scheduleDragSelection(startIdx, endIdx) {
@@ -463,15 +598,19 @@ function handleWordMouseUp(event, index) {
   if (event.button !== 0) return;
   flushDragSelection();
 
-  // End of drag - selection is already set by mouseEnter
   isDragging.value = false;
 
-  // If not dragging (just a click), seek to this word
   if (!dragMoved.value && dragStartIndex.value === index) {
     emit('seekTo', words.value[index].start_time);
+  } else if (previewSelectedWordIndices.size || previewSelectedGapIndices.size) {
+    editorStore.replaceSelection(
+      [...previewSelectedWordIndices].sort((left, right) => left - right),
+      [...previewSelectedGapIndices].sort((left, right) => left - right)
+    );
   }
 
   resetDragSelectionState();
+  syncSelectionClasses();
 }
 
 function handleContainerMouseDown(event) {
@@ -503,11 +642,6 @@ function handleGapMouseDown(event, gapIndex) {
   editorStore.toggleGapSelection(gapIndex, shiftKey, metaKey, ctrlKey);
 }
 
-function handleGapClick(event, gap) {
-  event.stopPropagation();
-  // Seek to gap start - handled by parent component
-}
-
 function closeContextMenu() {
   contextMenu.value.visible = false;
 }
@@ -516,9 +650,9 @@ function primeSelectionForContext(targetType, targetIndex) {
   if (hasSelection.value) return;
 
   if (targetType === 'word') {
-    editorStore.toggleWordSelection(targetIndex, false, false, false);
+    editorStore.selectSingleWord(targetIndex);
   } else if (targetType === 'gap') {
-    editorStore.toggleGapSelection(targetIndex, false, false, false);
+    editorStore.selectSingleGap(targetIndex);
   }
 }
 
@@ -617,13 +751,82 @@ function updateGapThreshold(event) {
   editorStore.updateConfig('gapThreshold', value);
 }
 
+function handleEditorMouseDown(event) {
+  const wordIndex = getClosestWordIndex(event.target);
+  if (wordIndex >= 0) {
+    handleWordMouseDown(event, wordIndex);
+    return;
+  }
+
+  const gapIndex = getClosestGapIndex(event.target);
+  if (gapIndex >= 0) {
+    handleGapMouseDown(event, gapIndex);
+    return;
+  }
+
+  handleContainerMouseDown(event);
+}
+
+function handleEditorMouseMove(event) {
+  const wordIndex = getClosestWordIndex(event.target);
+  if (wordIndex >= 0) {
+    handleWordMouseEnter(event, wordIndex);
+  }
+}
+
+function handleEditorMouseUp(event) {
+  const wordIndex = getClosestWordIndex(event.target);
+  if (wordIndex >= 0) {
+    handleWordMouseUp(event, wordIndex);
+    return;
+  }
+
+  handleMouseUp();
+}
+
+function handleEditorDoubleClick(event) {
+  const wordIndex = getClosestWordIndex(event.target);
+  if (wordIndex >= 0) {
+    toggleDeleteWord(wordIndex);
+    return;
+  }
+
+  const gapIndex = getClosestGapIndex(event.target);
+  if (gapIndex >= 0) {
+    toggleDeleteGap(gapIndex);
+  }
+}
+
+function handleEditorContextMenu(event) {
+  const wordIndex = getClosestWordIndex(event.target);
+  if (wordIndex >= 0) {
+    openWordContextMenu(event, wordIndex);
+    return;
+  }
+
+  const gapIndex = getClosestGapIndex(event.target);
+  if (gapIndex >= 0) {
+    openGapContextMenu(event, gapIndex);
+    return;
+  }
+
+  closeContextMenu();
+}
+
 // Global mouse events for drag selection
 function handleMouseUp() {
   flushDragSelection();
   isDragging.value = false;
   isGapDrag.value = false;
   dragStartIndex.value = -1;
+  if (previewSelectedWordIndices.size || previewSelectedGapIndices.size) {
+    editorStore.replaceSelection(
+      [...previewSelectedWordIndices].sort((left, right) => left - right),
+      [...previewSelectedGapIndices].sort((left, right) => left - right)
+    );
+  }
   resetDragSelectionState();
+  syncSelectionClasses();
 }
 
 function handleDocumentClick() {
@@ -677,6 +880,10 @@ onMounted(() => {
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('keydown', handleKeyDown);
   editorContainer.value?.addEventListener('scroll', handleEditorScroll, { passive: true });
+  nextTick(() => {
+    refreshRenderedElementMaps();
+    syncRenderedVisualState();
+  });
 });
 
 onUnmounted(() => {
@@ -691,11 +898,27 @@ onUnmounted(() => {
   }
 });
 
+watch([words, gaps], async () => {
+  await nextTick();
+  refreshRenderedElementMaps();
+  syncRenderedVisualState();
+});
+
+watch([selectedWordsRef, selectedGapsRef], () => {
+  if (isDragging.value) return;
+  syncSelectionClasses();
+});
+
 watch(currentWordIndex, (newIndex) => {
-  if (newIndex < 0) return;
+  syncCurrentWordClass(newIndex);
+  if (props.performanceMode || newIndex < 0) return;
   requestAnimationFrame(() => {
     keepCurrentWordInView(newIndex, { behavior: 'smooth' });
   });
+});
+
+watch(jumpFocusedWordIndex, (newIndex) => {
+  syncJumpFocusedClass(newIndex);
 });
 
 // Emit current word click for video seeking
@@ -746,6 +969,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  performanceMode: {
+    type: Boolean,
+    default: false
+  },
   sliceActionBusy: {
     type: Boolean,
     default: false
@@ -760,7 +987,7 @@ function keepCurrentWordInView(index, { behavior = 'smooth', highlight = false }
   const container = editorContainer.value;
   if (!container) return;
 
-  const wordEl = container.querySelector(`.word[data-index="${index}"]`);
+  const wordEl = renderedWordElements.get(index);
   if (!wordEl) return;
 
   const containerRect = container.getBoundingClientRect();
@@ -1093,6 +1320,7 @@ export default {
   overflow-y: auto;
   padding: 20px;
   user-select: none;
+  contain: layout paint style;
 }
 
 @media (max-width: 1280px) {
@@ -1287,5 +1515,27 @@ export default {
 
 .context-menu-item.danger {
   color: #ff9a9a;
+}
+
+.subtitle-editor.performance-mode .word,
+.subtitle-editor.performance-mode .gap,
+.subtitle-editor.performance-mode .editor-btn {
+  transition: none !important;
+}
+
+.subtitle-editor.performance-mode .word:hover:not(.selected),
+.subtitle-editor.performance-mode .gap:hover {
+  background: inherit;
+  border-color: inherit;
+}
+
+.subtitle-editor.performance-mode .word .time-hint {
+  display: none;
+}
+
+.subtitle-editor.performance-mode .word.jump-focused:not(.selected),
+.subtitle-editor.performance-mode .word.in-active-slice:not(.selected):not(.deleted),
+.subtitle-editor.performance-mode .word.has-slice-fill:not(.selected):not(.deleted) {
+  box-shadow: inset 0 -1px 0 var(--word-slice-color, transparent);
 }
 </style>

@@ -22,7 +22,7 @@
     />
     <div v-if="isLoading" class="state-shell">正在加载项目工作台...</div>
     <div v-else-if="error" class="state-shell error">{{ error }}</div>
-    <div v-else class="workspace-shell">
+    <div v-else class="workspace-shell" :class="{ 'workspace-resizing': isPaneResizing }">
       <WorkspaceTopbar
         :project-name="project?.name || ''"
         :project-description="project?.description || ''"
@@ -255,6 +255,7 @@
               :can-remove-selection-from-slice="canRemoveSelectionFromSlice"
               :can-delete-selected-slice="Boolean(selectedSliceId)"
               :can-open-document="canOpenDocumentPreview"
+              :performance-mode="isPaneResizing"
               :slice-action-busy="sliceMutationBusy"
               @update:workspace-mode="workspaceMode = $event"
               @open-document="openDocumentPreview()"
@@ -297,6 +298,7 @@
               :pending-confirmation-run="pendingConfirmationRun"
               :show-thinking-bubble="showThinkingBubble"
               :status-label="agentStatusLabel"
+              :performance-mode="isPaneResizing"
               :mode-value="agentMode"
               :prompt-value="agentPrompt"
               :placeholder="agentPlaceholder"
@@ -501,6 +503,7 @@ const contextMenu = ref({
 let confirmDialogAction = null;
 const {
   agentCollapsed,
+  isPaneResizing,
   panelSizes,
   persistPanelSizes,
   sidebarCollapsed,
@@ -2785,6 +2788,18 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-rows: 52px minmax(0, 1fr);
   overflow: hidden;
+}
+
+.workspace-shell.workspace-resizing,
+.workspace-shell.workspace-resizing * {
+  cursor: inherit !important;
+}
+
+.workspace-shell.workspace-resizing .sidebar,
+.workspace-shell.workspace-resizing .editor-panel,
+.workspace-shell.workspace-resizing .agent-panel {
+  will-change: width, height;
+  pointer-events: none;
 }
 
 .text-link {

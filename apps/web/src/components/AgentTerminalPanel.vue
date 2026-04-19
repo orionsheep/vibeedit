@@ -1,5 +1,5 @@
 <template>
-  <div class="agent-terminal">
+  <div class="agent-terminal" :class="{ 'performance-mode': props.performanceMode }">
     <div class="terminal-toolbar">
       <button class="terminal-link" :disabled="!canOpenDocument" @click="$emit('open-document')">文稿</button>
       <button class="terminal-link" :disabled="runningAgent" @click="$emit('new-session')">新会话</button>
@@ -128,7 +128,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { renderAgentMarkdown } from '../utils/agentMarkdown';
 
 const props = defineProps({
@@ -143,6 +143,7 @@ const props = defineProps({
   runningAgent: { type: Boolean, default: false },
   stoppingAgent: { type: Boolean, default: false },
   canStop: { type: Boolean, default: false },
+  performanceMode: { type: Boolean, default: false },
   canOpenDocument: { type: Boolean, default: false },
   documentActionLabel: { type: String, default: '打开文稿' }
 });
@@ -160,6 +161,7 @@ const emit = defineEmits([
 
 const scrollRef = ref(null);
 const isComposing = ref(false);
+let scrollAnimationFrame = null;
 
 const STAGE_DEFINITIONS = [
   { key: 'plan', label: '理解' },
@@ -231,13 +233,34 @@ const thinkingSubtitle = computed(() => {
 });
 
 function scrollToBottom() {
-  nextTick(() => {
-    if (!scrollRef.value) return;
-    scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
+  if (props.performanceMode) return;
+  if (scrollAnimationFrame) return;
+
+  scrollAnimationFrame = requestAnimationFrame(() => {
+    scrollAnimationFrame = null;
+    nextTick(() => {
+      if (!scrollRef.value) return;
+      scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
+    });
   });
 }
 
-watch(() => [props.messages.length, props.events.length, props.showThinkingBubble], scrollToBottom, { deep: true });
+watch(
+  () => [
+    props.messages.length,
+    props.events.length,
+    props.showThinkingBubble,
+    props.pendingConfirmationRun ? 1 : 0
+  ],
+  scrollToBottom
+);
+
+onUnmounted(() => {
+  if (scrollAnimationFrame) {
+    cancelAnimationFrame(scrollAnimationFrame);
+    scrollAnimationFrame = null;
+  }
+});
 
 function handleCompositionStart() {
   isComposing.value = true;
@@ -335,6 +358,21 @@ function handlePromptKeydown(event) {
   background-size: 210% 100%;
   animation: thinkingSweep 3.4s linear infinite;
   pointer-events: none;
+}
+
+.agent-terminal.performance-mode .thinking-shell::before,
+.agent-terminal.performance-mode .meter-bar,
+.agent-terminal.performance-mode .reactor-ring,
+.agent-terminal.performance-mode .reactor-core {
+  animation: none !important;
+}
+
+.agent-terminal.performance-mode .thinking-shell,
+.agent-terminal.performance-mode .terminal-entry,
+.agent-terminal.performance-mode .primary-btn,
+.agent-terminal.performance-mode .ghost-btn,
+.agent-terminal.performance-mode .terminal-link {
+  transition: none !important;
 }
 
 .tone-hold .thinking-shell {
