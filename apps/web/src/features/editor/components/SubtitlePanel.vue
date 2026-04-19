@@ -139,7 +139,7 @@
 
       <div class="editor-container" ref="editorContainer" @mousedown="handleContainerMouseDown">
         <div class="text-content">
-          <div
+          <span
             v-for="chunk in wordRenderChunks"
             :key="chunk.id"
             class="text-chunk"
@@ -189,7 +189,7 @@
                 <span class="gap-label">{{ item.gap.duration.toFixed(1) }}s</span>
               </span>
             </template>
-          </div>
+          </span>
         </div>
       </div>
 
@@ -1013,6 +1013,11 @@ export default {
 }
 
 .text-chunk {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+  line-height: inherit;
+  font-size: inherit;
   content-visibility: auto;
   contain-intrinsic-size: auto 220px;
 }
