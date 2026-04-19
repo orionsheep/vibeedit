@@ -2,7 +2,7 @@
   <div class="landing">
     <section class="hero">
       <div class="hero-copy">
-        <div class="eyebrow">AUTOEDIT</div>
+        <div class="eyebrow">VIBEEDIT</div>
         <h1>只做 Agent 剪辑与字幕</h1>
         <p>
           这是一个本地优先的视频剪辑工作台。它不再追求语音合成、设备播放、声音克隆这些分散能力，

@@ -1,7 +1,7 @@
 <template>
   <div class="home">
     <div class="intro">
-      <div class="eyebrow">AUTOEDIT</div>
+      <div class="eyebrow">VIBEEDIT</div>
       <h2>快速导入素材，接入项目系统</h2>
       <p>这里不再直接把用户送进旧的单视频编辑页。上传后，素材会先进入素材库，再可选择挂到某个项目下，最后进入多视频工作台。</p>
     </div>

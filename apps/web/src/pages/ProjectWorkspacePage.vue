@@ -25,7 +25,7 @@
     <div v-else class="workspace-shell">
       <header class="workspace-topbar">
         <div class="topbar-left">
-          <router-link class="brand-link" to="/projects">AUTOEDIT</router-link>
+          <router-link class="brand-link" to="/projects">VIBEEDIT</router-link>
           <nav class="workspace-nav">
             <router-link to="/projects">项目</router-link>
             <router-link to="/library">素材库</router-link>

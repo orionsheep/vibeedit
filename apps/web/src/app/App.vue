@@ -1,7 +1,7 @@
 <template>
   <div id="app">
     <nav class="nav" v-if="showNav">
-      <h1 class="logo">AUTOEDIT</h1>
+      <h1 class="logo">VIBEEDIT</h1>
       <div class="nav-links">
         <router-link to="/projects">项目</router-link>
         <router-link to="/library">素材库</router-link>

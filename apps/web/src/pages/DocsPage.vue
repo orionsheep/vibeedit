@@ -1,7 +1,7 @@
 <template>
   <div class="docs">
     <aside class="sidebar">
-      <div class="sidebar-title">AUTOEDIT Docs</div>
+      <div class="sidebar-title">VIBEEDIT Docs</div>
       <a href="#scope">项目范围</a>
       <a href="#install">安装</a>
       <a href="#run">启动</a>
@@ -13,7 +13,7 @@
 
     <main class="content">
       <section id="scope">
-        <h1>AutoEdit 文档</h1>
+        <h1>VibeEdit 文档</h1>
         <p>
           这个项目现在只保留一条能力主线：<strong>Agent 剪辑 + 字幕生成 / 编辑</strong>。
           多引擎语音合成、设备发现、声音克隆与设计都已经被移出产品范围。
