@@ -921,6 +921,7 @@ const masterDocumentSection = computed(() => {
     id: 'master',
     title: isLiveSlicingMode.value ? '当前成片文稿' : '项目文稿',
     timeLabel: formatRangeLabel(0, totalDuration),
+    durationLabel: formatDuration(totalDuration),
     kicker: `${formatDuration(totalDuration)} · ${paragraphs.length || 0} 段`,
     preview: paragraphs[0]?.slice(0, 80) || fullText.slice(0, 80),
     paragraphs,
@@ -938,11 +939,13 @@ const sliceDocumentSections = computed(() => projectSlices.value.map((slice) => 
   const ranges = Array.isArray(detail?.ranges) ? detail.ranges : [];
   const rangeStart = ranges.length ? Math.min(...ranges.map((range) => Number(range.start || 0))) : 0;
   const rangeEnd = ranges.length ? Math.max(...ranges.map((range) => Number(range.end || 0))) : Number(slice.total_duration || detail?.total_duration || 0);
+  const totalDuration = Number(slice.total_duration || detail?.total_duration || 0);
   return {
     id: slice.id,
     title: slice.title || slice.name || '未命名切片',
     timeLabel: formatRangeLabel(rangeStart, rangeEnd),
-    kicker: `${formatDuration(slice.total_duration || detail?.total_duration || 0)} · ${paragraphs.length || 0} 段`,
+    durationLabel: formatDuration(totalDuration),
+    kicker: `${formatDuration(totalDuration)} · ${paragraphs.length || 0} 段`,
     preview: (paragraphs[0] || fullText || '点击查看该切片文稿').slice(0, 80),
     paragraphs,
     fullText

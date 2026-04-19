@@ -19,8 +19,11 @@
               :class="{ active: section.id === activeSectionId }"
               @click="$emit('select-section', section.id)"
             >
-              <span class="document-section-kicker">{{ section.timeLabel || section.kicker || '文稿' }}</span>
+              <span class="document-section-kicker">{{ section.timeLabel || '文稿' }}</span>
               <strong>{{ section.title }}</strong>
+              <small class="document-section-meta">
+                {{ section.durationLabel ? `片段时长 ${section.durationLabel}` : (section.kicker || '文稿') }}
+              </small>
               <small>{{ section.preview || '点击查看内容' }}</small>
             </button>
           </aside>
@@ -32,7 +35,10 @@
               <header class="document-active-head">
                 <div>
                   <strong>{{ activeSection.title }}</strong>
-                  <span>{{ activeSection.timeLabel || activeSection.kicker || '文稿' }}</span>
+                  <div class="document-active-meta">
+                    <span>{{ activeSection.timeLabel || '文稿' }}</span>
+                    <span>{{ activeSection.durationLabel ? `片段时长 ${activeSection.durationLabel}` : (activeSection.kicker || '文稿') }}</span>
+                  </div>
                 </div>
               </header>
 
@@ -177,6 +183,10 @@ const activeSection = computed(() => (
   color: #90a7b7;
 }
 
+.document-section-meta {
+  color: #7fa6bf;
+}
+
 .document-content {
   min-height: 0;
   overflow: auto;
@@ -197,9 +207,15 @@ const activeSection = computed(() => (
 }
 
 .document-active-head span {
-  margin-left: 8px;
   font-size: 12px;
   color: #89aac2;
+}
+
+.document-active-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .document-paragraph-list {
