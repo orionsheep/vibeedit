@@ -96,7 +96,7 @@
       </header>
 
       <div class="workspace-body" :style="workspaceLayoutStyle">
-        <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }" @contextmenu.stop>
+        <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }" :style="sidebarStyle" @contextmenu.stop>
           <template v-if="!sidebarCollapsed">
             <div class="sidebar-tabs-shell">
               <div class="sidebar-tabs">
@@ -114,167 +114,167 @@
             </div>
 
             <div class="sidebar-panel">
-            <template v-if="activeSidebarTab === 'assets'">
-              <div class="sidebar-head">
-                <strong>项目素材</strong>
-                <span>{{ orderedProjectAssets.length }}</span>
-              </div>
+              <template v-if="activeSidebarTab === 'assets'">
+                <div class="sidebar-head">
+                  <strong>项目素材</strong>
+                  <span>{{ orderedProjectAssets.length }}</span>
+                </div>
 
-              <div
-                class="project-upload-zone"
-                :class="{ active: projectUploadDragActive, busy: uploadingProjectAssets }"
-                @click="triggerProjectUploadPicker"
-                @dragenter.prevent="handleProjectUploadDragEnter"
-                @dragover.prevent="handleProjectUploadDragOver"
-                @dragleave.prevent="handleProjectUploadDragLeave"
-                @drop.prevent="handleProjectUploadDrop"
-              >
-                <input
-                  ref="projectUploadInputRef"
-                  class="project-upload-input"
-                  type="file"
-                  accept="video/*,.mp4,.mov,.m4v,.mkv,.webm"
-                  multiple
-                  @change="handleProjectUploadSelection"
-                />
-                <strong>{{ uploadingProjectAssets ? `上传中 ${projectUploadProgress}%` : '上传素材' }}</strong>
-                <span>
-                  {{ uploadingProjectAssets
-                    ? '素材会自动进入素材库并加入当前项目'
-                    : '点击选择或拖拽视频到这里，上传后自动加入当前项目' }}
-                </span>
-              </div>
-
-              <div v-if="!orderedProjectAssets.length" class="empty-block">这个项目里还没有素材。</div>
-
-              <div v-else class="asset-list">
                 <div
-                  v-for="(asset, index) in orderedProjectAssets"
-                  :key="asset.id"
-                  class="asset-row"
-                  :class="{
-                    active: selectedAssetId === asset.id,
-                    dragging: draggedAssetId === asset.id,
-                    'drop-target': dragOverAssetId === asset.id
-                  }"
-                  :style="assetRowStyle(asset.id)"
-                  draggable="true"
-                  tabindex="0"
-                  @click="selectAsset(asset.id)"
-                  @contextmenu.prevent.stop="openAssetContextMenu($event, asset.id)"
-                  @dragstart="handleAssetDragStart(asset.id)"
-                  @dragover.prevent="handleAssetDragOver(asset.id)"
-                  @dragenter.prevent="handleAssetDragOver(asset.id)"
-                  @drop.prevent="handleAssetDrop(asset.id)"
-                  @dragend="handleAssetDragEnd"
+                  class="project-upload-zone"
+                  :class="{ active: projectUploadDragActive, busy: uploadingProjectAssets }"
+                  @click="triggerProjectUploadPicker"
+                  @dragenter.prevent="handleProjectUploadDragEnter"
+                  @dragover.prevent="handleProjectUploadDragOver"
+                  @dragleave.prevent="handleProjectUploadDragLeave"
+                  @drop.prevent="handleProjectUploadDrop"
                 >
-                  <span class="asset-drag" title="拖动排序">⋮⋮</span>
-                  <span class="asset-order">{{ index + 1 }}</span>
-                  <span class="asset-swatch"></span>
-                  <span class="asset-copy">
-                    <strong>{{ asset.title }}</strong>
-                    <small>{{ formatDuration(asset.duration_seconds) }}</small>
-                    <div
-                      v-if="isAssetProcessing(asset)"
-                      class="asset-progress"
-                    >
-                      <div class="asset-progress-head">
-                        <span>{{ assetProgressLabel(asset) }}</span>
-                        <strong>{{ assetProgressValue(asset) }}%</strong>
-                      </div>
-                      <div class="asset-progress-track">
-                        <span class="asset-progress-fill" :style="{ width: `${assetProgressValue(asset)}%` }"></span>
-                      </div>
-                      <span class="asset-progress-note">{{ assetProgressMessage(asset) }}</span>
-                    </div>
+                  <input
+                    ref="projectUploadInputRef"
+                    class="project-upload-input"
+                    type="file"
+                    accept="video/*,.mp4,.mov,.m4v,.mkv,.webm"
+                    multiple
+                    @change="handleProjectUploadSelection"
+                  />
+                  <strong>{{ uploadingProjectAssets ? `上传中 ${projectUploadProgress}%` : '上传素材' }}</strong>
+                  <span>
+                    {{ uploadingProjectAssets
+                      ? '素材会自动进入素材库并加入当前项目'
+                      : '点击选择或拖拽视频到这里，上传后自动加入当前项目' }}
                   </span>
-                  <span class="asset-actions">
-                    <span class="asset-state" :class="{ processing: isAssetProcessing(asset), failed: asset.asr_status === 'failed' }">
-                      {{ assetStateLabel(asset) }}
+                </div>
+
+                <div v-if="!orderedProjectAssets.length" class="empty-block">这个项目里还没有素材。</div>
+
+                <div v-else class="asset-list">
+                  <div
+                    v-for="(asset, index) in orderedProjectAssets"
+                    :key="asset.id"
+                    class="asset-row"
+                    :class="{
+                      active: selectedAssetId === asset.id,
+                      dragging: draggedAssetId === asset.id,
+                      'drop-target': dragOverAssetId === asset.id
+                    }"
+                    :style="assetRowStyle(asset.id)"
+                    draggable="true"
+                    tabindex="0"
+                    @click="selectAsset(asset.id)"
+                    @contextmenu.prevent.stop="openAssetContextMenu($event, asset.id)"
+                    @dragstart="handleAssetDragStart(asset.id)"
+                    @dragover.prevent="handleAssetDragOver(asset.id)"
+                    @dragenter.prevent="handleAssetDragOver(asset.id)"
+                    @drop.prevent="handleAssetDrop(asset.id)"
+                    @dragend="handleAssetDragEnd"
+                  >
+                    <span class="asset-drag" title="拖动排序">⋮⋮</span>
+                    <span class="asset-order">{{ index + 1 }}</span>
+                    <span class="asset-swatch"></span>
+                    <span class="asset-copy">
+                      <strong>{{ asset.title }}</strong>
+                      <small>{{ formatDuration(asset.duration_seconds) }}</small>
+                      <div
+                        v-if="isAssetProcessing(asset)"
+                        class="asset-progress"
+                      >
+                        <div class="asset-progress-head">
+                          <span>{{ assetProgressLabel(asset) }}</span>
+                          <strong>{{ assetProgressValue(asset) }}%</strong>
+                        </div>
+                        <div class="asset-progress-track">
+                          <span class="asset-progress-fill" :style="{ width: `${assetProgressValue(asset)}%` }"></span>
+                        </div>
+                        <span class="asset-progress-note">{{ assetProgressMessage(asset) }}</span>
+                      </div>
                     </span>
-                    <button
-                      v-if="String(asset.asr_status || '') === 'failed'"
-                      class="asset-retry-btn"
-                      :disabled="isRetryingAsset(asset.id)"
-                      title="重试转写"
-                      @click.stop="retryAssetTranscription(asset.id)"
-                    >
-                      {{ isRetryingAsset(asset.id) ? '重试中' : '重试' }}
-                    </button>
-                    <button
-                      class="asset-remove-btn"
-                      title="从项目中删除"
-                      @click.stop="removeAssetFromProjectAction(asset.id)"
-                    >
-                      ×
-                    </button>
-                  </span>
-                </div>
-              </div>
-
-              <div class="mini-context">
-                <div class="mini-context-item">
-                  <span>当前素材</span>
-                  <strong>{{ currentContextAsset?.title || selectedAsset?.title || '未选择' }}</strong>
-                </div>
-                <div class="mini-context-item">
-                  <span>当前时间</span>
-                  <strong>{{ formatDuration(editorStore.currentTime || 0) }}</strong>
-                </div>
-              </div>
-            </template>
-
-            <template v-else>
-              <div class="sidebar-head">
-                <strong>时间线快照</strong>
-                <button class="text-link" :disabled="savingSnapshot" @click="saveSnapshot">
-                  {{ savingSnapshot ? '保存中...' : '保存快照' }}
-                </button>
-              </div>
-              <div v-if="!snapshots.length" class="empty-block">还没有快照记录。</div>
-              <div v-else class="list-stack">
-                <div v-for="snapshot in snapshots" :key="snapshot.id" class="list-row">
-                  <div class="list-row-title">{{ snapshot.source }}</div>
-                  <div class="list-row-note">{{ snapshot.note || '无说明' }}</div>
-                  <div class="list-row-meta">
-                    <span>{{ formatDateTime(snapshot.createdAt || snapshot.created_at) }}</span>
+                    <span class="asset-actions">
+                      <span class="asset-state" :class="{ processing: isAssetProcessing(asset), failed: asset.asr_status === 'failed' }">
+                        {{ assetStateLabel(asset) }}
+                      </span>
+                      <button
+                        v-if="String(asset.asr_status || '') === 'failed'"
+                        class="asset-retry-btn"
+                        :disabled="isRetryingAsset(asset.id)"
+                        title="重试转写"
+                        @click.stop="retryAssetTranscription(asset.id)"
+                      >
+                        {{ isRetryingAsset(asset.id) ? '重试中' : '重试' }}
+                      </button>
+                      <button
+                        class="asset-remove-btn"
+                        title="从项目中删除"
+                        @click.stop="removeAssetFromProjectAction(asset.id)"
+                      >
+                        ×
+                      </button>
+                    </span>
                   </div>
                 </div>
-              </div>
-            </template>
+
+                <div class="mini-context">
+                  <div class="mini-context-item">
+                    <span>当前素材</span>
+                    <strong>{{ currentContextAsset?.title || selectedAsset?.title || '未选择' }}</strong>
+                  </div>
+                  <div class="mini-context-item">
+                    <span>当前时间</span>
+                    <strong>{{ formatDuration(editorStore.currentTime || 0) }}</strong>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="sidebar-head">
+                  <strong>时间线快照</strong>
+                  <button class="text-link" :disabled="savingSnapshot" @click="saveSnapshot">
+                    {{ savingSnapshot ? '保存中...' : '保存快照' }}
+                  </button>
+                </div>
+                <div v-if="!snapshots.length" class="empty-block">还没有快照记录。</div>
+                <div v-else class="list-stack">
+                  <div v-for="snapshot in snapshots" :key="snapshot.id" class="list-row">
+                    <div class="list-row-title">{{ snapshot.source }}</div>
+                    <div class="list-row-note">{{ snapshot.note || '无说明' }}</div>
+                    <div class="list-row-meta">
+                      <span>{{ formatDateTime(snapshot.createdAt || snapshot.created_at) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
+
+            <div class="pane-resizer horizontal sidebar-preview-resizer" @mousedown="startResize('preview', $event)"></div>
+
+            <section class="sidebar-preview-slot">
+              <div class="preview-card preview-card-compact">
+                <div class="preview-head">
+                  <strong>预览</strong>
+                  <span>{{ previewLabel }}</span>
+                </div>
+                <div class="preview-frame">
+                  <ProjectCompositionPreview
+                    ref="previewPlayerRef"
+                    :clips="activePreviewClips"
+                    :project-time="currentPreviewTime"
+                    :duration="currentPreviewDuration"
+                    :display-time="currentPreviewTime"
+                    :display-duration="currentPreviewDuration"
+                    :empty-label="isLiveSlicingMode ? '先让右侧 Agent 生成切片，或在字幕里手动框选后新建切片。' : '当前项目时间线上还没有可预览的成片片段。'"
+                    @project-time-update="handlePreviewProjectTimeUpdate"
+                    @clip-change="handlePreviewClipChange"
+                    @playing-change="handlePreviewPlayingChange"
+                  />
+                </div>
+              </div>
+            </section>
           </template>
           <button v-else class="panel-reveal-btn" @click="toggleSidebarCollapsed">素材</button>
         </aside>
 
         <div class="pane-resizer vertical" @mousedown="startResize('sidebar', $event)"></div>
 
-        <main class="editor-panel" :style="editorPanelStyle" @contextmenu.stop>
-          <section class="preview-slot">
-            <div class="preview-card">
-              <div class="preview-head">
-                <strong>预览</strong>
-                <span>{{ previewLabel }}</span>
-              </div>
-              <div class="preview-frame">
-                <ProjectCompositionPreview
-                  ref="previewPlayerRef"
-                  :clips="activePreviewClips"
-                  :project-time="currentPreviewTime"
-                  :duration="currentPreviewDuration"
-                  :display-time="currentPreviewTime"
-                  :display-duration="currentPreviewDuration"
-                  :empty-label="isLiveSlicingMode ? '先让右侧 Agent 生成切片，或在字幕里手动框选后新建切片。' : '当前项目时间线上还没有可预览的成片片段。'"
-                  @project-time-update="handlePreviewProjectTimeUpdate"
-                  @clip-change="handlePreviewClipChange"
-                  @playing-change="handlePreviewPlayingChange"
-                />
-              </div>
-            </div>
-          </section>
-
-          <div class="pane-resizer horizontal" @mousedown="startResize('preview', $event)"></div>
-
+        <main class="editor-panel" @contextmenu.stop>
           <section class="subtitle-workspace">
             <SubtitlePanel
               class="project-subtitle-panel"
@@ -731,8 +731,8 @@ const workspaceLayoutStyle = computed(() => ({
   '--agent-width': `${agentCollapsed.value ? 34 : panelSizes.value.agentWidth}px`
 }));
 
-const editorPanelStyle = computed(() => ({
-  '--preview-height': `${panelSizes.value.previewHeight}px`
+const sidebarStyle = computed(() => ({
+  '--sidebar-preview-height': `${panelSizes.value.previewHeight}px`
 }));
 
 const contextMenuStyle = computed(() => ({
@@ -3167,8 +3167,8 @@ onBeforeUnmount(() => {
 }
 
 .sidebar {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 8px var(--sidebar-preview-height, 180px);
 }
 
 .sidebar.collapsed,
@@ -3245,6 +3245,13 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 8px;
   overflow: hidden;
+}
+
+.sidebar-preview-slot {
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid #14212c;
+  background: #060b11;
 }
 
 .sidebar-head {
@@ -3532,11 +3539,9 @@ onBeforeUnmount(() => {
 .editor-panel {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: var(--preview-height) 8px minmax(0, 1fr);
+  display: block;
 }
 
-.preview-slot,
 .subtitle-workspace {
   min-height: 0;
   overflow: hidden;
@@ -3580,9 +3585,22 @@ onBeforeUnmount(() => {
   background: #000;
 }
 
+.preview-card-compact {
+  padding: 6px;
+}
+
+.preview-card-compact .preview-head {
+  font-size: 11px;
+}
+
+.preview-card-compact .preview-head span {
+  font-size: 10px;
+}
+
 .subtitle-workspace {
   display: grid;
   grid-template-rows: minmax(0, 1fr) 100px 28px;
+  height: 100%;
 }
 
 .editor-status-bar {
