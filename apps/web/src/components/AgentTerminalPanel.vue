@@ -88,6 +88,7 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue';
+import MarkdownIt from 'markdown-it';
 
 const props = defineProps({
   messages: { type: Array, default: () => [] },
@@ -118,107 +119,14 @@ const emit = defineEmits([
 
 const scrollRef = ref(null);
 const isComposing = ref(false);
-
-function escapeHtml(value = '') {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-function renderInlineMarkdown(value = '') {
-  let text = escapeHtml(value);
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  return text;
-}
-
-function parseTableRow(line = '') {
-  return String(line)
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => renderInlineMarkdown(cell.trim()));
-}
-
-function isTableSeparator(line = '') {
-  const trimmed = String(line).trim();
-  return /^\|?[\s:-|]+\|?\s*$/.test(trimmed);
-}
+const markdown = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true
+});
 
 function renderMarkdown(content = '') {
-  const lines = String(content || '').replace(/\r\n/g, '\n').split('\n');
-  const html = [];
-  const blocks = [];
-  let currentBlock = [];
-
-  for (const rawLine of lines) {
-    if (!String(rawLine || '').trim()) {
-      if (currentBlock.length) {
-        blocks.push(currentBlock);
-        currentBlock = [];
-      }
-      continue;
-    }
-    currentBlock.push(rawLine);
-  }
-  if (currentBlock.length) {
-    blocks.push(currentBlock);
-  }
-
-  for (const block of blocks) {
-    const first = String(block[0] || '').trim();
-
-    if (block.length === 1 && (/^---+$/.test(first) || /^\*\*\*+$/.test(first))) {
-      html.push('<hr />');
-      continue;
-    }
-
-    const headingMatch = first.match(/^(#{1,6})\s+(.*)$/);
-    if (block.length === 1 && headingMatch) {
-      const level = headingMatch[1].length;
-      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
-      continue;
-    }
-
-    if (block.length >= 2 && String(block[0] || '').trim().startsWith('|') && isTableSeparator(block[1])) {
-      const headerCells = parseTableRow(block[0]);
-      const bodyRows = block.slice(2)
-        .filter((line) => String(line || '').trim().startsWith('|'))
-        .map((line) => parseTableRow(line));
-      html.push([
-        '<table>',
-        `<thead><tr>${headerCells.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead>`,
-        bodyRows.length
-          ? `<tbody>${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody>`
-          : '',
-        '</table>'
-      ].join(''));
-      continue;
-    }
-
-    const isOrderedList = block.every((line) => /^\d+\.\s+/.test(String(line || '').trim()));
-    const isUnorderedList = block.every((line) => /^[-*]\s+/.test(String(line || '').trim()));
-    if (isOrderedList || isUnorderedList) {
-      const items = block.map((line) => {
-        const trimmed = String(line || '').trim();
-        const content = isOrderedList
-          ? trimmed.replace(/^\d+\.\s+/, '')
-          : trimmed.replace(/^[-*]\s+/, '');
-        return `<li>${renderInlineMarkdown(content)}</li>`;
-      });
-      html.push(isOrderedList ? `<ol>${items.join('')}</ol>` : `<ul>${items.join('')}</ul>`);
-      continue;
-    }
-
-    html.push(`<p>${block.map((line) => renderInlineMarkdown(line)).join('<br />')}</p>`);
-  }
-
-  return html.join('');
+  return markdown.render(String(content || ''));
 }
 
 function scrollToBottom() {
@@ -387,6 +295,8 @@ function handlePromptKeydown(event) {
 .entry-markdown :deep(table) {
   width: 100%;
   border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
 }
 
 .entry-markdown :deep(th),
