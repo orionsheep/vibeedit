@@ -2251,6 +2251,32 @@ export async function toolRemovePauses(
   args = {},
   context = {}
 ) {
+  return applyPauseCleanup(projectId, args, context, {
+    changeName: 'remove_pauses',
+    forceFullSweep: false
+  });
+}
+
+export async function toolRemoveAllPauses(
+  projectId,
+  args = {},
+  context = {}
+) {
+  return applyPauseCleanup(projectId, args, context, {
+    changeName: 'remove_all_pauses',
+    forceFullSweep: true
+  });
+}
+
+async function applyPauseCleanup(
+  projectId,
+  args = {},
+  context = {},
+  {
+    changeName = 'remove_pauses',
+    forceFullSweep = false
+  } = {}
+) {
   const hasExplicitMinGapSeconds = Object.prototype.hasOwnProperty.call(args || {}, 'min_gap_seconds');
   const {
     min_gap_seconds: minGapSeconds = 0.4,
@@ -2262,7 +2288,7 @@ export async function toolRemovePauses(
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
   const strictAssemble = String(context?.requestContext?.mode || '') === 'assemble_script';
-  const aggressiveRequest = Boolean(aggressive) || requestWantsAggressivePauseCleanup(context?.requestContext);
+  const aggressiveRequest = forceFullSweep || Boolean(aggressive) || requestWantsAggressivePauseCleanup(context?.requestContext);
 
   const requestedGapKeys = (Array.isArray(gapKeys) ? gapKeys : []).map((value) => String(value || '').trim()).filter(Boolean);
   if (strictAssemble && !requestedGapKeys.length && !aggressiveRequest) {
@@ -2274,7 +2300,7 @@ export async function toolRemovePauses(
     return {
       success: false,
       changed: false,
-      change: 'remove_pauses',
+      change: changeName,
       summary: '口播拼稿模式下不要直接按阈值整批扫停顿。请先调用 get_pause_candidates / get_assemble_candidates，挑具体 gap_keys 后再定点删除。',
       deleted_gap_count: 0,
       removed_seconds: 0,
@@ -2285,7 +2311,9 @@ export async function toolRemovePauses(
   const requestedGapKeySet = new Set(requestedGapKeys);
   const requestedGapMinimum = requestedGapKeys.length
     ? (hasExplicitMinGapSeconds ? Math.max(0, Number(minGapSeconds || 0)) : 0)
-    : (aggressiveRequest ? Math.min(Number(minGapSeconds || 0.4), 0.25) : Number(minGapSeconds || 0.4));
+    : (aggressiveRequest
+        ? Math.min(Number(minGapSeconds || (forceFullSweep ? 0.25 : 0.4)), forceFullSweep ? 0.2 : 0.25)
+        : Number(minGapSeconds || 0.4));
   const selectedCandidates = buildPauseCandidates(state, {
     minGapSeconds: requestedGapKeys.length
       ? 0
@@ -2305,8 +2333,8 @@ export async function toolRemovePauses(
     return {
       success: false,
       changed: false,
-      change: 'remove_pauses',
-      summary: '没有找到符合条件的明显停顿。',
+      change: changeName,
+      summary: forceFullSweep ? '没有找到可继续一键清理的停顿。' : '没有找到符合条件的明显停顿。',
       deleted_gap_count: 0,
       removed_seconds: 0
     };
@@ -2321,26 +2349,32 @@ export async function toolRemovePauses(
   const timeline = await persistEditableProjectState(projectId, state, {
     deletedGapKeys: [...deletedGapKeys].filter(Boolean),
     audit: buildAgentEditHistoryContext(
-      'remove_pauses',
+      changeName,
       {
-        min_gap_seconds: minGapSeconds,
+        min_gap_seconds: requestedGapMinimum,
         gap_keys: requestedGapKeys,
         asset_title: assetTitle,
-        aggressive: aggressiveRequest
+        aggressive: aggressiveRequest,
+        force_full_sweep: forceFullSweep
       },
       context,
-      aggressiveRequest
-        ? `Agent 全量清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
-        : `Agent 清理停顿阈值 ${Number(minGapSeconds || 0.4).toFixed(1)} 秒`
+      forceFullSweep
+        ? `Agent 一键去除全部停顿阈值 ${Number(requestedGapMinimum || 0.2).toFixed(2)} 秒`
+        : aggressiveRequest
+          ? `Agent 全量清理停顿阈值 ${Number(requestedGapMinimum || 0.25).toFixed(1)} 秒`
+          : `Agent 清理停顿阈值 ${Number(requestedGapMinimum || 0.4).toFixed(1)} 秒`
     )
   });
 
   return {
     success: true,
     changed: true,
-    change: 'remove_pauses',
-    summary: `${aggressiveRequest ? '已执行全量停顿清理，' : ''}已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
+    change: changeName,
+    summary: forceFullSweep
+      ? `已执行一键去除全部停顿，切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`
+      : `${aggressiveRequest ? '已执行全量停顿清理，' : ''}已切掉 ${selectedCandidates.length} 个停顿，总计约 ${removedSeconds.toFixed(1)} 秒。`,
     aggressive: aggressiveRequest,
+    force_full_sweep: forceFullSweep,
     targeted: requestedGapKeys.length > 0,
     requested_gap_key_count: requestedGapKeys.length,
     deleted_gap_count: selectedCandidates.length,

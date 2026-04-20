@@ -18,6 +18,7 @@ import {
   toolGetSubtitleBlocks,
   toolGetTimelineDetail,
   toolListProjectAssets,
+  toolRemoveAllPauses,
   toolRemovePauses,
   toolRemoveProjectAsset,
   toolReorderProjectAssets,
@@ -357,7 +358,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolGetAssembleCandidates(projectId, args)
   },
   get_pause_candidates: {
-    description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。优先看带“推荐”标签的候选。',
+    description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。优先看带“推荐”标签的候选；如果用户明确要“一键去掉全部停顿”，改用 remove_all_pauses。',
     schema: {
       min_gap_seconds: z.number().optional(),
       limit: z.number().optional(),
@@ -431,7 +432,7 @@ export const TOOL_DEFINITIONS = {
     execute: (projectId, args) => toolRestoreWordsByPhrase(projectId, args)
   },
   remove_pauses: {
-    description: '切掉明显停顿。口播拼稿模式下默认先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做 3-8 个间隙的小批量定点删除；如果用户明确要求“删掉所有/全部停顿”，可以传 aggressive=true 做一次全量清理。',
+    description: '切掉明显停顿。口播拼稿模式下默认先用 get_pause_candidates 或 get_assemble_candidates 读取候选 gap，再把 gap_keys 传给它做 3-8 个间隙的小批量定点删除。它适合局部、保守、可控的节奏清理。',
     schema: {
       min_gap_seconds: z.number().optional(),
       gap_keys: z.array(z.string()).optional(),
@@ -441,6 +442,15 @@ export const TOOL_DEFINITIONS = {
     },
     mutatesProject: true,
     execute: (projectId, args) => toolRemovePauses(projectId, args)
+  },
+  remove_all_pauses: {
+    description: '一键去除当前项目里所有可删停顿。它是确定性的全量脚本，不需要先传 gap_keys；当用户明确要求“把所有/全部停顿都删掉”“一键去除停顿”“彻底去掉间隙”时，优先用它，而不是循环调用 remove_pauses。',
+    schema: {
+      min_gap_seconds: z.number().optional(),
+      asset_title: z.string().optional()
+    },
+    mutatesProject: true,
+    execute: (projectId, args) => toolRemoveAllPauses(projectId, args)
   },
   clear_deleted: {
     description: '恢复整条项目时间线到完整素材状态，清空所有当前删减。只有用户明确要求“重来 / 从头开始 / 恢复完整”时才使用，平时不要擅自调用。',

@@ -136,11 +136,12 @@ function buildSystemPrompt({
           ? '当前这轮用户主要是在清理停顿/间隙，不是在重做拼稿。除非是极少量独立口头禅，否则不要删除整句、整段或重复块；优先只做 gap 清理。'
           : '删除整句、半句、重复 take、重复表达时，优先使用 delete_subtitle_blocks / restore_subtitle_blocks 做块级删改；不要为了省事在句子中间掏词。',
         'delete_words_by_phrase / restore_words_by_phrase 只用于独立短口头禅和语气词，例如“嗯”“啊”“呃”“就是”“那个”；不允许用它删除句中实词、主谓宾、连接逻辑或半句结构。',
-        '如果用户要求去口气词、口头禅、停顿、间隙或压紧节奏，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、get_pause_candidates、remove_pauses 等工具落地，而不是只在总结里声称处理过。',
+        '如果用户要求去口气词、口头禅、停顿、间隙或压紧节奏，你必须真正调用 delete_words_by_phrase、delete_subtitle_blocks、get_pause_candidates、remove_pauses、remove_all_pauses 等工具落地，而不是只在总结里声称处理过。',
         '处理停顿时，必须先读 get_pause_candidates 或 get_assemble_candidates 里的停顿候选；口播拼稿里，remove_pauses 默认应传 gap_keys 做 3-8 个间隙的小批量定点删除，不要用 2 秒/3 秒阈值整批扫停顿。',
-        '但如果用户明确要求“把所有/全部停顿都删掉”“彻底去掉停顿”，你可以在读完整上下文后直接调用 remove_pauses({ aggressive: true }) 做一次全量停顿清理；这时不必再拆成 3-8 个 gap_keys。',
+        '但如果用户明确要求“把所有/全部停顿都删掉”“彻底去掉停顿”“一键去停顿”，你应在读完整上下文后直接调用 remove_all_pauses() 这个确定性工具；不要再拆成多轮 gap_keys，也不要一边删一边猜。',
+        '参考成熟人工剪法：优先保留产品定位/核心价值、与现有方案的差异点、实际操作流程、典型使用场景这类完整表达单元；优先删除录制准备、口头确认、重复启承句、空转解释和无信息量重复举例。',
         '参考成熟人工剪法：先删整块重复，再分两到三轮切掉 0.35-1.2 秒的明显间隙；如果拿不准，就宁可少删一轮，也不要整段硬砍。',
-        '好的口播成片应尽量保持句义单元完整，主要通过删除重复块和 gap 来压紧节奏，而不是在句子中间抠几个字假装顺畅。',
+        '好的口播成片应尽量保持句义单元完整，主要通过删除重复块和 gap 来压紧节奏，而不是在句子中间抠几个字假装顺畅，也不要把视频剪成只剩关键词或标题。',
         '即使用户没有单独强调停顿，口播拼稿在完成主要语义删减后，也必须检查一次当前结果里是否还残留明显长停顿；若有，就调用 remove_pauses 做收尾清理，并确认 deleted_gap_count 真的增加。',
         '在你认为编辑完成后，必须做一次强制自我审查，而且不能只凭记忆判断；必须再次调用 get_script_blocks、必要时再调用 get_subtitle_blocks / get_timeline_detail，基于最新结果逐项复查。',
         '自我审查必须逐项检查这 8 点：1. 顺序是否正确；如果本轮涉及调序，必须确认只改了素材之间的顺序，没有改单个素材内部顺序；2. 句子是否通顺；3. 逻辑是否完整；4. 断句和衔接是否自然；5. 是否仍残留重复 take 或重复句；6. 停顿、口气词、口头禅是否真的去掉；7. 是否误删关键内容；8. 是否还存在一到两处明显可改进点。',
@@ -245,7 +246,7 @@ function buildUserPrompt({
     lines.push('这轮目标只是在当前结果上清理停顿/间隙并少量清理独立口头禅，不要顺手删整句、删整段、去重整块或重做口播结构。');
   }
   if (String(mode || '').trim() === 'assemble_script') {
-    lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。若用户明确要求“把所有/全部停顿都删掉”“彻底去掉停顿”，你可以直接调用 remove_pauses({ aggressive: true }) 做一次全量停顿清理。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
+    lines.push('请先理解需求，再通过工具完成修改。读操作不要过度扫描；写操作必须真实改动项目。默认是在当前已剪结果上继续局部修改，不要重来，也不要恢复完整项目，除非用户明确要求。默认保持当前顺序，不要擅自重排。当前网站没有正式的字词润色能力，所以不要改写原句；默认只做删除、恢复、去停顿和项目级管理。若用户明确要求改顺序，也只允许调整整段素材 / 整个文件之间的顺序，不要改单个视频素材内部的句子顺序、片段顺序或表达顺序。口播拼稿时不要凭几句样本或候选摘要就开始删减，必须先自己读到足够完整的当前脚本块和字幕块后再动手；如果 get_script_blocks / get_subtitle_blocks 没有限制参数，默认会直接给你全量，请优先这样读完整上下文。读完整脚本块和字幕块后，必须再调用一次 get_assemble_candidates 复查重复 take / 重复句候选，决定 no-op 前不能跳过这一步。处理停顿、间隙、节奏时，必须先调用 get_pause_candidates 或直接读取 get_assemble_candidates 里的停顿候选，再把具体 gap_keys 传给 remove_pauses 做 3-8 个间隙的小批量定点删除；不要只靠一句“我已经删了停顿”就结束，也不要用 2 秒/3 秒大阈值整批扫。若用户明确要求“把所有/全部停顿都删掉”“彻底去掉停顿”“一键去停顿”，你应直接调用 remove_all_pauses() 做一次确定性的全量停顿清理。参考成熟人工剪法：优先保留产品定位/核心价值、与现有方案的差异点、实际操作流程、典型使用场景这类完整表达单元；优先删除录制准备、口头确认、重复启承句、空转解释和无信息量重复举例。参考成熟人工剪法：先删块级重复，再分两到三轮清掉 0.35-1.2 秒的明显间隙。删整句、半句、重复 take、重复表达时优先用 delete_subtitle_blocks；delete_words_by_phrase 只允许删独立短口头禅和语气词，不允许在句子中间掏词。若用户要求去口气词、去口头禅、去停顿、删间隙或压紧节奏，必须真正调用对应工具落地；即使用户没特别强调停顿，也要在语义删减后检查一次是否还残留明显长停顿，并按需调用 remove_pauses 收尾，确认 deleted_gap_count 真的增加。工具执行完成后，不要立即结束；必须重新读取当前结果做一轮强制自我审查，并逐项检查这 8 项：顺序、通顺、逻辑完整、断句衔接、重复残留、停顿/口气词处理、误删关键内容、是否还有明显可改进点；如果本轮涉及调序，还必须确认只改了素材之间的顺序，没有改单素材内部顺序。只要任一项不通过，就继续修正。最终回复里必须清楚包含这 8 项检查结论。');
   } else if (String(mode || '').trim() === 'live_slicing') {
     lines.push('这是一条直播切片请求。优先围绕整条长视频生成、读取或管理多个切片，不要默认去改主时间线。若用户只是想先看候选或先分析全文，可以只调用只读和建议类切片工具；若用户明确要求生成切片，必须真实创建切片。回复时优先给出清晰的候选标题、时长、主题和后续动作建议。');
   } else if (requestProfile?.explicitReadOnlyProjectQuery) {
@@ -323,7 +324,7 @@ function summarizeAssembleAppliedChanges(appliedChanges = []) {
   return {
     savedSnapshot: tools.includes('save_snapshot'),
     reorderedAssets: tools.includes('reorder_project_assets'),
-    removedPauses: tools.includes('remove_pauses'),
+    removedPauses: tools.includes('remove_pauses') || tools.includes('remove_all_pauses'),
     deletedWords: tools.includes('delete_words_by_phrase'),
     deletedBlocks: tools.includes('delete_subtitle_blocks'),
     restoredWords: tools.includes('restore_words_by_phrase'),
@@ -344,8 +345,8 @@ function buildAssembleRecoveryReply(appliedChanges = [], recoveryReason = '') {
     : '本轮没有新的删除类工具记录，建议人工确认是否仍有重复段落残留。';
 
   const pauseSummary = flags.removedPauses
-    ? '本轮已调用 remove_pauses 处理明显停顿。'
-    : '本轮未记录 remove_pauses，建议人工确认是否仍有明显长停顿。';
+    ? '本轮已调用停顿清理工具处理明显停顿。'
+    : '本轮未记录停顿清理工具，建议人工确认是否仍有明显长停顿。';
 
   return [
     intro,
@@ -379,6 +380,7 @@ function isMutatingChange(change = {}) {
     'replace_subtitle_text',
     'restore_words_by_phrase',
     'remove_pauses',
+    'remove_all_pauses',
     'clear_deleted',
     'save_snapshot',
     'export_video',
@@ -397,6 +399,7 @@ function isTimelineEditingChange(change = {}) {
     'replace_subtitle_text',
     'restore_words_by_phrase',
     'remove_pauses',
+    'remove_all_pauses',
     'clear_deleted'
   ]).has(tool);
 }
@@ -426,7 +429,7 @@ function requestWantsAggressivePauseCleanup({ prompt = '', topic = '' } = {}) {
 function hasAppliedPauseCleanup(appliedChanges = []) {
   return appliedChanges.some((change) => (
     didChangeApply(change) &&
-    String(change.tool || change.change || '').trim() === 'remove_pauses' &&
+    ['remove_pauses', 'remove_all_pauses'].includes(String(change.tool || change.change || '').trim()) &&
     Number(change.deleted_gap_count || 0) > 0
   ));
 }
@@ -484,14 +487,14 @@ async function runAutomaticPauseCleanupFallback({
   });
 
   if (aggressive) {
-    await emitDirectToolLifecycle(emit, 'remove_pauses', { aggressive: true });
-    const removeResult = await executeProjectAgentToolDirect(projectId, 'remove_pauses', {
-      aggressive: true
+    await emitDirectToolLifecycle(emit, 'remove_all_pauses', {});
+    const removeResult = await executeProjectAgentToolDirect(projectId, 'remove_all_pauses', {
+      min_gap_seconds: 0.25
     }, toolContext);
-    await emitDirectToolLifecycle(emit, 'remove_pauses', { aggressive: true }, removeResult);
+    await emitDirectToolLifecycle(emit, 'remove_all_pauses', { min_gap_seconds: 0.25 }, removeResult);
     if (removeResult?.changed) {
       appliedChanges.push({
-        tool: 'remove_pauses',
+        tool: 'remove_all_pauses',
         ...removeResult
       });
     }
@@ -569,7 +572,7 @@ function buildAssembleReviewFollowupPrompt() {
     '现在禁止重来，也不要重新从头做一版；必须基于当前项目最新状态执行最终自审。',
     '先调用一次 get_script_blocks；只有在你确实需要补充确认时，才再调用 get_subtitle_blocks 或 get_timeline_detail。',
     '除非你明确发现严重问题，否则不要继续大改，也不要重排单个视频素材内部顺序。',
-    '如果当前任务包含“删停顿 / 删间隙 / 压紧节奏”，必须确认本轮真的通过 remove_pauses 切掉了 gap，而不是只删了字词。',
+    '如果当前任务包含“删停顿 / 删间隙 / 压紧节奏”，必须确认本轮真的通过 remove_pauses 或 remove_all_pauses 切掉了 gap，而不是只删了字词。',
     '最后只输出 8 行清单，不要写额外前言或总结；每行必须以对应关键词开头：顺序、通顺、逻辑、断句、重复、停顿、误删、改进。',
     '如果本轮涉及调序，必须明确说明只改了素材/文件之间的顺序，没有改单个素材内部顺序。',
     '如果你没有发现新增问题，就直接给出 8 行检查结论并结束。'
