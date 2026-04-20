@@ -192,6 +192,9 @@ function handleXmlExport() {
 
 <style scoped>
 .workspace-topbar {
+  position: relative;
+  z-index: 30;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -202,6 +205,7 @@ function handleXmlExport() {
   background: rgba(7, 13, 20, 0.95);
   backdrop-filter: blur(14px);
   box-shadow: inset 0 -1px 0 rgba(140, 234, 255, 0.06);
+  overflow: visible;
 }
 
 .topbar-left,
@@ -210,6 +214,7 @@ function handleXmlExport() {
   display: flex;
   align-items: center;
   gap: 10px;
+  overflow: visible;
 }
 
 .brand-link {
@@ -289,6 +294,7 @@ function handleXmlExport() {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+  overflow: visible;
 }
 
 .topbar-action-group {
@@ -345,6 +351,7 @@ function handleXmlExport() {
 
 .export-menu-shell {
   position: relative;
+  z-index: 60;
 }
 
 .export-trigger {
@@ -355,7 +362,7 @@ function handleXmlExport() {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 35;
+  z-index: 80;
   min-width: 168px;
   border: 1px solid var(--app-border-strong);
   background: rgba(9, 16, 25, 0.98);

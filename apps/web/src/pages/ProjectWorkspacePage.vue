@@ -2786,7 +2786,7 @@ onBeforeUnmount(() => {
 .workspace-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
