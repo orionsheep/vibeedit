@@ -2,6 +2,10 @@ import axios from 'axios';
 
 const API_BASE = '/api/projects';
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function listProjects() {
   const response = await axios.get(API_BASE);
   return response.data.projects || [];
@@ -229,6 +233,39 @@ export async function suggestProjectSlices(projectId, payload = {}) {
 export async function exportProjectVideo(projectId, payload = {}) {
   const response = await axios.post(`${API_BASE}/${projectId}/exports/video`, payload);
   return response.data;
+}
+
+export async function waitForProjectJob(projectId, jobId, {
+  timeoutMs = 15 * 60 * 1000,
+  pollMs = 1500,
+  onProgress = null
+} = {}) {
+  const normalizedJobId = String(jobId || '').trim();
+  if (!normalizedJobId) {
+    throw new Error('缺少导出任务 ID');
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const jobs = await listProjectJobs(projectId);
+    const job = jobs.find((entry) => String(entry.id || '') === normalizedJobId);
+
+    if (job) {
+      if (typeof onProgress === 'function') {
+        onProgress(job);
+      }
+      if (String(job.status || '') === 'completed') {
+        return job;
+      }
+      if (String(job.status || '') === 'failed') {
+        throw new Error(job.message || '导出任务失败');
+      }
+    }
+
+    await sleep(pollMs);
+  }
+
+  throw new Error('导出超时，请稍后重试');
 }
 
 export async function exportProjectPackage(projectId, payload = {}) {

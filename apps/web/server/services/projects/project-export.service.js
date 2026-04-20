@@ -170,6 +170,29 @@ export async function exportProjectTimelineVideo(projectId, { timelineId = '' } 
     message: 'Queued project video export'
   });
 
+  return runProjectTimelineVideoExportJob(job.id, projectId, { timelineId });
+}
+
+export async function queueProjectTimelineVideoExport(projectId, { timelineId = '' } = {}) {
+  const job = await createJob({
+    type: 'export.video',
+    payload: { projectId, timelineId },
+    projectId,
+    message: 'Queued project video export'
+  });
+
+  Promise.resolve()
+    .then(() => runProjectTimelineVideoExportJob(job.id, projectId, { timelineId }))
+    .catch((error) => {
+      console.error(`[export.video] background job ${job.id} failed:`, error);
+    });
+
+  return job;
+}
+
+async function runProjectTimelineVideoExportJob(jobId, projectId, { timelineId = '' } = {}) {
+  const job = { id: jobId };
+
   const project = await loadProjectExportData(projectId, timelineId);
   const timeline = selectTimelineForExport(project, timelineId);
   if (!timeline || !timeline.clips.length) {

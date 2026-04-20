@@ -397,7 +397,8 @@ import {
   runProjectAgentWithProgress,
   uploadProjectAssets,
   updateProjectEditState,
-  updateProjectSlice
+  updateProjectSlice,
+  waitForProjectJob
 } from '../features/projects/api/projectsApi';
 
 const route = useRoute();
@@ -2320,10 +2321,27 @@ async function handleExportVideo() {
     if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
       throw new Error('请先选择一个切片再导出视频');
     }
-    const result = await exportProjectVideo(projectId.value, {
+    const queued = await exportProjectVideo(projectId.value, {
       timelineId: activeExportTimelineId.value || undefined
     });
-    window.open(result.download_url, '_blank', 'noopener');
+    const completedJob = await waitForProjectJob(projectId.value, queued.job_id, {
+      onProgress: (job) => {
+        const progress = Number(job?.progress ?? 0);
+        const message = String(job?.message || '').trim();
+        if (message) {
+          error.value = '';
+        }
+        if (Number.isFinite(progress) && progress > 0 && progress < 100) {
+          exportMenuOpen.value = false;
+        }
+      }
+    });
+    const outputPath = String(completedJob?.result?.outputPath || '').trim();
+    const filename = outputPath.split('/').pop();
+    if (!filename) {
+      throw new Error('导出任务已完成，但未找到下载文件');
+    }
+    window.open(`/api/projects/${projectId.value}/downloads/${encodeURIComponent(filename)}`, '_blank', 'noopener');
   } catch (exportError) {
     window.alert(exportError.response?.data?.error || exportError.message || '导出视频失败');
   } finally {

@@ -8,7 +8,7 @@ import { createProject, deleteProject, getProjectById, listProjectCategories, li
 import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, listTimelineSnapshots, removeTimelineClip, replaceTimelineClips } from '../services/projects/timeline.service.js';
 import { getProjectEditState, realignProjectEditState, saveProjectEditState } from '../services/projects/project-edit-state.service.js';
 import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
-import { exportProjectPackage, exportProjectTimelineVideo } from '../services/projects/project-export.service.js';
+import { exportProjectPackage, queueProjectTimelineVideoExport } from '../services/projects/project-export.service.js';
 import { exportProjectInterchangeFile, exportProjectSliceXmlBundle, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
 import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
 import { createProjectSlice, deleteProjectSlice, getProjectSlice, listProjectSlices, suggestProjectSlices, updateProjectSlice } from '../services/projects/project-slice.service.js';
@@ -637,14 +637,15 @@ router.get('/:projectId/agent/runs/:runId/events', async (req, res) => {
 
 router.post('/:projectId/exports/video', async (req, res) => {
   try {
-    const result = await exportProjectTimelineVideo(req.params.projectId, {
+    const job = await queueProjectTimelineVideoExport(req.params.projectId, {
       timelineId: String(req.body?.timelineId || '').trim()
     });
-    const filename = path.basename(result.outputPath);
-    res.json({
+    res.status(202).json({
       success: true,
-      output_file: result.outputPath,
-      download_url: `/api/projects/${req.params.projectId}/downloads/${filename}`
+      queued: true,
+      job_id: job.id,
+      status: job.status,
+      message: job.message
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
