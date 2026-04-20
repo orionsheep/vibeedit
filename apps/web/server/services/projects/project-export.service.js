@@ -12,6 +12,22 @@ import { buildProjectInterchangeArtifacts, collectSourceInfoByAssetId } from './
 import { readTimelineKind, roundTime } from '../shared/timeline-utils.js';
 import { sanitizeFilename } from '../shared/text-utils.js';
 
+function timemarkToSeconds(timemark = '') {
+  const raw = String(timemark || '').trim();
+  if (!raw) return 0;
+  const parts = raw.split(':').map((part) => Number(part || 0));
+  if (parts.some((value) => !Number.isFinite(value))) {
+    return 0;
+  }
+  if (parts.length === 3) {
+    return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+  }
+  if (parts.length === 2) {
+    return (parts[0] * 60) + parts[1];
+  }
+  return Number(parts[0] || 0);
+}
+
 function exportClipSegment(sourcePath, clip, outputPath) {
   return new Promise((resolve, reject) => {
     const duration = Math.max(0.05, Number(clip.sourceEndSeconds) - Number(clip.sourceStartSeconds));
@@ -208,6 +224,12 @@ async function runProjectTimelineVideoExportJob(jobId, projectId, { timelineId =
   const outputPath = path.join(exportsDir, `${sanitizeFilename(baseName)}_${exportId}.mp4`);
   const concatListPath = path.join(exportsDir, `concat_${exportId}.txt`);
   const tempSegments = [];
+  const totalDurationSeconds = Math.max(
+    0.1,
+    timeline.clips.reduce((sum, clip) => (
+      sum + Math.max(0.05, Number(clip.sourceEndSeconds || 0) - Number(clip.sourceStartSeconds || 0))
+    ), 0)
+  );
 
   try {
     await markJobRunning(job.id, 'Rendering timeline clips');
@@ -226,13 +248,28 @@ async function runProjectTimelineVideoExportJob(jobId, projectId, { timelineId =
       .map((segmentPath) => `file '${segmentPath.replace(/'/g, "'\\''")}'`)
       .join('\n');
     await fs.promises.writeFile(concatListPath, concatContent, 'utf-8');
+    await updateJobProgress(job.id, 72, '正在合成最终视频');
 
     await new Promise((resolve, reject) => {
+      let lastProgressValue = 72;
       ffmpeg()
         .input(concatListPath)
         .inputOptions(['-f', 'concat', '-safe', '0'])
         .outputOptions(['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart'])
         .output(outputPath)
+        .on('progress', ({ timemark }) => {
+          const renderedSeconds = timemarkToSeconds(timemark);
+          if (!Number.isFinite(renderedSeconds) || renderedSeconds <= 0) {
+            return;
+          }
+          const ratio = Math.max(0, Math.min(1, renderedSeconds / totalDurationSeconds));
+          const progressValue = Math.max(72, Math.min(98, 72 + Math.round(ratio * 26)));
+          if (progressValue <= lastProgressValue) {
+            return;
+          }
+          lastProgressValue = progressValue;
+          void updateJobProgress(job.id, progressValue, `正在合成最终视频 ${Math.round(ratio * 100)}%`).catch(() => {});
+        })
         .on('end', resolve)
         .on('error', reject)
         .run();

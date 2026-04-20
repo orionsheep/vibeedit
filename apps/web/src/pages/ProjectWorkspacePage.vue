@@ -37,6 +37,10 @@
         :export-menu-open="exportMenuOpen"
         :is-exporting-any="isExportingAny"
         :exporting-video="exportingVideo"
+        :video-export-progress="videoExportProgress"
+        :video-export-message="videoExportMessage"
+        :video-export-download-url="videoExportDownloadUrl"
+        :has-video-export-status="hasVideoExportStatus"
         :exporting-package="exportingPackage"
         :exporting-interchange-format="exportingInterchangeFormat"
         :is-live-slicing-mode="isLiveSlicingMode"
@@ -52,6 +56,7 @@
         @export-package="handleExportMenuPackage"
         @export-interchange="handleExportMenuInterchange"
         @export-slice-xml-bundle="handleExportMenuSliceXmlBundle"
+        @open-export-download="openVideoExportDownload"
       />
       <input
         ref="projectPackageImportInputRef"
@@ -451,6 +456,10 @@ const deletingSliceId = ref('');
 const mutatingSlice = ref(false);
 const runningAgent = ref(false);
 const exportingVideo = ref(false);
+const videoExportProgress = ref(0);
+const videoExportMessage = ref('');
+const videoExportDownloadUrl = ref('');
+const videoExportJobId = ref('');
 const exportingPackage = ref(false);
 const exportingInterchangeFormat = ref('');
 const exportingSliceXmlBundle = ref(false);
@@ -544,6 +553,30 @@ const isExportingAny = computed(() => (
   exportingPackage.value ||
   Boolean(exportingInterchangeFormat.value) ||
   exportingSliceXmlBundle.value
+));
+
+const activeVideoExportJob = computed(() => (
+  (assetJobs.value || []).find((job) => (
+    String(job?.type || '') === 'export.video' &&
+    ['queued', 'running'].includes(String(job?.status || ''))
+  )) || null
+));
+
+const latestVideoExportJob = computed(() => (
+  (assetJobs.value || []).find((job) => String(job?.type || '') === 'export.video') || null
+));
+
+const latestCompletedVideoExportJob = computed(() => (
+  (assetJobs.value || []).find((job) => (
+    String(job?.type || '') === 'export.video' &&
+    String(job?.status || '') === 'completed'
+  )) || null
+));
+
+const hasVideoExportStatus = computed(() => (
+  exportingVideo.value ||
+  Boolean(videoExportDownloadUrl.value) ||
+  Boolean(videoExportMessage.value)
 ));
 
 const exportTriggerLabel = computed(() => {
@@ -1855,6 +1888,50 @@ async function loadProjectAssetJobs() {
   }
 }
 
+function buildVideoExportDownloadUrlFromJob(job) {
+  const outputPath = String(job?.result?.outputPath || '').trim();
+  const filename = outputPath.split('/').pop();
+  if (!filename) return '';
+  return `/api/projects/${projectId.value}/downloads/${encodeURIComponent(filename)}`;
+}
+
+function resetVideoExportStatus({ preserveDownload = false } = {}) {
+  videoExportProgress.value = 0;
+  videoExportMessage.value = '';
+  videoExportJobId.value = '';
+  if (!preserveDownload) {
+    videoExportDownloadUrl.value = '';
+  }
+}
+
+function syncVideoExportStatusFromJob(job) {
+  if (!job || String(job?.type || '') !== 'export.video') return;
+  videoExportJobId.value = String(job.id || '');
+  videoExportProgress.value = Number.isFinite(Number(job.progress)) ? Number(job.progress) : 0;
+  videoExportMessage.value = String(job.message || '').trim();
+  if (String(job.status || '') === 'completed') {
+    videoExportProgress.value = 100;
+    videoExportDownloadUrl.value = buildVideoExportDownloadUrlFromJob(job);
+    if (!videoExportMessage.value) {
+      videoExportMessage.value = '导出完成';
+    }
+  }
+}
+
+function syncLatestCompletedVideoExport(job) {
+  if (!job || String(job?.type || '') !== 'export.video' || String(job?.status || '') !== 'completed') {
+    return;
+  }
+  const downloadUrl = buildVideoExportDownloadUrlFromJob(job);
+  if (downloadUrl) {
+    videoExportDownloadUrl.value = downloadUrl;
+  }
+  if (!exportingVideo.value && !videoExportMessage.value) {
+    videoExportMessage.value = String(job.message || '导出完成').trim();
+    videoExportProgress.value = 100;
+  }
+}
+
 async function refreshProcessingAssets() {
   if (!projectId.value || assetJobRefreshInFlight.value) return;
   assetJobRefreshInFlight.value = true;
@@ -2321,32 +2398,64 @@ async function handleExportVideo() {
     if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
       throw new Error('请先选择一个切片再导出视频');
     }
-    const queued = await exportProjectVideo(projectId.value, {
-      timelineId: activeExportTimelineId.value || undefined
-    });
+    await loadProjectAssetJobs();
+    videoExportDownloadUrl.value = '';
+
+    const existingJob = activeVideoExportJob.value;
+    const queued = existingJob
+      ? {
+          job_id: existingJob.id,
+          status: existingJob.status,
+          message: existingJob.message || '已接管现有导出任务'
+        }
+      : await exportProjectVideo(projectId.value, {
+          timelineId: activeExportTimelineId.value || undefined
+        });
+
+    videoExportJobId.value = String(queued.job_id || '');
+    videoExportProgress.value = Number(existingJob?.progress || 0);
+    videoExportMessage.value = String(
+      queued.message || existingJob?.message || '已开始导出视频'
+    ).trim();
+
     const completedJob = await waitForProjectJob(projectId.value, queued.job_id, {
       onProgress: (job) => {
-        const progress = Number(job?.progress ?? 0);
-        const message = String(job?.message || '').trim();
-        if (message) {
-          error.value = '';
-        }
-        if (Number.isFinite(progress) && progress > 0 && progress < 100) {
-          exportMenuOpen.value = false;
-        }
+        syncVideoExportStatusFromJob(job);
+        assetJobs.value = [
+          job,
+          ...(assetJobs.value || []).filter((entry) => String(entry.id || '') !== String(job.id || ''))
+        ];
+        error.value = '';
+        exportMenuOpen.value = false;
       }
     });
-    const outputPath = String(completedJob?.result?.outputPath || '').trim();
-    const filename = outputPath.split('/').pop();
-    if (!filename) {
+    syncVideoExportStatusFromJob(completedJob);
+    await loadProjectAssetJobs();
+    const downloadUrl = buildVideoExportDownloadUrlFromJob(completedJob);
+    if (!downloadUrl) {
       throw new Error('导出任务已完成，但未找到下载文件');
     }
-    window.open(`/api/projects/${projectId.value}/downloads/${encodeURIComponent(filename)}`, '_blank', 'noopener');
+    videoExportDownloadUrl.value = downloadUrl;
+    window.open(downloadUrl, '_blank', 'noopener');
   } catch (exportError) {
-    window.alert(exportError.response?.data?.error || exportError.message || '导出视频失败');
+    const exportMessage = exportError.response?.data?.error || exportError.message || '导出视频失败';
+    if (String(exportMessage).includes('导出超时')) {
+      videoExportMessage.value = '导出仍在后台继续，你可以稍后回来下载成片';
+      await loadProjectAssetJobs();
+      syncLatestCompletedVideoExport(latestCompletedVideoExportJob.value);
+      window.alert('导出任务仍在后台继续，你可以继续编辑，稍后点击顶部“下载成片”。');
+    } else {
+      videoExportMessage.value = exportMessage;
+      window.alert(exportMessage);
+    }
   } finally {
     exportingVideo.value = false;
   }
+}
+
+function openVideoExportDownload() {
+  if (!videoExportDownloadUrl.value) return;
+  window.open(videoExportDownloadUrl.value, '_blank', 'noopener');
 }
 
 async function handleExportPackage() {
@@ -2721,6 +2830,23 @@ watch(processingAssetIds, (assetIds) => {
 
   resetAssetJobPollState();
   refreshProcessingAssets().catch(() => {});
+}, { immediate: true });
+
+watch(latestVideoExportJob, (job) => {
+  if (!job) return;
+  if (!exportingVideo.value && !videoExportJobId.value && String(job.status || '') === 'completed') {
+    videoExportDownloadUrl.value = buildVideoExportDownloadUrlFromJob(job);
+    videoExportMessage.value = String(job.message || '导出完成').trim();
+    videoExportProgress.value = 100;
+    return;
+  }
+  if (videoExportJobId.value && String(job.id || '') === videoExportJobId.value) {
+    syncVideoExportStatusFromJob(job);
+  }
+}, { immediate: true });
+
+watch(latestCompletedVideoExportJob, (job) => {
+  syncLatestCompletedVideoExport(job);
 }, { immediate: true });
 
 watch(activePreviewClips, (clips) => {

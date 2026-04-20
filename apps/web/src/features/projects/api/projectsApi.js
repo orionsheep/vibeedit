@@ -236,7 +236,7 @@ export async function exportProjectVideo(projectId, payload = {}) {
 }
 
 export async function waitForProjectJob(projectId, jobId, {
-  timeoutMs = 15 * 60 * 1000,
+  timeoutMs = 45 * 60 * 1000,
   pollMs = 1500,
   onProgress = null
 } = {}) {

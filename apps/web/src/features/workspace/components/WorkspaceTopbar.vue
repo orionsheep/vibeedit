@@ -1,5 +1,6 @@
 <template>
-  <header class="workspace-topbar">
+  <header class="workspace-topbar" :class="{ 'has-export-progress': hasVideoExportStatus }">
+    <div class="workspace-topbar-main">
     <div class="topbar-left">
       <router-link class="brand-link" to="/projects">VIBEEDIT</router-link>
       <nav class="workspace-nav">
@@ -68,6 +69,25 @@
         </button>
       </div>
     </div>
+    </div>
+
+    <div v-if="hasVideoExportStatus" class="export-progress-strip">
+      <div class="export-progress-copy">
+        <strong>视频导出</strong>
+        <span>{{ videoExportMessage || (exportingVideo ? '正在准备导出任务...' : '导出完成') }}</span>
+      </div>
+      <div class="export-progress-rail" aria-hidden="true">
+        <span :style="{ width: `${Math.max(0, Math.min(100, Number(videoExportProgress || 0)))}%` }"></span>
+      </div>
+      <span class="export-progress-value">{{ Math.max(0, Math.min(100, Number(videoExportProgress || 0))) }}%</span>
+      <button
+        v-if="videoExportDownloadUrl"
+        class="ghost-btn export-download-btn"
+        @click="$emit('open-export-download')"
+      >
+        下载成片
+      </button>
+    </div>
   </header>
 </template>
 
@@ -94,6 +114,10 @@ const props = defineProps({
   exportTriggerLabel: {
     type: String,
     default: '导出'
+  },
+  hasVideoExportStatus: {
+    type: Boolean,
+    default: false
   },
   exportingInterchangeFormat: {
     type: String,
@@ -139,6 +163,18 @@ const props = defineProps({
     type: Number,
     default: 0
   },
+  videoExportDownloadUrl: {
+    type: String,
+    default: ''
+  },
+  videoExportMessage: {
+    type: String,
+    default: ''
+  },
+  videoExportProgress: {
+    type: Number,
+    default: 0
+  },
   savingTimeline: {
     type: Boolean,
     default: false
@@ -152,6 +188,7 @@ const props = defineProps({
 const emit = defineEmits([
   'delete-project',
   'export-interchange',
+  'open-export-download',
   'export-package',
   'export-slice-xml-bundle',
   'export-video',
@@ -196,8 +233,8 @@ function handleXmlExport() {
   z-index: 30;
   isolation: isolate;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: 14px;
   min-height: 52px;
   padding: 6px 14px;
@@ -208,6 +245,14 @@ function handleXmlExport() {
   overflow: visible;
 }
 
+.workspace-topbar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
 .topbar-left,
 .topbar-right {
   min-width: 0;
@@ -215,6 +260,65 @@ function handleXmlExport() {
   align-items: center;
   gap: 10px;
   overflow: visible;
+}
+
+.export-progress-strip {
+  display: grid;
+  grid-template-columns: minmax(200px, 320px) minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(88, 219, 255, 0.14);
+  background: rgba(8, 18, 28, 0.88);
+}
+
+.export-progress-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.export-progress-copy strong {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d7edf7;
+}
+
+.export-progress-copy span {
+  font-size: 12px;
+  color: rgba(201, 224, 235, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-progress-rail {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  background: rgba(18, 32, 43, 0.94);
+  border: 1px solid rgba(88, 219, 255, 0.12);
+}
+
+.export-progress-rail span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #00b8e6 0%, #55d6ff 100%);
+  box-shadow: 0 0 12px rgba(85, 214, 255, 0.35);
+  transition: width 180ms ease;
+}
+
+.export-progress-value {
+  min-width: 42px;
+  font-size: 12px;
+  color: rgba(222, 240, 248, 0.84);
+  text-align: right;
+}
+
+.export-download-btn {
+  white-space: nowrap;
 }
 
 .brand-link {
@@ -382,13 +486,22 @@ function handleXmlExport() {
 }
 
 @media (max-width: 1380px) {
-  .workspace-topbar {
+  .workspace-topbar-main {
     align-items: flex-start;
+    flex-direction: column;
   }
 
   .topbar-left,
   .topbar-right {
     flex-wrap: wrap;
+  }
+
+  .export-progress-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .export-progress-value {
+    text-align: left;
   }
 }
 </style>
