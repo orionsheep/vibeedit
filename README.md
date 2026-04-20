@@ -1,5 +1,9 @@
 # VibeEdit
 
+[![VibeEdit 产品演示](./assets/vibeedit-demo-poster.jpg)](./assets/vibeedit-demo.mp4)
+
+产品演示视频：[`assets/vibeedit-demo.mp4`](./assets/vibeedit-demo.mp4)
+
 在线体验：`https://vibeedit.orionsheep.shop/`
 
 `VibeEdit` 不是一个“全功能复杂视频剪辑软件”。
