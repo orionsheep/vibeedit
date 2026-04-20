@@ -52,9 +52,10 @@
   min-height: 100vh;
   padding: 48px;
   background:
-    radial-gradient(circle at top right, rgba(0, 212, 255, 0.12), transparent 28%),
+    radial-gradient(circle at top right, rgba(88, 219, 255, 0.16), transparent 28%),
+    radial-gradient(circle at left center, rgba(117, 162, 255, 0.09), transparent 22%),
     linear-gradient(180deg, #081017 0%, #0b0f14 100%);
-  color: #eef3f8;
+  color: var(--app-copy);
 }
 
 .hero {
@@ -68,16 +69,18 @@
 .hero-panel,
 .card {
   background: rgba(16, 21, 28, 0.92);
-  border: 1px solid #243140;
+  border: 1px solid var(--app-border);
   padding: 26px;
+  box-shadow: var(--app-shadow);
 }
 
 .eyebrow {
-  color: #6fdde7;
+  color: var(--app-accent-strong);
   font-size: 12px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   margin-bottom: 14px;
+  font-family: var(--font-mono);
 }
 
 h1 {
@@ -87,7 +90,7 @@ h1 {
 }
 
 p {
-  color: #d3deea;
+  color: var(--app-copy-muted);
   line-height: 1.8;
 }
 
@@ -102,15 +105,15 @@ p {
   align-items: center;
   justify-content: center;
   padding: 11px 16px;
-  border: 1px solid #2c3949;
-  color: #eef3f8;
+  border: 1px solid var(--app-border-strong);
+  color: var(--app-copy);
   text-decoration: none;
-  background: #121922;
+  background: rgba(10, 18, 27, 0.92);
 }
 
 .btn.primary {
-  background: #00d4ff;
-  border-color: #00d4ff;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
+  border-color: transparent;
   color: #071018;
   font-weight: 600;
 }
@@ -119,14 +122,15 @@ p {
   font-size: 14px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #8da2b7;
+  color: var(--app-copy-soft);
   margin-bottom: 12px;
+  font-family: var(--font-mono);
 }
 
 .hero-panel ul {
   margin: 0;
   padding-left: 18px;
-  color: #d9e3ed;
+  color: var(--app-copy);
 }
 
 .hero-panel li {

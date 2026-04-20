@@ -147,14 +147,17 @@ onMounted(async () => {
   padding: 24px;
   display: grid;
   gap: 18px;
-  background: #0a1016;
+  background:
+    radial-gradient(circle at top left, rgba(88, 219, 255, 0.06), transparent 24%),
+    #0a1016;
   min-height: calc(100vh - 40px);
 }
 
 .settings-section {
-  border: 1px solid #22313f;
-  background: #0d151d;
-  padding: 18px;
+  border: 1px solid var(--app-border);
+  background: linear-gradient(180deg, rgba(14, 23, 33, 0.98), rgba(9, 16, 24, 0.96));
+  box-shadow: var(--app-shadow);
+  padding: 22px;
   display: grid;
   gap: 18px;
 }
@@ -171,10 +174,11 @@ onMounted(async () => {
 }
 
 .eyebrow {
-  color: #6fdcff;
+  color: var(--app-accent-strong);
   font-size: 11px;
   letter-spacing: 0.12em;
   margin-bottom: 6px;
+  font-family: var(--font-mono);
 }
 
 .section-head h1,
@@ -184,7 +188,7 @@ onMounted(async () => {
 }
 
 .section-head p {
-  color: #8ea5b8;
+  color: var(--app-copy-muted);
   line-height: 1.5;
 }
 
@@ -195,9 +199,9 @@ onMounted(async () => {
 }
 
 .meta-chip {
-  border: 1px solid #2b4051;
-  background: #0a1118;
-  color: #d7edf9;
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(10, 17, 24, 0.92);
+  color: var(--app-copy);
   padding: 7px 10px;
   font-size: 12px;
 }
@@ -223,9 +227,9 @@ onMounted(async () => {
 
 .password-form input {
   height: 42px;
-  border: 1px solid #273a4a;
-  background: #091118;
-  color: #f3fbff;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(8, 15, 23, 0.92);
+  color: var(--app-copy);
   padding: 0 12px;
 }
 
@@ -237,16 +241,16 @@ onMounted(async () => {
 .primary-btn,
 .ghost-btn {
   height: 40px;
-  border: 1px solid #2a4050;
-  background: #0c141c;
-  color: #dff3ff;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(10, 18, 27, 0.92);
+  color: var(--app-copy);
   padding: 0 14px;
   cursor: pointer;
 }
 
 .primary-btn {
-  background: #16c5ff;
-  border-color: #16c5ff;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
+  border-color: transparent;
   color: #071018;
   font-weight: 700;
 }
@@ -257,13 +261,13 @@ onMounted(async () => {
 }
 
 .form-success {
-  color: #9be8a6;
+  color: var(--app-success);
   font-size: 12px;
 }
 
 .user-table-wrap {
   overflow: auto;
-  border: 1px solid #1f2c37;
+  border: 1px solid rgba(88, 219, 255, 0.12);
 }
 
 .user-table {
@@ -276,33 +280,37 @@ onMounted(async () => {
 .user-table td {
   text-align: left;
   padding: 10px 12px;
-  border-bottom: 1px solid #1f2c37;
+  border-bottom: 1px solid rgba(88, 219, 255, 0.08);
   font-size: 13px;
 }
 
 .user-table th {
-  color: #8fb2c8;
+  color: var(--app-copy-soft);
   font-weight: 600;
-  background: #0b1118;
+  background: rgba(10, 17, 24, 0.9);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .table-role {
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
-  border: 1px solid #2b4051;
-  background: #111a23;
-  color: #d6eef8;
+  padding: 5px 8px;
+  border: 1px solid rgba(88, 219, 255, 0.14);
+  background: rgba(10, 17, 24, 0.72);
+  color: var(--app-copy);
   font-size: 12px;
 }
 
 .table-role.admin {
-  border-color: #4f6542;
+  border-color: rgba(164, 240, 186, 0.28);
   background: #122112;
-  color: #b7f5aa;
+  color: var(--app-success);
 }
 
 .empty-cell {
-  color: #8ea5b8;
+  color: var(--app-copy-muted);
 }
 </style>

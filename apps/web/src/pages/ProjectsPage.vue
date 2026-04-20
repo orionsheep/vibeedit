@@ -11,18 +11,34 @@
       @cancel="closeConfirmDialog"
     />
     <section class="hero">
-      <div>
+      <div class="hero-copy">
         <div class="eyebrow">PROJECTS</div>
         <h1>多视频项目工作区</h1>
         <p>先建项目，再把素材库里的视频加入项目，最后进入主时间线和 Agent 工作台。</p>
+        <div class="hero-stats">
+          <span>{{ projects.length }} 个项目</span>
+          <span>{{ categories.length }} 个分类</span>
+          <span>主流程：项目 → 素材库 → 工作台</span>
+        </div>
       </div>
-      <router-link class="ghost-link" to="/library">打开素材库</router-link>
+      <div class="hero-side">
+        <div class="hero-side-title">工作方式</div>
+        <ul>
+          <li>项目负责组织素材、时间线和导出结果。</li>
+          <li>素材库负责统一上传、检索和转写状态。</li>
+          <li>工作台负责字幕编辑、Agent 操作和精确导出。</li>
+        </ul>
+        <router-link class="ghost-link" to="/library">打开素材库</router-link>
+      </div>
     </section>
 
     <section class="create-card">
       <div class="card-head">
-        <h2>创建项目</h2>
-        <span>{{ categories.length }} 个分类</span>
+        <div>
+          <h2>创建项目</h2>
+          <p>用一个清晰的项目名，把后续的素材导入、直播切片和工程导出收进同一工作区。</p>
+        </div>
+        <span class="chip-label">{{ categories.length }} 个分类</span>
       </div>
       <form class="create-form" @submit.prevent="handleCreateProject">
         <input v-model="form.name" type="text" placeholder="项目名称" required />
@@ -37,6 +53,10 @@
     </section>
 
     <section class="project-grid">
+      <article v-if="!projects.length" class="empty-card">
+        <div class="empty-title">还没有项目</div>
+        <p>先创建一个项目，再把素材库里的视频加入进来。之后所有的时间线、Agent 编辑和导出都会围绕这个项目展开。</p>
+      </article>
       <article v-for="project in projects" :key="project.id" class="project-card">
         <div class="project-top">
           <div>
@@ -171,53 +191,106 @@ onMounted(loadData);
   max-width: 1280px;
   margin: 0 auto;
   display: grid;
-  gap: 18px;
+  gap: 20px;
 }
 
 .hero,
 .create-card,
-.project-card {
-  border: 1px solid #243140;
-  background: #111821;
+.project-card,
+.empty-card {
+  border: 1px solid var(--app-border);
+  background: linear-gradient(180deg, rgba(14, 23, 33, 0.98), rgba(9, 16, 24, 0.96));
+  box-shadow: var(--app-shadow);
 }
 
 .hero {
-  padding: 24px;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.9fr);
+  gap: 22px;
+  align-items: stretch;
 }
 
 .eyebrow {
-  color: #73dce6;
+  color: var(--app-accent-strong);
   font-size: 12px;
   letter-spacing: 0.14em;
   margin-bottom: 8px;
+  font-family: var(--font-mono);
 }
 
 h1 {
-  font-size: 36px;
-  margin-bottom: 8px;
+  font-size: 42px;
+  margin-bottom: 10px;
+  letter-spacing: -0.03em;
 }
 
 .hero p {
-  color: #97acbb;
-  max-width: 720px;
+  color: var(--app-copy-muted);
   line-height: 1.7;
+}
+
+.hero-copy {
+  display: grid;
+  gap: 14px;
+}
+
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hero-stats span,
+.chip-label {
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(10, 18, 27, 0.82);
+  color: var(--app-copy);
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
+.hero-side {
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(8, 16, 25, 0.8);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.hero-side-title {
+  color: var(--app-copy-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero-side ul {
+  padding-left: 18px;
+  color: var(--app-copy);
+  line-height: 1.65;
 }
 
 .ghost-link,
 .chip-link {
-  color: #dff9ff;
+  color: var(--app-copy);
   text-decoration: none;
-  border: 1px solid #2f4050;
-  background: #0f151d;
-  padding: 9px 12px;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(10, 18, 27, 0.92);
+  padding: 10px 14px;
+  transition: 0.18s ease;
+}
+
+.ghost-link:hover,
+.chip-link:hover {
+  border-color: rgba(88, 219, 255, 0.32);
+  color: var(--app-accent-strong);
 }
 
 .create-card {
-  padding: 20px;
+  padding: 22px;
   display: grid;
   gap: 14px;
 }
@@ -226,6 +299,12 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 18px;
+}
+
+.card-head p {
+  margin-top: 6px;
+  color: var(--app-copy-muted);
 }
 
 .create-form {
@@ -237,18 +316,19 @@ h1 {
 .create-form input,
 .btn-primary {
   height: 44px;
-  border: 1px solid #2d3a47;
-  background: #091018;
-  color: #f2f6fb;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(8, 15, 23, 0.92);
+  color: var(--app-copy);
   padding: 0 12px;
 }
 
 .btn-primary {
-  background: #00d4ff;
-  border-color: #00d4ff;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
+  border-color: transparent;
   color: #071018;
   font-weight: 700;
   cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
 }
 
 .project-grid {
@@ -257,16 +337,32 @@ h1 {
   gap: 16px;
 }
 
+.empty-card,
 .project-card {
-  padding: 18px;
+  padding: 20px;
   display: grid;
   gap: 14px;
+}
+
+.empty-card {
+  grid-column: 1 / -1;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.empty-card p {
+  color: var(--app-copy-muted);
+  line-height: 1.7;
 }
 
 .project-top {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  align-items: flex-start;
 }
 
 .project-actions {
@@ -283,19 +379,19 @@ h1 {
 .project-meta {
   display: flex;
   gap: 12px;
-  color: #8aa1b3;
+  color: var(--app-copy-soft);
   font-size: 13px;
   margin-top: 4px;
 }
 
 .project-desc {
-  color: #c8d6e3;
+  color: var(--app-copy);
   line-height: 1.6;
   min-height: 48px;
 }
 
 .project-footer {
-  color: #7e95a8;
+  color: var(--app-copy-soft);
   font-size: 13px;
 }
 
@@ -305,8 +401,8 @@ h1 {
 
 .danger-chip {
   color: #ffb3bc;
-  border-color: #5b2831;
-  background: #1a0d12;
+  border-color: rgba(255, 135, 147, 0.28);
+  background: rgba(52, 15, 22, 0.82);
   cursor: pointer;
 }
 
@@ -321,8 +417,11 @@ h1 {
     grid-template-columns: 1fr;
   }
 
-  .hero {
-    flex-direction: column;
+  .hero,
+  .card-head,
+  .project-top {
+    grid-template-columns: 1fr;
+    display: grid;
   }
 }
 </style>

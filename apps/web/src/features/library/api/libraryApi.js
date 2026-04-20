@@ -2,9 +2,10 @@ import axios from 'axios';
 
 const API_BASE = '/api/library';
 
-export async function listLibraryAssets(query = '') {
+export async function listLibraryAssets(query = '', options = {}) {
   const response = await axios.get(`${API_BASE}/assets`, {
-    params: query ? { q: query } : {}
+    params: query ? { q: query } : {},
+    signal: options.signal
   });
   return response.data.assets || [];
 }

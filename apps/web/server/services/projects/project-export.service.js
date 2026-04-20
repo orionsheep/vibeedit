@@ -46,17 +46,36 @@ async function loadProjectExportData(projectId, timelineId = '') {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({
       where: { id: projectId },
-      include: {
-        category: true,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        category: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
         projectAssets: {
           orderBy: { sortOrder: 'asc' },
-          include: {
+          select: {
+            id: true,
+            assetId: true,
+            sortOrder: true,
+            addedAt: true,
             asset: {
-              include: {
-                files: true,
-                captions: {
-                  orderBy: { createdAt: 'desc' },
-                  take: 1
+              select: {
+                id: true,
+                title: true,
+                originalFilename: true,
+                mimeType: true,
+                durationSeconds: true,
+                transcriptText: true,
+                files: {
+                  select: {
+                    role: true,
+                    uri: true
+                  }
                 }
               }
             }
@@ -66,12 +85,34 @@ async function loadProjectExportData(projectId, timelineId = '') {
           where: timelineId
             ? { id: String(timelineId || '').trim() }
             : undefined,
-          include: {
+          select: {
+            id: true,
+            name: true,
+            isPrimary: true,
+            settings: true,
             clips: {
               orderBy: { sortOrder: 'asc' },
-              include: {
+              select: {
+                id: true,
+                assetId: true,
+                label: true,
+                sourceStartSeconds: true,
+                sourceEndSeconds: true,
+                timelineStartSeconds: true,
+                timelineEndSeconds: true,
+                sortOrder: true,
+                metadata: true,
                 asset: {
-                  include: { files: true }
+                  select: {
+                    id: true,
+                    title: true,
+                    files: {
+                      select: {
+                        role: true,
+                        uri: true
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -90,6 +131,34 @@ async function loadProjectExportData(projectId, timelineId = '') {
     }
 
     return project;
+  });
+}
+
+async function loadLatestCaptionsByAssetId(assetIds = []) {
+  const normalizedAssetIds = [...new Set((Array.isArray(assetIds) ? assetIds : []).map((assetId) => String(assetId || '').trim()).filter(Boolean))];
+  if (!normalizedAssetIds.length) {
+    return new Map();
+  }
+
+  return withDatabase(async (db) => {
+    const rows = await db.caption.findMany({
+      where: {
+        assetId: { in: normalizedAssetIds },
+        kind: 'word_timeline'
+      },
+      orderBy: [
+        { assetId: 'asc' },
+        { createdAt: 'desc' }
+      ],
+      distinct: ['assetId'],
+      select: {
+        assetId: true,
+        text: true,
+        payload: true
+      }
+    });
+
+    return new Map(rows.map((row) => [row.assetId, row]));
   });
 }
 
@@ -194,6 +263,7 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
     const projectDir = path.join(packageDir, 'project');
     const mediaDir = path.join(packageDir, 'media');
     const captionsDir = path.join(projectDir, 'captions');
+    const latestCaptionsByAssetId = await loadLatestCaptionsByAssetId(project.projectAssets.map((relation) => relation.assetId));
 
     await fs.promises.mkdir(projectDir, { recursive: true });
     await fs.promises.mkdir(mediaDir, { recursive: true });
@@ -301,13 +371,14 @@ export async function exportProjectPackage(projectId, { includeSourceMedia = tru
     }
 
     for (const relation of project.projectAssets) {
+      const latestCaption = latestCaptionsByAssetId.get(relation.asset.id) || null;
       await fs.promises.writeFile(
         path.join(captionsDir, `${relation.asset.id}.json`),
         JSON.stringify({
           asset_id: relation.asset.id,
           title: relation.asset.title,
-          transcript_text: relation.asset.transcriptText || relation.asset.captions?.[0]?.text || '',
-          payload: relation.asset.captions?.[0]?.payload || {}
+          transcript_text: relation.asset.transcriptText || latestCaption?.text || '',
+          payload: latestCaption?.payload || {}
         }, null, 2),
         'utf-8'
       );

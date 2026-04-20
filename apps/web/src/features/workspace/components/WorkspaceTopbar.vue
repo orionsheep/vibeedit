@@ -183,8 +183,9 @@ function handleXmlExport() {
   justify-content: space-between;
   gap: 12px;
   padding: 0 14px;
-  border-bottom: 1px solid #192531;
-  background: rgba(8, 13, 20, 0.94);
+  border-bottom: 1px solid rgba(69, 101, 128, 0.22);
+  background: rgba(7, 13, 20, 0.95);
+  backdrop-filter: blur(14px);
 }
 
 .topbar-left,
@@ -197,8 +198,8 @@ function handleXmlExport() {
 
 .brand-link {
   text-decoration: none;
-  color: #88ecff;
-  font-family: 'Space Mono', ui-monospace, monospace;
+  color: var(--app-accent-strong);
+  font-family: var(--font-mono);
   font-size: 13px;
   letter-spacing: 0.12em;
 }
@@ -210,16 +211,16 @@ function handleXmlExport() {
 
 .workspace-nav a {
   text-decoration: none;
-  color: #8fa4b4;
+  color: var(--app-copy-muted);
   padding: 5px 8px;
   font-size: 12px;
   border: 1px solid transparent;
 }
 
 .workspace-nav a.router-link-active {
-  color: #eff7ff;
-  border-color: #243443;
-  background: #0b141d;
+  color: var(--app-copy);
+  border-color: rgba(88, 219, 255, 0.18);
+  background: rgba(11, 20, 29, 0.92);
 }
 
 .project-identity {
@@ -232,7 +233,7 @@ function handleXmlExport() {
 }
 
 .project-identity span {
-  color: #7f95a7;
+  color: var(--app-copy-soft);
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
@@ -241,32 +242,32 @@ function handleXmlExport() {
 }
 
 .stat-chip {
-  border: 1px solid #223141;
-  background: #0a1118;
-  color: #b8ccdb;
+  border: 1px solid rgba(88, 219, 255, 0.14);
+  background: rgba(10, 17, 24, 0.86);
+  color: var(--app-copy);
   padding: 5px 7px;
   font-size: 11px;
 }
 
 .stat-chip.warning {
   color: #ffcf7a;
-  border-color: #5f4b1f;
+  border-color: rgba(255, 207, 122, 0.24);
 }
 
 .ghost-btn,
 .primary-btn,
 .context-item {
-  border: 1px solid #243443;
-  background: #0c141c;
-  color: #edf5fb;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(10, 18, 27, 0.92);
+  color: var(--app-copy);
   padding: 7px 10px;
   font-size: 11px;
   cursor: pointer;
 }
 
 .primary-btn {
-  background: #16c5ff;
-  border-color: #16c5ff;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
+  border-color: transparent;
   color: #071018;
   font-weight: 700;
 }
@@ -304,8 +305,8 @@ function handleXmlExport() {
   right: 0;
   z-index: 35;
   min-width: 168px;
-  border: 1px solid #20303f;
-  background: #091019;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(9, 16, 25, 0.98);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
@@ -314,7 +315,7 @@ function handleXmlExport() {
   width: 100%;
   text-align: left;
   border: none;
-  border-bottom: 1px solid #15212d;
+  border-bottom: 1px solid rgba(88, 219, 255, 0.08);
 }
 
 .context-item:last-child {

@@ -1,18 +1,34 @@
 <template>
   <div class="library-page">
     <section class="hero">
-      <div>
+      <div class="hero-copy">
         <div class="eyebrow">LIBRARY</div>
         <h1>全局素材库</h1>
         <p>素材先进入素材库，再被引用到某个项目。这里管理上传、检索和分发到项目。</p>
+        <div class="hero-stats">
+          <span>{{ assets.length }} 条素材</span>
+          <span>{{ selectedProjectId ? '已选择项目' : '未选择项目' }}</span>
+          <span>状态自动跟踪上传与转写</span>
+        </div>
       </div>
-      <router-link class="ghost-link" to="/projects">返回项目列表</router-link>
+      <div class="hero-side">
+        <div class="hero-side-title">素材主线</div>
+        <ul>
+          <li>上传后先进入全局素材库。</li>
+          <li>项目只是引用素材，不复制底层视频。</li>
+          <li>转写状态和源文件访问都在这里统一管理。</li>
+        </ul>
+        <router-link class="ghost-link" to="/projects">返回项目列表</router-link>
+      </div>
     </section>
 
     <section class="upload-card">
       <div class="upload-top">
-        <h2>导入素材</h2>
-        <span v-if="uploading">{{ uploadProgress }}%</span>
+        <div>
+          <h2>导入素材</h2>
+          <p>支持多文件上传，导入后自动进入转写流程。</p>
+        </div>
+        <span class="progress-chip" v-if="uploading">{{ uploadProgress }}%</span>
       </div>
       <form class="upload-form" @submit.prevent="handleUpload">
         <input ref="fileInputRef" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm" multiple @change="handleFileSelect" />
@@ -83,6 +99,10 @@ const selectedProjectId = ref('');
 const search = ref('');
 const fileInputRef = ref(null);
 const assetPollTimer = ref(null);
+const assetsLoading = ref(false);
+let assetSearchTimer = 0;
+let assetRequestSequence = 0;
+let activeAssetRequestController = null;
 
 function hasActiveIngest(asset) {
   const asrStatus = String(asset?.asr_status || '').trim();
@@ -92,21 +112,61 @@ function hasActiveIngest(asset) {
 
 function syncAssetPolling() {
   const shouldPoll = assets.value.some((asset) => hasActiveIngest(asset));
-  if (shouldPoll && !assetPollTimer.value) {
-    assetPollTimer.value = window.setInterval(() => {
-      loadAssets().catch(() => {});
-    }, 4000);
-    return;
-  }
-  if (!shouldPoll && assetPollTimer.value) {
-    clearInterval(assetPollTimer.value);
+  clearAssetPollTimer();
+  if (!shouldPoll) return;
+  assetPollTimer.value = window.setTimeout(() => {
+    loadAssets({ reason: 'poll' }).catch(() => {});
+  }, assetsLoading.value ? 5500 : 4000);
+}
+
+function clearAssetPollTimer() {
+  if (assetPollTimer.value) {
+    clearTimeout(assetPollTimer.value);
     assetPollTimer.value = null;
   }
 }
 
-async function loadAssets() {
-  assets.value = await listLibraryAssets(search.value.trim());
-  syncAssetPolling();
+function clearAssetSearchTimer() {
+  if (assetSearchTimer) {
+    clearTimeout(assetSearchTimer);
+    assetSearchTimer = 0;
+  }
+}
+
+function cancelActiveAssetRequest() {
+  if (activeAssetRequestController) {
+    activeAssetRequestController.abort();
+    activeAssetRequestController = null;
+  }
+}
+
+async function loadAssets({ reason = 'manual' } = {}) {
+  const requestId = ++assetRequestSequence;
+  cancelActiveAssetRequest();
+  const controller = new AbortController();
+  activeAssetRequestController = controller;
+  assetsLoading.value = true;
+
+  try {
+    const nextAssets = await listLibraryAssets(search.value.trim(), { signal: controller.signal });
+    if (requestId !== assetRequestSequence) {
+      return;
+    }
+    assets.value = nextAssets;
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return;
+    }
+    throw error;
+  } finally {
+    if (requestId === assetRequestSequence) {
+      assetsLoading.value = false;
+      activeAssetRequestController = null;
+      syncAssetPolling();
+    } else if (activeAssetRequestController === controller) {
+      activeAssetRequestController = null;
+    }
+  }
 }
 
 async function loadProjects() {
@@ -163,7 +223,10 @@ function formatDuration(seconds) {
 }
 
 watch(search, () => {
-  loadAssets();
+  clearAssetSearchTimer();
+  assetSearchTimer = window.setTimeout(() => {
+    loadAssets({ reason: 'search' }).catch(() => {});
+  }, 260);
 });
 
 onMounted(async () => {
@@ -171,10 +234,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (assetPollTimer.value) {
-    clearInterval(assetPollTimer.value);
-    assetPollTimer.value = null;
-  }
+  clearAssetPollTimer();
+  clearAssetSearchTimer();
+  cancelActiveAssetRequest();
 });
 </script>
 
@@ -183,39 +245,85 @@ onUnmounted(() => {
   max-width: 1320px;
   margin: 0 auto;
   display: grid;
-  gap: 18px;
+  gap: 20px;
 }
 
 .hero,
 .upload-card,
 .asset-card,
 .toolbar {
-  border: 1px solid #243140;
-  background: #111821;
+  border: 1px solid var(--app-border);
+  background: linear-gradient(180deg, rgba(14, 23, 33, 0.98), rgba(9, 16, 24, 0.96));
+  box-shadow: var(--app-shadow);
 }
 
 .hero {
-  padding: 24px;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.9fr);
+  gap: 22px;
 }
 
 .eyebrow {
-  color: #73dce6;
+  color: var(--app-accent-strong);
   font-size: 12px;
   letter-spacing: 0.14em;
   margin-bottom: 8px;
+  font-family: var(--font-mono);
 }
 
 h1 {
-  font-size: 34px;
-  margin-bottom: 8px;
+  font-size: 40px;
+  margin-bottom: 10px;
+  letter-spacing: -0.03em;
 }
 
 .hero p {
-  color: #97acbb;
+  color: var(--app-copy-muted);
   line-height: 1.7;
+}
+
+.hero-copy {
+  display: grid;
+  gap: 14px;
+}
+
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hero-stats span,
+.progress-chip {
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(10, 18, 27, 0.82);
+  color: var(--app-copy);
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
+.hero-side {
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(8, 16, 25, 0.8);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.hero-side-title {
+  color: var(--app-copy-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero-side ul {
+  padding-left: 18px;
+  color: var(--app-copy);
+  line-height: 1.65;
 }
 
 .ghost-link,
@@ -223,22 +331,30 @@ h1 {
 .button-like,
 .btn-primary {
   text-decoration: none;
-  border: 1px solid #2f4050;
-  background: #0f151d;
-  color: #e9f6ff;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(10, 18, 27, 0.92);
+  color: var(--app-copy);
   padding: 10px 12px;
   cursor: pointer;
+  transition: 0.18s ease;
+}
+
+.ghost-link:hover,
+.chip-link:hover,
+.button-like:hover {
+  border-color: rgba(88, 219, 255, 0.32);
+  color: var(--app-accent-strong);
 }
 
 .btn-primary {
-  background: #00d4ff;
-  border-color: #00d4ff;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
+  border-color: transparent;
   color: #071018;
   font-weight: 700;
 }
 
 .upload-card {
-  padding: 20px;
+  padding: 22px;
   display: grid;
   gap: 12px;
 }
@@ -253,6 +369,11 @@ h1 {
   align-items: center;
 }
 
+.upload-top p {
+  margin-top: 5px;
+  color: var(--app-copy-muted);
+}
+
 .upload-form,
 .toolbar {
   display: grid;
@@ -265,9 +386,9 @@ h1 {
 .toolbar input,
 .toolbar select {
   height: 42px;
-  border: 1px solid #2d3a47;
-  background: #091018;
-  color: #f2f6fb;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(8, 15, 23, 0.92);
+  color: var(--app-copy);
   padding: 0 12px;
 }
 
@@ -278,8 +399,9 @@ h1 {
 }
 
 .selected-files span {
-  border: 1px solid #30404e;
-  padding: 6px 8px;
+  border: 1px solid rgba(88, 219, 255, 0.14);
+  background: rgba(9, 17, 25, 0.72);
+  padding: 6px 9px;
   font-size: 13px;
 }
 
@@ -290,7 +412,7 @@ h1 {
 }
 
 .asset-card {
-  padding: 18px;
+  padding: 20px;
   display: grid;
   gap: 12px;
 }
@@ -305,7 +427,7 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  color: #87a0b3;
+  color: var(--app-copy-soft);
   font-size: 13px;
 }
 
@@ -314,25 +436,25 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  color: #87a0b3;
+  color: var(--app-copy-soft);
   font-size: 12px;
 }
 
 .asset-job.status-running,
 .asset-job.status-queued {
-  color: #73dce6;
+  color: var(--app-accent-strong);
 }
 
 .asset-job.status-failed {
-  color: #ff8c8c;
+  color: var(--app-danger);
 }
 
 .asset-job.status-completed {
-  color: #8ddf9b;
+  color: var(--app-success);
 }
 
 .asset-desc {
-  color: #d4dfeb;
+  color: var(--app-copy);
   line-height: 1.6;
   min-height: 48px;
 }

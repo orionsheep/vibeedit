@@ -1,5 +1,17 @@
 <template>
   <div class="auth-page">
+    <section class="auth-card auth-aside">
+      <div class="eyebrow">VIBEEDIT</div>
+      <h2>回到项目系统</h2>
+      <p>邮箱登录后，直接进入素材库、项目时间线和右侧常驻 Agent 工作流。</p>
+      <ul>
+        <li>项目级字幕与时间线编辑</li>
+        <li>直播切片与口播剪稿共用同一个 Agent</li>
+        <li>支持 XML / EDL / SRT / 工程包导出</li>
+      </ul>
+      <router-link class="auth-link" to="/">查看产品概览</router-link>
+    </section>
+
     <section class="auth-card">
       <div class="auth-head">
         <div class="eyebrow">VIBEEDIT</div>
@@ -62,27 +74,38 @@ async function handleLogin() {
 .auth-page {
   min-height: 100vh;
   display: grid;
-  place-items: center;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(320px, 420px);
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
   padding: 24px;
   background:
-    radial-gradient(circle at top left, rgba(25, 189, 255, 0.08), transparent 28%),
+    radial-gradient(circle at top left, rgba(88, 219, 255, 0.1), transparent 30%),
     linear-gradient(180deg, #060b10 0%, #091019 100%);
 }
 
 .auth-card {
   width: min(100%, 420px);
-  border: 1px solid #20303f;
+  border: 1px solid var(--app-border);
   background: rgba(10, 17, 25, 0.96);
-  padding: 24px;
+  box-shadow: var(--app-shadow);
+  padding: 26px;
   display: grid;
   gap: 18px;
 }
 
+.auth-aside {
+  width: min(100%, 560px);
+  align-content: start;
+  gap: 16px;
+}
+
 .eyebrow {
-  color: #78dcff;
+  color: var(--app-accent-strong);
   font-size: 12px;
   letter-spacing: 0.14em;
   margin-bottom: 8px;
+  font-family: var(--font-mono);
 }
 
 .auth-head h1 {
@@ -90,9 +113,29 @@ async function handleLogin() {
   margin-bottom: 8px;
 }
 
+.auth-aside h2 {
+  font-size: 34px;
+  letter-spacing: -0.03em;
+}
+
 .auth-head p {
-  color: #93abbb;
+  color: var(--app-copy-muted);
   line-height: 1.6;
+}
+
+.auth-aside p,
+.auth-aside li {
+  color: var(--app-copy-muted);
+  line-height: 1.7;
+}
+
+.auth-aside ul {
+  padding-left: 18px;
+}
+
+.auth-link {
+  color: var(--app-accent-strong);
+  text-decoration: none;
 }
 
 .auth-form {
@@ -109,16 +152,16 @@ async function handleLogin() {
 
 .auth-form input {
   height: 42px;
-  border: 1px solid #253646;
-  background: #0b1218;
-  color: #eff7fc;
+  border: 1px solid var(--app-border-strong);
+  background: rgba(8, 15, 23, 0.92);
+  color: var(--app-copy);
   padding: 0 12px;
 }
 
 .primary-btn {
   height: 42px;
-  border: 1px solid #16c5ff;
-  background: #16c5ff;
+  border: 1px solid transparent;
+  background: linear-gradient(135deg, #58dbff, #7fe9ff);
   color: #071018;
   font-weight: 700;
   cursor: pointer;
@@ -134,11 +177,22 @@ async function handleLogin() {
   justify-content: space-between;
   gap: 12px;
   font-size: 12px;
-  color: #93abbb;
+  color: var(--app-copy-muted);
 }
 
 .auth-foot a {
-  color: #8fe7ff;
+  color: var(--app-accent-strong);
   text-decoration: none;
+}
+
+@media (max-width: 980px) {
+  .auth-page {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-card,
+  .auth-aside {
+    width: min(100%, 560px);
+  }
 }
 </style>

@@ -5,14 +5,25 @@ import { loadConfig } from '../editor/config.js';
 const SESSION_COOKIE_NAME = 'vibeedit_session';
 const SESSION_TTL_DAYS = 30;
 const ADMIN_BOOTSTRAP_EMAIL = 'zjyuiop321@gmail.com';
+let cachedAuthSecret = '';
 
 function getAuthSecret() {
+  if (cachedAuthSecret) {
+    return cachedAuthSecret;
+  }
   const config = loadConfig();
-  return String(
+  const secret = String(
     process.env.AUTOEDIT_AUTH_SECRET
     || config.auth_secret
-    || `autoedit-auth-${process.env.DATABASE_URL || config.database_url || 'local'}`
+    || ''
   ).trim();
+
+  if (!secret) {
+    throw new Error('Missing auth secret. Set AUTOEDIT_AUTH_SECRET or auth_secret in config before starting VibeEdit.');
+  }
+
+  cachedAuthSecret = secret;
+  return cachedAuthSecret;
 }
 
 function base64UrlEncode(value) {

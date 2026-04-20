@@ -192,36 +192,39 @@ async function loadProjectInterchangeData(projectId, timelineId = '') {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({
       where: { id: projectId },
-      include: {
-        category: true,
-        projectAssets: {
-          orderBy: { sortOrder: 'asc' },
-          include: {
-            asset: {
-              include: {
-                files: true,
-                captions: {
-                  orderBy: { createdAt: 'desc' },
-                  take: 1
-                }
-              }
-            }
-          }
-        },
+      select: {
+        id: true,
+        name: true,
         timelines: {
           where: timelineId
             ? { id: String(timelineId || '').trim() }
             : undefined,
-          include: {
+          select: {
+            id: true,
+            name: true,
+            isPrimary: true,
+            settings: true,
             clips: {
               orderBy: { sortOrder: 'asc' },
-              include: {
+              select: {
+                id: true,
+                assetId: true,
+                label: true,
+                sourceStartSeconds: true,
+                sourceEndSeconds: true,
+                timelineStartSeconds: true,
+                timelineEndSeconds: true,
+                sortOrder: true,
+                metadata: true,
                 asset: {
-                  include: {
-                    files: true,
-                    captions: {
-                      orderBy: { createdAt: 'desc' },
-                      take: 1
+                  select: {
+                    id: true,
+                    title: true,
+                    files: {
+                      select: {
+                        role: true,
+                        uri: true
+                      }
                     }
                   }
                 }

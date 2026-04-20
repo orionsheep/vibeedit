@@ -73,7 +73,6 @@ function mapProjectSummary(project) {
 
 function mapAssetCompact(asset) {
   const originalFile = asset.files?.find((file) => file.role === 'original') || asset.files?.[0] || null;
-  const latestCaption = asset.captions?.[0] || null;
 
   return {
     id: asset.id,
@@ -86,7 +85,7 @@ function mapAssetCompact(asset) {
     width: asset.width,
     height: asset.height,
     frame_rate: asset.frameRate,
-    transcript_text: asset.transcriptText || latestCaption?.text || '',
+    transcript_text: asset.transcriptText || '',
     source_url: originalFile ? `/api/library/assets/${asset.id}/source` : null
   };
 }
@@ -226,17 +225,45 @@ export async function getProjectById(projectId) {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({
       where: { id: projectId },
-      include: {
-        category: true,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        lastOpenedAt: true,
+        category: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
         projectAssets: {
           orderBy: { sortOrder: 'asc' },
-          include: {
+          select: {
+            id: true,
+            assetId: true,
+            sortOrder: true,
+            addedAt: true,
             asset: {
-              include: {
-                files: true,
-                captions: {
-                  orderBy: { createdAt: 'desc' },
-                  take: 1
+              select: {
+                id: true,
+                title: true,
+                originalFilename: true,
+                kind: true,
+                status: true,
+                asrStatus: true,
+                durationSeconds: true,
+                width: true,
+                height: true,
+                frameRate: true,
+                transcriptText: true,
+                files: {
+                  select: {
+                    role: true,
+                    uri: true
+                  }
                 }
               }
             }
@@ -244,15 +271,43 @@ export async function getProjectById(projectId) {
         },
         timelines: {
           orderBy: { createdAt: 'asc' },
-          include: {
+          select: {
+            id: true,
+            name: true,
+            isPrimary: true,
+            settings: true,
             tracks: {
-              orderBy: { sortOrder: 'asc' }
+              orderBy: { sortOrder: 'asc' },
+              select: {
+                id: true,
+                kind: true,
+                name: true,
+                sortOrder: true
+              }
             },
             clips: {
               orderBy: { sortOrder: 'asc' },
-              include: {
+              select: {
+                id: true,
+                assetId: true,
+                label: true,
+                sourceStartSeconds: true,
+                sourceEndSeconds: true,
+                timelineStartSeconds: true,
+                timelineEndSeconds: true,
+                sortOrder: true,
+                metadata: true,
                 asset: {
-                  include: { files: true }
+                  select: {
+                    id: true,
+                    title: true,
+                    files: {
+                      select: {
+                        role: true,
+                        uri: true
+                      }
+                    }
+                  }
                 }
               }
             }
