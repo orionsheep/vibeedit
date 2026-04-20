@@ -537,12 +537,18 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function deleteSelected() {
     commitHistoryMutation(() => {
+      const nextDeletedWords = new Set(deletedWords.value);
+      const nextDeletedGaps = new Set(deletedGaps.value);
+
       selectedWords.value.forEach(index => {
-        deletedWords.value.add(index);
+        nextDeletedWords.add(index);
       });
       selectedGaps.value.forEach(gapIndex => {
-        deletedGaps.value.add(gapIndex);
+        nextDeletedGaps.add(gapIndex);
       });
+
+      deletedWords.value = nextDeletedWords;
+      deletedGaps.value = nextDeletedGaps;
       clearSelectionState();
 
       detectGaps();
@@ -555,15 +561,22 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function restoreSelected() {
     commitHistoryMutation(() => {
+      const nextDeletedWords = new Set(deletedWords.value);
+      const nextDeletedGaps = new Set(deletedGaps.value);
+
       selectedWords.value.forEach(index => {
-        deletedWords.value.delete(index);
+        nextDeletedWords.delete(index);
       });
       selectedGaps.value.forEach(gapIndex => {
-        deletedGaps.value.delete(gapIndex);
+        nextDeletedGaps.delete(gapIndex);
       });
+
+      deletedWords.value = nextDeletedWords;
+      deletedGaps.value = nextDeletedGaps;
       clearSelectionState();
 
       detectGaps();
+      sanitizeDeletedGaps();
     });
   }
 
@@ -572,11 +585,13 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function toggleDeleteWord(index) {
     commitHistoryMutation(() => {
-      if (deletedWords.value.has(index)) {
-        deletedWords.value.delete(index);
+      const nextDeletedWords = new Set(deletedWords.value);
+      if (nextDeletedWords.has(index)) {
+        nextDeletedWords.delete(index);
       } else {
-        deletedWords.value.add(index);
+        nextDeletedWords.add(index);
       }
+      deletedWords.value = nextDeletedWords;
       detectGaps();
       sanitizeDeletedGaps();
     });
@@ -587,11 +602,13 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function toggleDeleteGap(gapIndex) {
     commitHistoryMutation(() => {
-      if (deletedGaps.value.has(gapIndex)) {
-        deletedGaps.value.delete(gapIndex);
+      const nextDeletedGaps = new Set(deletedGaps.value);
+      if (nextDeletedGaps.has(gapIndex)) {
+        nextDeletedGaps.delete(gapIndex);
       } else {
-        deletedGaps.value.add(gapIndex);
+        nextDeletedGaps.add(gapIndex);
       }
+      deletedGaps.value = nextDeletedGaps;
     });
   }
 
@@ -600,10 +617,11 @@ export const useEditorStore = defineStore('editor', () => {
    */
   function clearDeleted() {
     commitHistoryMutation(() => {
-      deletedWords.value.clear();
-      deletedGaps.value.clear();
+      deletedWords.value = new Set();
+      deletedGaps.value = new Set();
       clearSelectionState();
       detectGaps();
+      sanitizeDeletedGaps();
     });
   }
 

@@ -658,13 +658,23 @@ function closeContextMenu() {
 }
 
 function primeSelectionForContext(targetType, targetIndex) {
-  if (hasSelection.value) return;
+  if (selectionContainsContextTarget(targetType, targetIndex)) return;
 
   if (targetType === 'word') {
     editorStore.selectSingleWord(targetIndex);
   } else if (targetType === 'gap') {
     editorStore.selectSingleGap(targetIndex);
   }
+}
+
+function selectionContainsContextTarget(targetType, targetIndex) {
+  if (targetType === 'word') {
+    return selectedWordsRef.value.has(targetIndex);
+  }
+  if (targetType === 'gap') {
+    return selectedGapsRef.value.has(targetIndex);
+  }
+  return false;
 }
 
 function openWordContextMenu(event, index) {
@@ -706,14 +716,14 @@ function restoreSelected() {
 }
 
 function handleContextDelete() {
-  if (!hasSelection.value) {
+  if (!selectionContainsContextTarget(contextMenu.value.targetType, contextMenu.value.targetIndex)) {
     primeSelectionForContext(contextMenu.value.targetType, contextMenu.value.targetIndex);
   }
   deleteSelected();
 }
 
 function handleContextRestore() {
-  if (!hasSelection.value) {
+  if (!selectionContainsContextTarget(contextMenu.value.targetType, contextMenu.value.targetIndex)) {
     primeSelectionForContext(contextMenu.value.targetType, contextMenu.value.targetIndex);
   }
   restoreSelected();
