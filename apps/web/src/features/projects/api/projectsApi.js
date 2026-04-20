@@ -277,13 +277,3 @@ export async function exportProjectSliceXmlBundle(projectId) {
   const response = await axios.post(`${API_BASE}/${projectId}/exports/live-slices/xml-bundle`);
   return response.data;
 }
-
-export async function importProjectPackage(formData, onUploadProgress) {
-  const response = await axios.post(`${API_BASE}/imports/package`, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    },
-    onUploadProgress
-  });
-  return response.data.project;
-}

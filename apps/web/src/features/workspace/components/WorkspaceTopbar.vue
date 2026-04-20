@@ -27,9 +27,6 @@
         </div>
 
         <div class="topbar-action-group">
-          <button class="ghost-btn" :disabled="importingProjectPackage" @click="$emit('trigger-package-import')">
-            {{ importingProjectPackage ? `导入中 ${projectPackageImportProgress}%` : '导入工程包' }}
-          </button>
           <button class="ghost-btn" :disabled="!canOpenDocumentPreview" @click="$emit('open-document')">
             {{ documentTriggerLabel }}
           </button>
@@ -128,10 +125,6 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  importingProjectPackage: {
-    type: Boolean,
-    default: false
-  },
   isExportingAny: {
     type: Boolean,
     default: false
@@ -147,10 +140,6 @@ const props = defineProps({
   projectName: {
     type: String,
     default: ''
-  },
-  projectPackageImportProgress: {
-    type: Number,
-    default: 0
   },
   projectSlicesLength: {
     type: Number,
@@ -187,8 +176,7 @@ const emit = defineEmits([
   'open-document',
   'reload-timeline',
   'save-timeline',
-  'toggle-export-menu',
-  'trigger-package-import'
+  'toggle-export-menu'
 ]);
 
 const exportingXmlBundle = computed(() => (

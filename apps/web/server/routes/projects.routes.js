@@ -10,7 +10,6 @@ import { getProjectEditState, realignProjectEditState, saveProjectEditState } fr
 import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
 import { queueProjectTimelineVideoExport } from '../services/projects/project-export.service.js';
 import { exportProjectInterchangeFile, exportProjectSliceXmlBundle, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
-import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
 import { createProjectSlice, deleteProjectSlice, getProjectSlice, listProjectSlices, suggestProjectSlices, updateProjectSlice } from '../services/projects/project-slice.service.js';
 import { cancelProjectAgentRun, confirmProjectAgentRun, runProjectAgentSessionWorkflow } from '../services/agent/project-agent.service.js';
 import { createProjectAgentSession, getProjectAgentSession, listProjectAgentSessions, listRunEvents } from '../services/agent/agent-session.service.js';
@@ -95,25 +94,6 @@ router.post('/', async (req, res) => {
     });
     res.json({ success: true, project });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/imports/package', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No package file uploaded' });
-    }
-
-    const project = await importProjectPackageFromZip(req.file.path, {
-      ownerId: req.auth?.userId || ''
-    });
-    await fs.promises.unlink(req.file.path).catch(() => {});
-    res.json({ success: true, project });
-  } catch (error) {
-    if (req.file?.path) {
-      await fs.promises.unlink(req.file.path).catch(() => {});
-    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -650,12 +630,6 @@ router.post('/:projectId/exports/video', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-router.post('/:projectId/exports/package', async (req, res) => {
-  res.status(410).json({
-    error: 'VibeEdit 内部工程包导出已关闭，请改用导出视频或导出 XML / EDL / SRT。'
-  });
 });
 
 router.post('/:projectId/exports/interchange', async (req, res) => {

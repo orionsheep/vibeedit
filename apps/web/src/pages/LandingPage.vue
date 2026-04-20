@@ -6,7 +6,7 @@
         <h1>只做 Agent 剪辑与字幕</h1>
         <p>
           这是一个本地优先的视频剪辑工作台。它不再追求语音合成、设备播放、声音克隆这些分散能力，
-          现在只围绕一条主链路：<strong>识别字幕 → 编辑时间线 → 聊天式 Agent 剪辑 → 导出成片与工程文件</strong>。
+          现在只围绕一条主链路：<strong>识别字幕 → 编辑时间线 → 聊天式 Agent 剪辑 → 导出成片与交换文件</strong>。
         </p>
         <div class="cta-row">
           <router-link class="btn primary" to="/projects">进入项目系统</router-link>

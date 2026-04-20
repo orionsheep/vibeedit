@@ -29,8 +29,6 @@
         :timeline-dirty="timelineDirty"
         :deleting-project="deletingProject"
         :saving-timeline="savingTimeline"
-        :importing-project-package="importingProjectPackage"
-        :project-package-import-progress="projectPackageImportProgress"
         :can-open-document-preview="canOpenDocumentPreview"
         :document-trigger-label="documentTriggerLabel"
         :export-trigger-label="exportTriggerLabel"
@@ -48,7 +46,6 @@
         @delete-project="deleteCurrentProject"
         @reload-timeline="reloadTimeline"
         @save-timeline="saveTimeline"
-        @trigger-package-import="triggerProjectPackageImport"
         @open-document="openDocumentPreview()"
         @toggle-export-menu="toggleExportMenu"
         @export-video="handleExportMenuVideo"
@@ -56,14 +53,6 @@
         @export-slice-xml-bundle="handleExportMenuSliceXmlBundle"
         @open-export-download="openVideoExportDownload"
       />
-      <input
-        ref="projectPackageImportInputRef"
-        class="project-upload-input"
-        type="file"
-        accept=".zip,application/zip"
-        @change="handleProjectPackageImportSelection"
-      />
-
       <div ref="workspaceBodyRef" class="workspace-body" :style="workspaceLayoutStyle">
         <aside ref="sidebarRef" class="sidebar" :class="{ collapsed: sidebarCollapsed }" :style="sidebarStyle" @contextmenu.stop>
           <template v-if="!sidebarCollapsed">
@@ -388,7 +377,6 @@ import {
   getProject,
   getProjectEditState,
   getProjectTimeline,
-  importProjectPackage,
   listProjectJobs,
   listProjectSlices,
   listProjectAgentSessions,
@@ -484,9 +472,6 @@ const assetJobPollIdleCycles = ref(0);
 const assetJobRefreshInFlight = ref(false);
 const activePreviewClip = ref(null);
 const previewPlaying = ref(false);
-const projectPackageImportInputRef = ref(null);
-const importingProjectPackage = ref(false);
-const projectPackageImportProgress = ref(0);
 const draggedAssetId = ref('');
 const dragOverAssetId = ref('');
 const editorBaselineSignature = ref('');
@@ -2515,37 +2500,6 @@ async function handleExportMenuInterchange(format) {
 async function handleExportMenuSliceXmlBundle() {
   closeExportMenu();
   await handleExportSliceXmlBundle();
-}
-
-function triggerProjectPackageImport() {
-  if (importingProjectPackage.value) return;
-  projectPackageImportInputRef.value?.click();
-}
-
-async function handleProjectPackageImportSelection(event) {
-  const file = event.target?.files?.[0] || null;
-  if (!file) return;
-
-  const formData = new FormData();
-  formData.append('file', file);
-  importingProjectPackage.value = true;
-  projectPackageImportProgress.value = 0;
-
-  try {
-    const importedProject = await importProjectPackage(formData, (progressEvent) => {
-      const total = Number(progressEvent?.total || 0);
-      const loaded = Number(progressEvent?.loaded || 0);
-      if (!total) return;
-      projectPackageImportProgress.value = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-    });
-    await router.push(`/projects/${importedProject.id}/edit`);
-  } finally {
-    importingProjectPackage.value = false;
-    projectPackageImportProgress.value = 0;
-    if (event?.target) {
-      event.target.value = '';
-    }
-  }
 }
 
 async function loadSnapshots() {
