@@ -9,6 +9,10 @@
         <li>直播切片与口播剪稿共用同一个 Agent</li>
         <li>支持视频导出，以及 XML / EDL / SRT 交换文件导出</li>
       </ul>
+      <div class="author-contact">
+        <span>作者微信</span>
+        <strong>ChangqingMY</strong>
+      </div>
       <router-link class="auth-link" to="/">查看产品概览</router-link>
     </section>
 
@@ -136,6 +140,24 @@ async function handleLogin() {
 .auth-link {
   color: var(--app-accent-strong);
   text-decoration: none;
+}
+
+.author-contact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(88, 219, 255, 0.2);
+  background: rgba(10, 18, 27, 0.72);
+  color: var(--app-copy-soft);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.author-contact strong {
+  color: var(--app-copy);
+  font-size: 14px;
+  letter-spacing: 0.02em;
 }
 
 .auth-form {

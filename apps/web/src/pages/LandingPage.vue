@@ -13,6 +13,10 @@
           <router-link class="btn" to="/library">打开素材库</router-link>
           <router-link class="btn" to="/docs">查看文档</router-link>
         </div>
+        <div class="author-contact">
+          <span>作者微信</span>
+          <strong>ChangqingMY</strong>
+        </div>
       </div>
 
       <div class="hero-panel">
@@ -98,6 +102,24 @@ p {
   display: flex;
   gap: 12px;
   margin-top: 22px;
+}
+
+.author-contact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(88, 219, 255, 0.2);
+  background: rgba(10, 18, 27, 0.78);
+  color: var(--app-copy-soft);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.author-contact strong {
+  color: var(--app-copy);
+  font-size: 14px;
 }
 
 .btn {
