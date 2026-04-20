@@ -41,7 +41,6 @@
         :video-export-message="videoExportMessage"
         :video-export-download-url="videoExportDownloadUrl"
         :has-video-export-status="hasVideoExportStatus"
-        :exporting-package="exportingPackage"
         :exporting-interchange-format="exportingInterchangeFormat"
         :is-live-slicing-mode="isLiveSlicingMode"
         :project-slices-length="projectSlices.length"
@@ -53,7 +52,6 @@
         @open-document="openDocumentPreview()"
         @toggle-export-menu="toggleExportMenu"
         @export-video="handleExportMenuVideo"
-        @export-package="handleExportMenuPackage"
         @export-interchange="handleExportMenuInterchange"
         @export-slice-xml-bundle="handleExportMenuSliceXmlBundle"
         @open-export-download="openVideoExportDownload"
@@ -346,7 +344,6 @@
             <button class="context-item" @click="reloadTimeline">重载项目</button>
             <button class="context-item" @click="saveSnapshot">保存快照</button>
             <button class="context-item" @click="handleExportVideo">导出视频</button>
-            <button class="context-item" @click="handleExportPackage">导出工程包</button>
           </template>
         </div>
       </Teleport>
@@ -383,7 +380,6 @@ import {
   deleteProject as deleteProjectRequest,
   deleteProjectSlice,
   exportProjectInterchange,
-  exportProjectPackage,
   exportProjectSliceXmlBundle,
   exportProjectVideo,
   getProjectSlice,
@@ -460,7 +456,6 @@ const videoExportProgress = ref(0);
 const videoExportMessage = ref('');
 const videoExportDownloadUrl = ref('');
 const videoExportJobId = ref('');
-const exportingPackage = ref(false);
 const exportingInterchangeFormat = ref('');
 const exportingSliceXmlBundle = ref(false);
 const deletingProject = ref(false);
@@ -550,7 +545,6 @@ const projectAssets = computed(() => (project.value?.projectAssets || []).map((r
 
 const isExportingAny = computed(() => (
   exportingVideo.value ||
-  exportingPackage.value ||
   Boolean(exportingInterchangeFormat.value) ||
   exportingSliceXmlBundle.value
 ));
@@ -581,7 +575,6 @@ const hasVideoExportStatus = computed(() => (
 
 const exportTriggerLabel = computed(() => {
   if (exportingVideo.value) return '视频导出中...';
-  if (exportingPackage.value) return '工程包导出中...';
   if (exportingInterchangeFormat.value === 'premiere_xml') return 'XML 导出中...';
   if (exportingInterchangeFormat.value === 'edl') return 'EDL 导出中...';
   if (exportingInterchangeFormat.value === 'capcut_srt') return 'SRT 导出中...';
@@ -2458,27 +2451,6 @@ function openVideoExportDownload() {
   window.open(videoExportDownloadUrl.value, '_blank', 'noopener');
 }
 
-async function handleExportPackage() {
-  exportingPackage.value = true;
-  try {
-    if (timelineDirty.value) {
-      await saveTimeline();
-    }
-    if (isLiveSlicingMode.value && !activeExportTimelineId.value) {
-      throw new Error('请先选择一个切片再导出工程包');
-    }
-    const result = await exportProjectPackage(projectId.value, {
-      timelineId: activeExportTimelineId.value || undefined
-    });
-    window.open(result.download_url, '_blank', 'noopener');
-    await loadSnapshots();
-  } catch (exportError) {
-    window.alert(exportError.response?.data?.error || exportError.message || '导出工程包失败');
-  } finally {
-    exportingPackage.value = false;
-  }
-}
-
 async function handleExportInterchange(format) {
   exportingInterchangeFormat.value = format;
   try {
@@ -2533,11 +2505,6 @@ function closeExportMenu() {
 async function handleExportMenuVideo() {
   closeExportMenu();
   await handleExportVideo();
-}
-
-async function handleExportMenuPackage() {
-  closeExportMenu();
-  await handleExportPackage();
 }
 
 async function handleExportMenuInterchange(format) {

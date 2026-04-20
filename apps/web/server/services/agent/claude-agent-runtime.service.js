@@ -383,8 +383,7 @@ function isMutatingChange(change = {}) {
     'remove_all_pauses',
     'clear_deleted',
     'save_snapshot',
-    'export_video',
-    'export_project_package'
+    'export_video'
   ]).has(tool);
 }
 

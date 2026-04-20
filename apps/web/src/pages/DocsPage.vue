@@ -64,8 +64,7 @@ autoedit config --show</code></pre>
         <h2>导出</h2>
         <ul>
           <li>导出视频：最终成片</li>
-          <li>导出工程：Premiere / Resolve XML、EDL、剪映 SRT</li>
-          <li>导出完整工程包：XML / EDL / SRT + 原视频素材 + manifest</li>
+          <li>导出到其他软件：Premiere / Resolve XML、EDL、剪映 SRT</li>
         </ul>
       </section>
 

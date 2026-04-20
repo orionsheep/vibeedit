@@ -8,7 +8,7 @@ import { createProject, deleteProject, getProjectById, listProjectCategories, li
 import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, listTimelineSnapshots, removeTimelineClip, replaceTimelineClips } from '../services/projects/timeline.service.js';
 import { getProjectEditState, realignProjectEditState, saveProjectEditState } from '../services/projects/project-edit-state.service.js';
 import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
-import { exportProjectPackage, queueProjectTimelineVideoExport } from '../services/projects/project-export.service.js';
+import { queueProjectTimelineVideoExport } from '../services/projects/project-export.service.js';
 import { exportProjectInterchangeFile, exportProjectSliceXmlBundle, PROJECT_INTERCHANGE_FORMATS } from '../services/projects/project-interchange.service.js';
 import { importProjectPackageFromZip } from '../services/projects/project-import.service.js';
 import { createProjectSlice, deleteProjectSlice, getProjectSlice, listProjectSlices, suggestProjectSlices, updateProjectSlice } from '../services/projects/project-slice.service.js';
@@ -653,21 +653,9 @@ router.post('/:projectId/exports/video', async (req, res) => {
 });
 
 router.post('/:projectId/exports/package', async (req, res) => {
-  try {
-    const result = await exportProjectPackage(req.params.projectId, {
-      ...(req.body || {}),
-      timelineId: String(req.body?.timelineId || '').trim()
-    });
-    const filename = path.basename(result.zipPath);
-    res.json({
-      success: true,
-      package_dir: result.packageDir,
-      zip_file: result.zipPath,
-      download_url: `/api/projects/${req.params.projectId}/downloads/${filename}`
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  res.status(410).json({
+    error: 'VibeEdit 内部工程包导出已关闭，请改用导出视频或导出 XML / EDL / SRT。'
+  });
 });
 
 router.post('/:projectId/exports/interchange', async (req, res) => {

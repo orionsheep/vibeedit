@@ -7,7 +7,7 @@
       <ul>
         <li>项目级字幕与时间线编辑</li>
         <li>直播切片与口播剪稿共用同一个 Agent</li>
-        <li>支持 XML / EDL / SRT / 工程包导出</li>
+        <li>支持视频导出，以及 XML / EDL / SRT 交换文件导出</li>
       </ul>
       <router-link class="auth-link" to="/">查看产品概览</router-link>
     </section>

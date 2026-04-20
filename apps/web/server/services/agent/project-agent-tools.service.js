@@ -1,6 +1,6 @@
 import { withDatabase } from '../core/database.service.js';
 import { createTimelineSnapshot } from '../projects/timeline.service.js';
-import { exportProjectPackage, exportProjectTimelineVideo } from '../projects/project-export.service.js';
+import { exportProjectTimelineVideo } from '../projects/project-export.service.js';
 import { getProjectById, removeAssetFromProject, reorderProjectAssets } from '../projects/project.service.js';
 import {
   createProjectSlice,
@@ -2514,16 +2514,6 @@ export async function toolExportVideo(projectId) {
     change: 'export_video',
     summary: '已触发项目视频导出。',
     output_path: result.outputPath
-  };
-}
-
-export async function toolExportPackage(projectId) {
-  const result = await exportProjectPackage(projectId, {});
-  return {
-    success: true,
-    change: 'export_project_package',
-    summary: '已生成项目工程包。',
-    zip_path: result.zipPath
   };
 }
 

@@ -268,11 +268,6 @@ export async function waitForProjectJob(projectId, jobId, {
   throw new Error('导出超时，请稍后重试');
 }
 
-export async function exportProjectPackage(projectId, payload = {}) {
-  const response = await axios.post(`${API_BASE}/${projectId}/exports/package`, payload);
-  return response.data;
-}
-
 export async function exportProjectInterchange(projectId, format, payload = {}) {
   const response = await axios.post(`${API_BASE}/${projectId}/exports/interchange`, { format, ...payload });
   return response.data;

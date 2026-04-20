@@ -8,7 +8,6 @@ import {
   toolDeleteWordsByPhrase,
   toolCreateProjectSlice,
   toolDeleteProjectSlice,
-  toolExportPackage,
   toolExportVideo,
   toolGetProjectSliceDetail,
   toolClearDeleted,
@@ -471,12 +470,6 @@ export const TOOL_DEFINITIONS = {
     schema: {},
     mutatesProject: true,
     execute: (projectId) => toolExportVideo(projectId)
-  },
-  export_project_package: {
-    description: '导出项目工程包。',
-    schema: {},
-    mutatesProject: true,
-    execute: (projectId) => toolExportPackage(projectId)
   }
 };
 

@@ -44,9 +44,6 @@
               <button class="context-item" :disabled="isExportingAny" @click="$emit('export-video')">
                 {{ exportingVideo ? '视频导出中...' : '导出视频' }}
               </button>
-              <button class="context-item" :disabled="isExportingAny" @click="$emit('export-package')">
-                {{ exportingPackage ? '工程包导出中...' : '导出工程包' }}
-              </button>
               <button
                 class="context-item"
                 :disabled="isExportingAny"
@@ -123,10 +120,6 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  exportingPackage: {
-    type: Boolean,
-    default: false
-  },
   exportingSliceXmlBundle: {
     type: Boolean,
     default: false
@@ -189,7 +182,6 @@ const emit = defineEmits([
   'delete-project',
   'export-interchange',
   'open-export-download',
-  'export-package',
   'export-slice-xml-bundle',
   'export-video',
   'open-document',
