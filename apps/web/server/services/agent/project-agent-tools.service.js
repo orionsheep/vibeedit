@@ -2248,15 +2248,17 @@ export async function toolClearDeleted(projectId, _args = {}, context = {}) {
 
 export async function toolRemovePauses(
   projectId,
-  {
+  args = {},
+  context = {}
+) {
+  const hasExplicitMinGapSeconds = Object.prototype.hasOwnProperty.call(args || {}, 'min_gap_seconds');
+  const {
     min_gap_seconds: minGapSeconds = 0.4,
     gap_keys: gapKeys = [],
     asset_title: assetTitle = '',
     limit = null,
     aggressive = false
-  } = {},
-  context = {}
-) {
+  } = args || {};
   const state = await loadProjectEditableState(projectId);
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
   const strictAssemble = String(context?.requestContext?.mode || '') === 'assemble_script';
@@ -2281,10 +2283,13 @@ export async function toolRemovePauses(
     };
   }
   const requestedGapKeySet = new Set(requestedGapKeys);
+  const requestedGapMinimum = requestedGapKeys.length
+    ? (hasExplicitMinGapSeconds ? Math.max(0, Number(minGapSeconds || 0)) : 0)
+    : (aggressiveRequest ? Math.min(Number(minGapSeconds || 0.4), 0.25) : Number(minGapSeconds || 0.4));
   const selectedCandidates = buildPauseCandidates(state, {
     minGapSeconds: requestedGapKeys.length
       ? 0
-      : (aggressiveRequest ? Math.min(Number(minGapSeconds || 0.4), 0.25) : Number(minGapSeconds || 0.4)),
+      : requestedGapMinimum,
     assetTitle,
     limit: requestedGapKeys.length
       ? Math.max(1, requestedGapKeys.length)
@@ -2293,7 +2298,7 @@ export async function toolRemovePauses(
     includeCrossAsset: aggressiveRequest
   }).filter((candidate) => (
     (!requestedGapKeys.length || requestedGapKeySet.has(candidate.gap_key) || requestedGapKeySet.has(buildPauseCandidateAlias(candidate))) &&
-    (!requestedGapKeys.length || Number(candidate.gap_seconds || 0) >= Number(minGapSeconds || 0.4))
+    Number(candidate.gap_seconds || 0) >= requestedGapMinimum
   ));
 
   if (!selectedCandidates.length) {

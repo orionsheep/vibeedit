@@ -10,7 +10,12 @@ import {
   markGlmCandidateFailure,
   markGlmCandidateHealthy
 } from './glm-claude-rotation.service.js';
-import { TOOL_DEFINITIONS, createProjectAgentMcpServer } from './claude-agent-mcp.service.js';
+import {
+  TOOL_DEFINITIONS,
+  compactProjectAgentToolResult,
+  createProjectAgentMcpServer,
+  executeProjectAgentToolDirect
+} from './claude-agent-mcp.service.js';
 import {
   classifyProjectAgentRequest
 } from './project-agent-intent.service.js';
@@ -410,12 +415,148 @@ function requestIsPauseOnly({ prompt = '', topic = '' } = {}) {
   return !/(拼稿|去重|重复|重做|重剪|精简内容|删整句|删整段|大幅删减|压缩时长|目标分钟|整理口播|多版本)/.test(text);
 }
 
+function requestWantsAggressivePauseCleanup({ prompt = '', topic = '' } = {}) {
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.toLowerCase();
+  if (!text) return false;
+  const mentionsPause = /(停顿|间隙|空白|空隙|节奏)/.test(text);
+  if (!mentionsPause) return false;
+  return /(所有|全部|全都|全部的|都删|全删|彻底|一口气|一次性|整个|通通)/.test(text);
+}
+
 function hasAppliedPauseCleanup(appliedChanges = []) {
   return appliedChanges.some((change) => (
     didChangeApply(change) &&
     String(change.tool || change.change || '').trim() === 'remove_pauses' &&
     Number(change.deleted_gap_count || 0) > 0
   ));
+}
+
+async function emitDirectToolLifecycle(emit, toolName, args = {}, result = null) {
+  await emit({
+    type: 'tool_call',
+    step: toolName,
+    message: `执行 ${toolName}`,
+    payload: {
+      tool: toolName,
+      args
+    }
+  });
+  if (result) {
+    await emit({
+      type: 'tool_result',
+      step: toolName,
+      message: result?.summary || `${toolName} 已执行`,
+      payload: {
+        tool: toolName,
+        summary: result?.summary || '',
+        result: compactProjectAgentToolResult(toolName, result)
+      }
+    });
+  }
+}
+
+async function runAutomaticPauseCleanupFallback({
+  projectId,
+  emit,
+  signal,
+  appliedChanges,
+  requestContext = {},
+  llmProvider = '',
+  llmModel = ''
+}) {
+  const aggressive = requestWantsAggressivePauseCleanup(requestContext);
+  const toolContext = {
+    signal,
+    llmProvider,
+    llmModel,
+    requestContext
+  };
+
+  await emit({
+    type: 'stage',
+    step: 'pause_recovery',
+    message: aggressive
+      ? '检测到本轮明确要求彻底清理停顿，正在自动补做一次全量停顿清理。'
+      : '检测到本轮要求处理停顿，但模型没有真正切掉 gap，正在自动补做一次定点停顿清理。',
+    payload: {
+      aggressive
+    }
+  });
+
+  if (aggressive) {
+    await emitDirectToolLifecycle(emit, 'remove_pauses', { aggressive: true });
+    const removeResult = await executeProjectAgentToolDirect(projectId, 'remove_pauses', {
+      aggressive: true
+    }, toolContext);
+    await emitDirectToolLifecycle(emit, 'remove_pauses', { aggressive: true }, removeResult);
+    if (removeResult?.changed) {
+      appliedChanges.push({
+        tool: 'remove_pauses',
+        ...removeResult
+      });
+    }
+    return {
+      applied: Number(removeResult?.deleted_gap_count || 0) > 0,
+      candidateCount: Number(removeResult?.deleted_gap_count || 0),
+      result: removeResult
+    };
+  }
+
+  await emitDirectToolLifecycle(emit, 'get_pause_candidates', { min_gap_seconds: 0.35, limit: 8 });
+  const candidateResult = await executeProjectAgentToolDirect(projectId, 'get_pause_candidates', {
+    min_gap_seconds: 0.35,
+    limit: 8
+  }, toolContext);
+  await emitDirectToolLifecycle(emit, 'get_pause_candidates', { min_gap_seconds: 0.35, limit: 8 }, candidateResult);
+
+  const candidates = Array.isArray(candidateResult?.candidates) ? candidateResult.candidates : [];
+  const selectedGapKeys = candidates
+    .filter((candidate) => candidate?.recommended)
+    .slice(0, 6)
+    .map((candidate) => String(candidate.gap_key || '').trim())
+    .filter(Boolean);
+  const fallbackGapKeys = selectedGapKeys.length
+    ? selectedGapKeys
+    : candidates
+      .slice(0, 6)
+      .map((candidate) => String(candidate.gap_key || '').trim())
+      .filter(Boolean);
+
+  if (!fallbackGapKeys.length) {
+    await emit({
+      type: 'stage',
+      step: 'pause_recovery',
+      message: '自动补做停顿清理时，没有找到可删除的明显停顿候选。',
+      payload: {
+        aggressive: false,
+        candidate_count: candidates.length
+      }
+    });
+    return {
+      applied: false,
+      candidateCount: candidates.length,
+      result: candidateResult
+    };
+  }
+
+  const removeArgs = {
+    gap_keys: fallbackGapKeys,
+    min_gap_seconds: 0
+  };
+  await emitDirectToolLifecycle(emit, 'remove_pauses', removeArgs);
+  const removeResult = await executeProjectAgentToolDirect(projectId, 'remove_pauses', removeArgs, toolContext);
+  await emitDirectToolLifecycle(emit, 'remove_pauses', removeArgs, removeResult);
+  if (removeResult?.changed) {
+    appliedChanges.push({
+      tool: 'remove_pauses',
+      ...removeResult
+    });
+  }
+  return {
+    applied: Number(removeResult?.deleted_gap_count || 0) > 0,
+    candidateCount: candidates.length,
+    result: removeResult
+  };
 }
 
 function selectToolNames({ mode = 'custom' } = {}) {
@@ -885,6 +1026,25 @@ export async function runClaudeAgentSession({
         const requiresMutation = requestProfile.requiresMutation;
         const requiresPauseCleanup = requestExplicitPauseCleanup({ prompt, topic });
         const pauseOnlyCleanup = requestIsPauseOnly({ prompt, topic });
+        if (requiresPauseCleanup && !hasAppliedPauseCleanup(appliedChanges)) {
+          await runAutomaticPauseCleanupFallback({
+            projectId,
+            emit,
+            signal: abortController.signal,
+            appliedChanges,
+            requestContext: {
+              mode: normalizedMode,
+              prompt,
+              topic,
+              targetMinutes,
+              preferencePrompt,
+              sessionId,
+              runId
+            },
+            llmProvider: candidate.provider,
+            llmModel: candidate.model
+          });
+        }
         if (requiresToolUse && !appliedChanges.length) {
           throw new Error('本次 Agent 没有真正调用需要的工具，请重试。');
         }
@@ -895,7 +1055,7 @@ export async function runClaudeAgentSession({
           throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
         }
         if (requiresPauseCleanup && !hasAppliedPauseCleanup(appliedChanges)) {
-          throw new Error('本次请求明确要求处理停顿/间隙，但 Agent 没有真正切掉任何 gap。请先读取停顿候选，再用 gap_keys 定点调用 remove_pauses。');
+          throw new Error('本次请求明确要求处理停顿/间隙，但当前项目里没有找到可执行的明显停顿候选，或自动补做停顿清理仍未真正切掉 gap。请重试并指定更明确范围。');
         }
         if (pauseOnlyCleanup && appliedChanges.some((change) => (
           didChangeApply(change) &&

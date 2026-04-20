@@ -571,3 +571,7 @@ export async function executeProjectAgentToolDirect(projectId, toolName, args = 
 
   return definition.execute(projectId, args, context);
 }
+
+export function compactProjectAgentToolResult(toolName, result = {}) {
+  return compactResultPayload(toolName, result);
+}
