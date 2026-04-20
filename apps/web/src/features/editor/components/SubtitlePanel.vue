@@ -24,44 +24,49 @@
             <span class="panel-stats">{{ keptWords }}/{{ totalWords }} 字</span>
           </div>
           <div class="editor-toolbar">
-            <button
-              class="editor-btn danger"
-              :disabled="!hasSelection"
-              @click="deleteSelected"
-              title="删除选中 (Delete/Backspace)"
-            >
-              <i class="fas fa-trash"></i>
-              删除
-            </button>
-            <button
-              class="editor-btn"
-              :disabled="!hasSelection"
-              @click="restoreSelected"
-              title="恢复选中"
-            >
-              <i class="fas fa-undo"></i>
-              恢复
-            </button>
-            <div class="toolbar-divider"></div>
-            <button class="editor-btn danger" @click="confirmClearDeleted">
-              <i class="fas fa-broom"></i>
-              清除已删除
-            </button>
-            <div class="toolbar-divider"></div>
-            <div class="config-item">
-              <label for="gapThreshold">间隙阈值 (秒):</label>
-              <input
-                id="gapThreshold"
-                type="number"
-                :value="config.gapThreshold"
-                @change="updateGapThreshold"
-                step="0.1"
-                min="0.1"
-                max="5"
-                style="width: 60px;"
-              />
+            <div class="editor-toolbar-block">
+              <button
+                class="editor-btn danger"
+                :disabled="!hasSelection"
+                @click="deleteSelected"
+                title="删除选中 (Delete/Backspace)"
+              >
+                <i class="fas fa-trash"></i>
+                删除
+              </button>
+              <button
+                class="editor-btn"
+                :disabled="!hasSelection"
+                @click="restoreSelected"
+                title="恢复选中"
+              >
+                <i class="fas fa-undo"></i>
+                恢复
+              </button>
             </div>
-            <div class="toolbar-divider"></div>
+
+            <div class="editor-toolbar-block editor-toolbar-block-muted">
+              <button class="editor-btn danger" @click="confirmClearDeleted">
+                <i class="fas fa-broom"></i>
+                清除已删除
+              </button>
+            </div>
+
+            <div class="editor-toolbar-block editor-toolbar-block-config">
+              <div class="config-item">
+                <label for="gapThreshold">间隙阈值 (秒):</label>
+                <input
+                  id="gapThreshold"
+                  type="number"
+                  :value="config.gapThreshold"
+                  @change="updateGapThreshold"
+                  step="0.1"
+                  min="0.1"
+                  max="5"
+                  style="width: 60px;"
+                />
+              </div>
+            </div>
           </div>
           <div class="editor-mode-switch">
             <button
@@ -83,41 +88,47 @@
 
         <div v-if="props.workspaceMode === 'live_slicing'" class="slice-inline-toolbar">
           <div class="slice-inline-actions">
-            <button
-              class="editor-btn"
-              :disabled="!props.canOpenDocument"
-              @click="$emit('openDocument')"
-            >
-              文稿
-            </button>
-            <button
-              class="editor-btn"
-              :disabled="!props.canCreateSliceFromSelection || props.sliceActionBusy"
-              @click="$emit('createSliceFromSelection')"
-            >
-              新建切片
-            </button>
-            <button
-              class="editor-btn"
-              :disabled="!props.canAppendSelectionToSlice || props.sliceActionBusy"
-              @click="$emit('appendSelectionToSlice')"
-            >
-              加入当前切片
-            </button>
-            <button
-              class="editor-btn"
-              :disabled="!props.canRemoveSelectionFromSlice || props.sliceActionBusy"
-              @click="$emit('removeSelectionFromSlice')"
-            >
-              从当前切片移出
-            </button>
-            <button
-              class="editor-btn danger"
-              :disabled="!props.canDeleteSelectedSlice || props.sliceActionBusy"
-              @click="$emit('deleteSelectedSlice')"
-            >
-              删除当前切片
-            </button>
+            <div class="slice-action-group">
+              <button
+                class="editor-btn"
+                :disabled="!props.canOpenDocument"
+                @click="$emit('openDocument')"
+              >
+                文稿
+              </button>
+            </div>
+
+            <div class="slice-action-group slice-action-group-primary">
+              <button
+                class="editor-btn"
+                :disabled="!props.canCreateSliceFromSelection || props.sliceActionBusy"
+                @click="$emit('createSliceFromSelection')"
+              >
+                新建切片
+              </button>
+              <button
+                class="editor-btn"
+                :disabled="!props.canAppendSelectionToSlice || props.sliceActionBusy"
+                @click="$emit('appendSelectionToSlice')"
+              >
+                加入当前切片
+              </button>
+              <button
+                class="editor-btn"
+                :disabled="!props.canRemoveSelectionFromSlice || props.sliceActionBusy"
+                @click="$emit('removeSelectionFromSlice')"
+              >
+                从当前切片移出
+              </button>
+              <button
+                class="editor-btn danger"
+                :disabled="!props.canDeleteSelectedSlice || props.sliceActionBusy"
+                @click="$emit('deleteSelectedSlice')"
+              >
+                删除当前切片
+              </button>
+            </div>
+
             <span class="slice-inline-hint">{{ props.sliceSelectionHint }}</span>
           </div>
 
@@ -1066,8 +1077,9 @@ export default {
 .subtitle-editor {
   width: 50%;
   min-width: 400px;
-  background: var(--bg-secondary, #141414);
-  border-right: 1px solid var(--border, #2a2a2a);
+  background:
+    linear-gradient(180deg, rgba(10, 16, 24, 0.97) 0%, rgba(9, 15, 23, 0.98) 100%);
+  border-right: 1px solid rgba(88, 219, 255, 0.08);
   display: flex;
   flex-direction: column;
 }
@@ -1092,16 +1104,18 @@ export default {
 
 .editor-topbar {
   display: grid;
-  gap: 8px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border, #2a2a2a);
-  background: var(--bg-tertiary, #1f1f1f);
+  gap: 10px;
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid rgba(88, 219, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(11, 19, 28, 0.98) 0%, rgba(10, 17, 25, 0.96) 100%);
+  box-shadow: inset 0 -1px 0 rgba(140, 234, 255, 0.04);
 }
 
 .editor-topbar-main {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .editor-header {
@@ -1119,38 +1133,61 @@ export default {
   gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+.editor-toolbar-block,
+.slice-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid rgba(88, 219, 255, 0.08);
+  background: rgba(9, 15, 22, 0.86);
+}
+
+.editor-toolbar-block-muted {
+  border-color: rgba(255, 135, 147, 0.1);
+  background: rgba(17, 12, 14, 0.68);
+}
+
+.editor-toolbar-block-config {
+  background: rgba(8, 14, 21, 0.96);
 }
 
 .editor-mode-switch {
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--border, #2a2a2a);
-  background: var(--bg-primary, #0a0a0a);
+  border: 1px solid rgba(88, 219, 255, 0.12);
+  background: rgba(8, 14, 21, 0.96);
   margin-left: auto;
   flex: 0 0 auto;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .mode-switch-btn {
   border: none;
   background: transparent;
   color: var(--text-secondary, #a0a0a0);
-  padding: 6px 10px;
+  padding: 7px 10px;
   font-size: 11px;
   cursor: pointer;
+  letter-spacing: 0.04em;
 }
 
 .mode-switch-btn.active {
-  background: rgba(0, 212, 255, 0.14);
+  background: rgba(0, 212, 255, 0.16);
   color: var(--text-primary, #ffffff);
-  box-shadow: inset 0 0 0 1px var(--accent, #00d4ff);
+  box-shadow: inset 0 0 0 1px rgba(88, 219, 255, 0.92);
 }
 
 .slice-inline-toolbar {
   display: grid;
   gap: 8px;
+  padding: 10px 12px 0;
+  border-top: 1px solid rgba(88, 219, 255, 0.05);
 }
 
 .slice-inline-actions {
@@ -1164,32 +1201,37 @@ export default {
   font-size: 11px;
   color: var(--text-secondary, #a0a0a0);
   min-width: 0;
+  line-height: 1.45;
 }
 
 .slice-inline-rail {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  padding: 2px 2px 4px 0;
 }
 
 .slice-inline-chip {
   flex: 0 0 auto;
   min-width: 132px;
-  padding: 7px 10px;
+  padding: 8px 10px 9px;
   border: 1px solid color-mix(in srgb, var(--slice-inline-color) 58%, var(--border, #2a2a2a));
-  background: color-mix(in srgb, var(--slice-inline-color) 12%, var(--bg-primary, #0a0a0a));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--slice-inline-color) 10%, rgba(8, 15, 22, 0.98)) 0%, rgba(8, 14, 21, 0.98) 100%);
   color: var(--text-primary, #ffffff);
   text-align: left;
   display: grid;
-  gap: 2px;
+  gap: 3px;
   cursor: pointer;
-  box-shadow: inset 2px 0 0 var(--slice-inline-color);
+  box-shadow:
+    inset 2px 0 0 var(--slice-inline-color),
+    0 10px 22px rgba(0, 0, 0, 0.18);
 }
 
 .slice-inline-chip.active {
   border-color: var(--slice-inline-color);
-  background: color-mix(in srgb, var(--slice-inline-color) 18%, var(--bg-primary, #0a0a0a));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--slice-inline-color) 18%, rgba(9, 18, 27, 0.98)) 0%, rgba(8, 16, 24, 1) 100%);
+  transform: translateY(-1px);
 }
 
 .slice-inline-chip-kicker {
@@ -1245,34 +1287,30 @@ export default {
   font-size: 14px;
 }
 
-.toolbar-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--border, #2a2a2a);
-  margin: 0 4px;
-}
-
 .editor-btn {
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid transparent;
+  min-height: 28px;
+  padding: 6px 10px;
+  background: rgba(11, 19, 28, 0.92);
+  border: 1px solid rgba(88, 219, 255, 0.08);
   color: var(--text-secondary, #a0a0a0);
   cursor: pointer;
-  border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
   display: flex;
   align-items: center;
   gap: 4px;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.15s;
+  white-space: nowrap;
 }
 
 .editor-btn:hover {
-  background: var(--bg-hover, #2a2a2a);
+  background: rgba(17, 28, 40, 0.98);
+  border-color: rgba(88, 219, 255, 0.18);
   color: var(--text-primary, #ffffff);
 }
 
 .editor-btn.danger:hover {
-  background: var(--danger, #ff4757);
+  background: rgba(255, 71, 87, 0.18);
+  border-color: rgba(255, 71, 87, 0.32);
   color: white;
 }
 
@@ -1292,7 +1330,6 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 4px;
   white-space: nowrap;
 }
 
@@ -1302,10 +1339,10 @@ export default {
 }
 
 .config-item input {
+  min-height: 28px;
   padding: 4px 8px;
-  background: var(--bg-primary, #0a0a0a);
-  border: 1px solid var(--border, #2a2a2a);
-  border-radius: 4px;
+  background: rgba(7, 12, 18, 0.98);
+  border: 1px solid rgba(88, 219, 255, 0.1);
   color: var(--text-primary, #ffffff);
   font-size: 12px;
 }
@@ -1318,9 +1355,11 @@ export default {
 .editor-container {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 18px 20px 24px;
   user-select: none;
   contain: layout paint style;
+  background:
+    linear-gradient(180deg, rgba(8, 13, 20, 0.72) 0%, rgba(7, 12, 18, 0.92) 100%);
 }
 
 @media (max-width: 1280px) {
@@ -1334,7 +1373,7 @@ export default {
 }
 
 .text-content {
-  line-height: 2.2;
+  line-height: 2.18;
   font-size: 16px;
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -1487,8 +1526,8 @@ export default {
   position: fixed;
   z-index: 40;
   min-width: 132px;
-  border: 1px solid var(--border, #2a2a2a);
-  background: rgba(10, 10, 10, 0.98);
+  border: 1px solid rgba(88, 219, 255, 0.12);
+  background: rgba(8, 14, 20, 0.98);
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.48);
   overflow: hidden;
 }

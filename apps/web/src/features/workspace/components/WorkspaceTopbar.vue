@@ -13,45 +13,59 @@
     </div>
 
     <div class="topbar-right">
-      <span v-if="timelineDirty" class="stat-chip warning">未保存</span>
-      <button class="ghost-btn danger-ghost-btn" :disabled="deletingProject" @click="$emit('delete-project')">
-        {{ deletingProject ? '删除中...' : '删除项目' }}
-      </button>
-      <button class="ghost-btn" @click="$emit('reload-timeline')">重载</button>
-      <button class="ghost-btn" :disabled="!timelineDirty || savingTimeline" @click="$emit('save-timeline')">
-        {{ savingTimeline ? '保存中...' : '保存时间线' }}
-      </button>
-      <button class="ghost-btn" :disabled="importingProjectPackage" @click="$emit('trigger-package-import')">
-        {{ importingProjectPackage ? `导入中 ${projectPackageImportProgress}%` : '导入工程包' }}
-      </button>
-      <button class="ghost-btn" :disabled="!canOpenDocumentPreview" @click="$emit('open-document')">
-        {{ documentTriggerLabel }}
-      </button>
-      <div class="export-menu-shell" @click.stop>
-        <button class="primary-btn export-trigger" :disabled="isExportingAny" @click="$emit('toggle-export-menu')">
-          {{ exportTriggerLabel }}
-        </button>
-        <div v-if="exportMenuOpen" class="export-menu">
-          <button class="context-item" :disabled="isExportingAny" @click="$emit('export-video')">
-            {{ exportingVideo ? '视频导出中...' : '导出视频' }}
-          </button>
-          <button class="context-item" :disabled="isExportingAny" @click="$emit('export-package')">
-            {{ exportingPackage ? '工程包导出中...' : '导出工程包' }}
-          </button>
-          <button
-            class="context-item"
-            :disabled="isExportingAny"
-            @click="handleXmlExport"
-          >
-            {{ xmlExportLabel }}
-          </button>
-          <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'edl')">
-            {{ exportingInterchangeFormat === 'edl' ? 'EDL 导出中...' : '导出通用 EDL' }}
-          </button>
-          <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'capcut_srt')">
-            {{ exportingInterchangeFormat === 'capcut_srt' ? 'SRT 导出中...' : '导出剪映 / CapCut SRT' }}
+      <div class="topbar-statuses">
+        <span v-if="timelineDirty" class="stat-chip warning">未保存</span>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="topbar-action-group">
+          <button class="ghost-btn" @click="$emit('reload-timeline')">重载</button>
+          <button class="ghost-btn" :disabled="!timelineDirty || savingTimeline" @click="$emit('save-timeline')">
+            {{ savingTimeline ? '保存中...' : '保存时间线' }}
           </button>
         </div>
+
+        <div class="topbar-action-group">
+          <button class="ghost-btn" :disabled="importingProjectPackage" @click="$emit('trigger-package-import')">
+            {{ importingProjectPackage ? `导入中 ${projectPackageImportProgress}%` : '导入工程包' }}
+          </button>
+          <button class="ghost-btn" :disabled="!canOpenDocumentPreview" @click="$emit('open-document')">
+            {{ documentTriggerLabel }}
+          </button>
+        </div>
+
+        <div class="topbar-action-group topbar-action-group-primary">
+          <div class="export-menu-shell" @click.stop>
+            <button class="primary-btn export-trigger" :disabled="isExportingAny" @click="$emit('toggle-export-menu')">
+              {{ exportTriggerLabel }}
+            </button>
+            <div v-if="exportMenuOpen" class="export-menu">
+              <button class="context-item" :disabled="isExportingAny" @click="$emit('export-video')">
+                {{ exportingVideo ? '视频导出中...' : '导出视频' }}
+              </button>
+              <button class="context-item" :disabled="isExportingAny" @click="$emit('export-package')">
+                {{ exportingPackage ? '工程包导出中...' : '导出工程包' }}
+              </button>
+              <button
+                class="context-item"
+                :disabled="isExportingAny"
+                @click="handleXmlExport"
+              >
+                {{ xmlExportLabel }}
+              </button>
+              <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'edl')">
+                {{ exportingInterchangeFormat === 'edl' ? 'EDL 导出中...' : '导出通用 EDL' }}
+              </button>
+              <button class="context-item" :disabled="isExportingAny" @click="$emit('export-interchange', 'capcut_srt')">
+                {{ exportingInterchangeFormat === 'capcut_srt' ? 'SRT 导出中...' : '导出剪映 / CapCut SRT' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <button class="ghost-btn danger-ghost-btn" :disabled="deletingProject" @click="$emit('delete-project')">
+          {{ deletingProject ? '删除中...' : '删除项目' }}
+        </button>
       </div>
     </div>
   </header>
@@ -181,11 +195,13 @@ function handleXmlExport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 0 14px;
+  gap: 14px;
+  min-height: 52px;
+  padding: 6px 14px;
   border-bottom: 1px solid rgba(69, 101, 128, 0.22);
   background: rgba(7, 13, 20, 0.95);
   backdrop-filter: blur(14px);
+  box-shadow: inset 0 -1px 0 rgba(140, 234, 255, 0.06);
 }
 
 .topbar-left,
@@ -193,7 +209,7 @@ function handleXmlExport() {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .brand-link {
@@ -212,9 +228,10 @@ function handleXmlExport() {
 .workspace-nav a {
   text-decoration: none;
   color: var(--app-copy-muted);
-  padding: 5px 8px;
+  padding: 6px 10px;
   font-size: 12px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(88, 219, 255, 0.08);
+  background: rgba(10, 18, 27, 0.66);
 }
 
 .workspace-nav a.router-link-active {
@@ -226,10 +243,14 @@ function handleXmlExport() {
 .project-identity {
   min-width: 0;
   display: grid;
+  gap: 2px;
+  padding-left: 4px;
+  border-left: 1px solid rgba(88, 219, 255, 0.12);
 }
 
 .project-identity strong {
   font-size: 13px;
+  line-height: 1.15;
 }
 
 .project-identity span {
@@ -241,17 +262,47 @@ function handleXmlExport() {
   max-width: 360px;
 }
 
+.topbar-statuses {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .stat-chip {
   border: 1px solid rgba(88, 219, 255, 0.14);
   background: rgba(10, 17, 24, 0.86);
   color: var(--app-copy);
   padding: 5px 7px;
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .stat-chip.warning {
   color: #ffcf7a;
   border-color: rgba(255, 207, 122, 0.24);
+}
+
+.topbar-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.topbar-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid rgba(88, 219, 255, 0.08);
+  background: rgba(8, 14, 22, 0.78);
+}
+
+.topbar-action-group-primary {
+  border-color: rgba(88, 219, 255, 0.14);
+  background: rgba(7, 15, 22, 0.96);
 }
 
 .ghost-btn,
@@ -260,7 +311,8 @@ function handleXmlExport() {
   border: 1px solid var(--app-border-strong);
   background: rgba(10, 18, 27, 0.92);
   color: var(--app-copy);
-  padding: 7px 10px;
+  min-height: 30px;
+  padding: 6px 10px;
   font-size: 11px;
   cursor: pointer;
 }
@@ -320,5 +372,16 @@ function handleXmlExport() {
 
 .context-item:last-child {
   border-bottom: none;
+}
+
+@media (max-width: 1380px) {
+  .workspace-topbar {
+    align-items: flex-start;
+  }
+
+  .topbar-left,
+  .topbar-right {
+    flex-wrap: wrap;
+  }
 }
 </style>

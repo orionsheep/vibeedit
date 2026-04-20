@@ -1,7 +1,10 @@
 <template>
   <div class="timeline-container">
     <div class="timeline-header">
-      <span>时间轴</span>
+      <div class="timeline-title-group">
+        <span class="timeline-title">时间轴</span>
+        <span class="timeline-runtime">{{ timeDisplay }}</span>
+      </div>
       <div class="zoom-control">
         <label for="timelineZoom">缩放:</label>
         <input
@@ -15,7 +18,6 @@
         />
         <span>{{ zoomLevel }}x</span>
       </div>
-      <span id="timeDisplay">{{ timeDisplay }}</span>
     </div>
     <div class="timeline-track-wrapper">
       <div class="timeline-track" ref="trackRef" @click="handleTrackClick">
@@ -185,31 +187,41 @@ export default {
 <style scoped>
 .timeline-container {
   height: 100px;
-  background: var(--bg-secondary, #141414);
-  border-top: 1px solid var(--border, #2a2a2a);
+  background:
+    linear-gradient(180deg, rgba(8, 14, 21, 0.98) 0%, rgba(7, 12, 18, 1) 100%);
+  border-top: 1px solid rgba(88, 219, 255, 0.08);
   display: flex;
   flex-direction: column;
-}
-
-:root {
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #141414;
-  --bg-tertiary: #1f1f1f;
-  --text-secondary: #a0a0a0;
-  --accent: #00d4ff;
-  --accent-hover: #00b8e6;
-  --danger: #ff4757;
-  --warning: #ffa502;
-  --border: #2a2a2a;
 }
 
 .timeline-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
+  gap: 12px;
+  padding: 8px 16px 6px;
   font-size: 12px;
-  color: var(--text-secondary, #a0a0a0);
+  color: #9cb4c6;
+}
+
+.timeline-title-group {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.timeline-title {
+  color: #eff7fc;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.timeline-runtime {
+  color: #77dfff;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .zoom-control {
@@ -219,19 +231,22 @@ export default {
 }
 
 .zoom-control label {
-  color: var(--text-secondary, #a0a0a0);
+  color: #839aac;
 }
 
 .zoom-control input[type="range"] {
   width: 100px;
   cursor: pointer;
+  accent-color: #58dbff;
 }
 
 .zoom-control span {
-  color: var(--accent, #00d4ff);
+  color: #8ceaff;
   font-weight: 500;
   min-width: 30px;
   text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .timeline-track-wrapper {
@@ -242,11 +257,24 @@ export default {
 
 .timeline-track {
   height: 100%;
-  background: var(--bg-tertiary, #1f1f1f);
-  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(12, 20, 28, 0.98) 0%, rgba(8, 14, 20, 0.98) 100%);
+  border: 1px solid rgba(88, 219, 255, 0.08);
   position: relative;
   overflow: hidden;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.timeline-track::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(88, 219, 255, 0.06) 0 1px, transparent 1px 100%),
+    linear-gradient(180deg, transparent 0%, transparent 58%, rgba(255, 255, 255, 0.02) 58%, rgba(255, 255, 255, 0.02) 60%, transparent 60%, transparent 100%);
+  background-size: 28px 100%, 100% 100%;
+  pointer-events: none;
 }
 
 .waveform-canvas {
@@ -259,43 +287,43 @@ export default {
 
 .timeline-word {
   position: absolute;
-  top: 4px;
-  height: 20px;
-  background: var(--accent, #00d4ff);
-  border-radius: 2px;
+  top: 7px;
+  height: calc(100% - 14px);
+  background: linear-gradient(180deg, rgba(121, 233, 255, 0.86) 0%, rgba(24, 197, 255, 0.56) 100%);
   min-width: 2px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 0.15s, opacity 0.15s;
   z-index: 10;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .timeline-word:hover {
-  background: var(--accent-hover, #00b8e6);
+  background: linear-gradient(180deg, rgba(165, 241, 255, 0.94) 0%, rgba(50, 210, 255, 0.72) 100%);
 }
 
 .timeline-word.deleted {
-  background: var(--danger, #ff4757);
+  background: linear-gradient(180deg, rgba(255, 132, 145, 0.84) 0%, rgba(255, 71, 87, 0.58) 100%);
 }
 
 .timeline-gap {
   position: absolute;
-  top: 4px;
-  height: 20px;
-  background: var(--warning, #ffa502);
-  opacity: 0.6;
+  top: 10px;
+  height: calc(100% - 20px);
+  background: linear-gradient(180deg, rgba(255, 181, 77, 0.52) 0%, rgba(255, 165, 2, 0.24) 100%);
+  opacity: 0.9;
   cursor: pointer;
   z-index: 10;
-  border-radius: 2px;
+  border-left: 1px solid rgba(255, 192, 92, 0.32);
+  border-right: 1px solid rgba(255, 192, 92, 0.18);
 }
 
 .timeline-gap:hover {
-  opacity: 0.9;
-  background: var(--accent, #00d4ff);
+  background: linear-gradient(180deg, rgba(143, 231, 255, 0.48) 0%, rgba(22, 197, 255, 0.18) 100%);
 }
 
 .timeline-gap.deleted {
-  opacity: 0.2;
-  background: var(--danger, #ff4757);
+  opacity: 0.35;
+  background: linear-gradient(180deg, rgba(255, 136, 149, 0.42) 0%, rgba(255, 71, 87, 0.16) 100%);
 }
 
 .timeline-cursor {
@@ -303,8 +331,9 @@ export default {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: white;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(140, 234, 255, 0.8));
   pointer-events: none;
   z-index: 10;
+  box-shadow: 0 0 18px rgba(140, 234, 255, 0.4);
 }
 </style>

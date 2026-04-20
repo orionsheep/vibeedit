@@ -295,16 +295,19 @@ function handlePromptKeydown(event) {
 .terminal-toolbar {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 9px 12px 10px;
   border-bottom: 1px solid #16232d;
-  background: #0a0f14;
+  background: linear-gradient(180deg, rgba(8, 14, 20, 0.98) 0%, rgba(7, 12, 18, 0.98) 100%);
 }
 
 .terminal-scroll {
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px 14px;
+  padding: 12px 12px 16px;
+  background:
+    radial-gradient(circle at top right, rgba(88, 219, 255, 0.06), transparent 24%),
+    linear-gradient(180deg, rgba(8, 14, 20, 0.76) 0%, rgba(7, 12, 18, 0.98) 100%);
 }
 
 .terminal-link,
@@ -316,16 +319,25 @@ function handlePromptKeydown(event) {
 }
 
 .terminal-link {
-  border: 0;
-  background: transparent;
+  border: 1px solid rgba(88, 219, 255, 0.08);
+  background: rgba(8, 15, 22, 0.78);
   color: #80dfff;
-  padding: 0;
+  min-height: 28px;
+  padding: 0 9px;
   cursor: pointer;
+  font-size: 11px;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.terminal-link:hover:not(:disabled) {
+  border-color: rgba(88, 219, 255, 0.18);
+  background: rgba(10, 18, 27, 0.96);
+  color: #dff7ff;
 }
 
 .terminal-entry {
-  padding: 0 0 14px;
-  margin-bottom: 14px;
+  padding: 0 0 12px;
+  margin-bottom: 12px;
   border-bottom: 1px solid #16232d;
 }
 
@@ -340,8 +352,8 @@ function handlePromptKeydown(event) {
 .thinking-shell {
   position: relative;
   display: grid;
-  gap: 12px;
-  padding: 12px;
+  gap: 10px;
+  padding: 11px 12px;
   border: 1px solid #19303f;
   background:
     radial-gradient(circle at top right, rgba(43, 174, 255, 0.14), transparent 34%),
@@ -395,13 +407,13 @@ function handlePromptKeydown(event) {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .thinking-reactor {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
 }
 
 .reactor-ring,
@@ -420,19 +432,19 @@ function handlePromptKeydown(event) {
 }
 
 .reactor-ring.ring-b {
-  inset: 5px;
+  inset: 4px;
   border-style: dashed;
   animation: reactorSpinReverse 2.9s linear infinite;
 }
 
 .reactor-ring.ring-c {
-  inset: 11px;
+  inset: 9px;
   border-color: rgba(118, 220, 255, 0.28);
   animation: reactorPulse 1.8s ease-in-out infinite;
 }
 
 .reactor-core {
-  inset: 15px;
+  inset: 12px;
   background: radial-gradient(circle, #95efff 0%, #23c4ff 58%, rgba(35, 196, 255, 0.08) 100%);
   box-shadow: 0 0 18px rgba(35, 196, 255, 0.42);
 }
@@ -445,15 +457,15 @@ function handlePromptKeydown(event) {
 
 .thinking-title {
   display: block;
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.42;
   color: #f3fbff;
 }
 
 .thinking-subtitle {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.5;
   color: #96afc0;
 }
 
@@ -461,7 +473,7 @@ function handlePromptKeydown(event) {
   display: inline-flex;
   align-items: flex-end;
   gap: 3px;
-  height: 28px;
+  height: 24px;
 }
 
 .meter-bar {
@@ -490,8 +502,8 @@ function handlePromptKeydown(event) {
   border: 1px solid #233847;
   background: rgba(12, 20, 28, 0.84);
   color: #688397;
-  padding: 4px 8px;
-  font-size: 11px;
+  padding: 3px 7px;
+  font-size: 10px;
   letter-spacing: 0.04em;
 }
 
@@ -532,14 +544,14 @@ function handlePromptKeydown(event) {
   border: 1px solid #223342;
   background: rgba(10, 18, 25, 0.88);
   color: #d8e7f2;
-  padding: 5px 8px;
-  font-size: 11px;
+  padding: 4px 7px;
+  font-size: 10px;
 }
 
 .entry-label {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: #95adbf;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -560,15 +572,15 @@ function handlePromptKeydown(event) {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.7;
-  font-size: 14px;
+  line-height: 1.68;
+  font-size: 13px;
   color: #eef7fd;
 }
 
 .entry-markdown {
   color: #eef7fd;
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.68;
   word-break: break-word;
 }
 
@@ -649,7 +661,7 @@ function handlePromptKeydown(event) {
   gap: 10px;
   align-items: start;
   margin-bottom: 0;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border: 1px solid #162734;
   background: rgba(7, 14, 20, 0.76);
 }
@@ -679,8 +691,8 @@ function handlePromptKeydown(event) {
 
 .event-message {
   color: #d7e6f1;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .tone-warning .reactor-ring,
@@ -710,7 +722,7 @@ function handlePromptKeydown(event) {
   padding: 10px 12px 12px;
   display: grid;
   gap: 8px;
-  background: #090e12;
+  background: linear-gradient(180deg, rgba(8, 14, 20, 0.98) 0%, rgba(7, 11, 17, 1) 100%);
 }
 
 .footer-mode-row {
@@ -739,7 +751,7 @@ function handlePromptKeydown(event) {
 }
 
 .terminal-footer textarea {
-  min-height: 88px;
+  min-height: 84px;
   resize: none;
   padding: 10px;
   line-height: 1.6;
@@ -756,6 +768,7 @@ function handlePromptKeydown(event) {
   border: 1px solid #20303b;
   background: #0c1218;
   color: #d7e6f1;
+  min-height: 32px;
   padding: 7px 12px;
   cursor: pointer;
 }

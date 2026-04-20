@@ -2820,7 +2820,7 @@ onBeforeUnmount(() => {
 .workspace-body {
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr) 5px var(--agent-width);
+  grid-template-columns: var(--sidebar-width) 7px minmax(0, 1fr) 7px var(--agent-width);
   padding: 6px;
   gap: 0;
   overflow: hidden;
@@ -2831,9 +2831,10 @@ onBeforeUnmount(() => {
 .agent-panel {
   min-height: 0;
   overflow: hidden;
-  background: rgba(10, 16, 24, 0.96);
+  background: linear-gradient(180deg, rgba(10, 16, 24, 0.96) 0%, rgba(8, 13, 20, 0.98) 100%);
   border: 1px solid #182532;
   contain: layout paint;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .sidebar {
@@ -2895,13 +2896,15 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   border: none;
-  background: #091019;
+  background: linear-gradient(180deg, rgba(8, 14, 20, 0.98) 0%, rgba(6, 11, 17, 1) 100%);
   color: #8fe7ff;
   font-size: 11px;
   letter-spacing: 0.14em;
   writing-mode: vertical-rl;
   text-orientation: mixed;
   cursor: pointer;
+  border-left: 1px solid rgba(88, 219, 255, 0.08);
+  border-right: 1px solid rgba(88, 219, 255, 0.08);
 }
 
 .panel-reveal-btn-right {
@@ -3223,6 +3226,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   padding: 8px;
+  background: linear-gradient(180deg, rgba(8, 14, 20, 0.76) 0%, rgba(7, 11, 17, 0.94) 100%);
 }
 
 .preview-head {
@@ -3245,7 +3249,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border: 1px solid #162332;
-  background: #02060b;
+  background: radial-gradient(circle at center, rgba(18, 31, 45, 0.26), rgba(2, 6, 11, 1) 78%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .preview-frame video {
@@ -3690,12 +3695,33 @@ onBeforeUnmount(() => {
 .pane-resizer::before {
   content: '';
   position: absolute;
-  inset: 1px 1px;
-  background: rgba(126, 224, 255, 0.18);
+  inset: 1px 2px;
+  background: rgba(126, 224, 255, 0.14);
+  border-radius: 999px;
 }
 
 .pane-resizer.horizontal::before {
-  inset: 1px 1px;
+  inset: 2px 1px;
+}
+
+.pane-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  background:
+    radial-gradient(circle, rgba(126, 224, 255, 0.88) 0 1px, transparent 1px 100%);
+  background-size: 6px 6px;
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+.pane-resizer.horizontal::after {
+  width: 28px;
+  height: 8px;
+  background-size: 8px 8px;
 }
 
 .pane-resizer:hover::before {
@@ -3704,6 +3730,11 @@ onBeforeUnmount(() => {
 
 .pane-resizer:active::before {
   background: rgba(22, 197, 255, 0.72);
+}
+
+.pane-resizer:hover::after,
+.pane-resizer:active::after {
+  opacity: 0.56;
 }
 
 .context-menu {

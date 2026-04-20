@@ -484,9 +484,11 @@ defineExpose({
   position: relative;
   flex: 1;
   min-height: 0;
-  background: #05080d;
-  border: 1px solid rgba(115, 169, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(10, 17, 26, 0.94) 0%, rgba(5, 8, 13, 0.98) 100%);
+  border: 1px solid rgba(115, 169, 255, 0.16);
   overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .composition-video {
@@ -511,23 +513,33 @@ defineExpose({
   align-items: center;
   gap: 10px;
   min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(88, 219, 255, 0.1);
+  background: rgba(8, 14, 21, 0.86);
 }
 
 .control-button {
   flex: 0 0 auto;
-  border: 1px solid rgba(115, 169, 255, 0.28);
-  background: #09121d;
+  border: 1px solid rgba(115, 169, 255, 0.2);
+  background: rgba(8, 16, 24, 0.96);
   color: #dff1ff;
   height: 30px;
   min-width: 58px;
   padding: 0 12px;
   white-space: nowrap;
   cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.control-button:hover {
+  border-color: rgba(115, 169, 255, 0.36);
+  background: rgba(11, 22, 33, 1);
 }
 
 .control-range {
   flex: 1;
   min-width: 0;
+  accent-color: #58dbff;
 }
 
 .control-meta {
@@ -535,8 +547,9 @@ defineExpose({
   align-items: center;
   gap: 4px;
   color: #9db2c8;
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
+  font-family: var(--font-mono);
 }
 
 .composition-preview.compact .composition-controls {
@@ -547,6 +560,7 @@ defineExpose({
     'range range';
   gap: 6px 8px;
   align-items: center;
+  padding: 8px;
 }
 
 .composition-preview.compact .control-button {
