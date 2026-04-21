@@ -32,7 +32,7 @@
           <div class="community-copy">
             <span class="community-label">扫码加入微信群</span>
             <strong>VibeEdit 共创群</strong>
-            <span>作者微信：ChangqingMY</span>
+            <span>作者微信：AInatives</span>
           </div>
           <img class="community-qr" src="/vibeedit-wechat-group-qr.jpg" alt="VibeEdit 微信群二维码" />
         </div>

@@ -15,7 +15,7 @@
         </div>
         <div class="author-contact">
           <span>作者微信</span>
-          <strong>ChangqingMY</strong>
+          <strong>AInatives</strong>
         </div>
       </div>
 
