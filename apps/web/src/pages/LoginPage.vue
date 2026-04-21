@@ -148,7 +148,7 @@ async function handleLogin() {
 
 .community-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 132px;
+  grid-template-columns: minmax(0, 1fr) 162px;
   gap: 14px;
   align-items: center;
   padding: 12px;
@@ -178,11 +178,13 @@ async function handleLogin() {
 }
 
 .community-qr {
-  width: 132px;
-  height: 132px;
-  object-fit: cover;
+  width: 162px;
+  aspect-ratio: 939 / 1461;
+  height: auto;
+  object-fit: contain;
   border: 1px solid rgba(88, 219, 255, 0.16);
   background: #08111a;
+  justify-self: end;
 }
 
 .auth-form {
@@ -247,8 +249,9 @@ async function handleLogin() {
   }
 
   .community-qr {
-    width: 160px;
-    height: 160px;
+    width: 180px;
+    height: auto;
+    justify-self: start;
   }
 }
 </style>
