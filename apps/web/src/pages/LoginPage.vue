@@ -9,9 +9,13 @@
         <li>直播切片与口播剪稿共用同一个 Agent</li>
         <li>支持视频导出，以及 XML / EDL / SRT 交换文件导出</li>
       </ul>
-      <div class="author-contact">
-        <span>作者微信</span>
-        <strong>ChangqingMY</strong>
+      <div class="community-card">
+        <div class="community-copy">
+          <span class="community-label">扫码加入微信群</span>
+          <strong>VibeEdit 共创群</strong>
+          <span>作者微信：ChangqingMY</span>
+        </div>
+        <img class="community-qr" src="/vibeedit-wechat-group-qr.jpg" alt="VibeEdit 微信群二维码" />
       </div>
       <router-link class="auth-link" to="/">查看产品概览</router-link>
     </section>
@@ -142,22 +146,43 @@ async function handleLogin() {
   text-decoration: none;
 }
 
-.author-contact {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 10px 12px;
+.community-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
   border: 1px solid rgba(88, 219, 255, 0.2);
   background: rgba(10, 18, 27, 0.72);
-  color: var(--app-copy-soft);
-  font-size: 12px;
-  letter-spacing: 0.04em;
 }
 
-.author-contact strong {
+.community-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.community-label {
+  color: var(--app-copy-soft);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.community-copy strong {
   color: var(--app-copy);
-  font-size: 14px;
-  letter-spacing: 0.02em;
+  font-size: 16px;
+}
+
+.community-copy span:last-child {
+  color: var(--app-copy-muted);
+  font-size: 12px;
+}
+
+.community-qr {
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: #08111a;
 }
 
 .auth-form {
@@ -215,6 +240,15 @@ async function handleLogin() {
   .auth-card,
   .auth-aside {
     width: min(100%, 560px);
+  }
+
+  .community-card {
+    grid-template-columns: 1fr;
+  }
+
+  .community-qr {
+    width: 160px;
+    height: 160px;
   }
 }
 </style>

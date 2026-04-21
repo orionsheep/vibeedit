@@ -28,6 +28,14 @@
           <li>素材库负责统一上传、检索和转写状态。</li>
           <li>工作台负责字幕编辑、Agent 操作和精确导出。</li>
         </ul>
+        <div class="community-card">
+          <div class="community-copy">
+            <span class="community-label">扫码加入微信群</span>
+            <strong>VibeEdit 共创群</strong>
+            <span>作者微信：ChangqingMY</span>
+          </div>
+          <img class="community-qr" src="/vibeedit-wechat-group-qr.jpg" alt="VibeEdit 微信群二维码" />
+        </div>
         <router-link class="ghost-link" to="/library">打开素材库</router-link>
       </div>
     </section>
@@ -273,6 +281,45 @@ h1 {
   line-height: 1.65;
 }
 
+.community-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background: rgba(10, 18, 27, 0.78);
+}
+
+.community-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.community-label {
+  color: var(--app-copy-soft);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.community-copy strong {
+  color: var(--app-copy);
+  font-size: 16px;
+}
+
+.community-copy span:last-child {
+  color: var(--app-copy-muted);
+  font-size: 12px;
+}
+
+.community-qr {
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border: 1px solid rgba(88, 219, 255, 0.14);
+  background: #08111a;
+}
+
 .ghost-link,
 .chip-link {
   color: var(--app-copy);
@@ -422,6 +469,15 @@ h1 {
   .project-top {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .community-card {
+    grid-template-columns: 1fr;
+  }
+
+  .community-qr {
+    width: 160px;
+    height: 160px;
   }
 }
 </style>
