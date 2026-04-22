@@ -122,7 +122,9 @@ function compactResultPayload(toolName, result = {}) {
         next_offset: result.next_offset,
         block_count: Number(result.script_block_count || 0) || (Array.isArray(result.blocks) ? result.blocks.length : 0),
         take_group_count: result.take_group_count,
+        block_group_count: result.block_group_count,
         sentence_group_count: result.sentence_group_count,
+        restart_fragment_count: result.restart_fragment_count,
         pause_candidate_count: result.pause_candidate_count,
         recommended_pause_candidate_count: result.recommended_pause_candidate_count
       };
@@ -238,21 +240,34 @@ function toolResultToText(result = {}, toolName = '') {
       const takeLines = (result.take_groups || []).map((group, index) => {
         const versions = (group.versions || []).map((version) => {
           const preview = String(version.text || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-          return `${version.id} [${version.asset_title}] ${formatTime(version.start)}-${formatTime(version.end)} ${preview}`;
+          return `#${version.order || '?'} ${version.id} [${version.asset_title}] ${formatTime(version.start)}-${formatTime(version.end)} ${preview}`;
+        }).join(' | ');
+        return `${index + 1}. ${versions}`;
+      });
+      const blockLines = (result.block_groups || []).map((group, index) => {
+        const versions = (group.versions || []).map((version) => {
+          const preview = String(version.text || '').trim().replace(/\s+/g, ' ').slice(0, 90);
+          return `#${version.order || '?'} ${version.id} [${version.asset_title}] ${formatTime(version.start)}-${formatTime(version.end)} ${preview}`;
         }).join(' | ');
         return `${index + 1}. ${versions}`;
       });
       const sentenceLines = (result.sentence_groups || []).map((group, index) => {
         const versions = (group.versions || []).map((version) => {
           const preview = String(version.text || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-          return `${version.id} [${version.asset_title}] ${preview}`;
+          return `#${version.order || '?'} ${version.id} [${version.asset_title}] ${preview}`;
         }).join(' | ');
         return `${index + 1}. ${versions}`;
+      });
+      const restartLines = (result.restart_candidates || []).map((candidate, index) => {
+        const preview = String(candidate.text || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+        return `${index + 1}. #${candidate.order || '?'} [${candidate.asset_title}] ${formatTime(candidate.start)}-${formatTime(candidate.end)} ${preview}`;
       });
       return [
         result.summary || '',
         takeLines.length ? `重复 take 候选：\n${takeLines.join('\n')}` : '',
+        blockLines.length ? `重复段落候选：\n${blockLines.join('\n')}` : '',
         sentenceLines.length ? `重复句候选：\n${sentenceLines.join('\n')}` : '',
+        restartLines.length ? `起手重说碎片候选：\n${restartLines.join('\n')}` : '',
         Array.isArray(result.pause_candidates) && result.pause_candidates.length
           ? `停顿候选：\n${formatPauseCandidates(result.pause_candidates)}`
           : ''
@@ -387,6 +402,7 @@ export const TOOL_DEFINITIONS = {
     description: '读取口播拼稿候选，返回重复 take 候选组和重复句候选组。它不是主观察来源，但口播拼稿在读完整个 get_script_blocks 和 get_subtitle_blocks 之后，必须再调用它复查一次；决定 no-op 前不能跳过这一步。',
     schema: {
       take_limit: z.number().optional(),
+      block_limit: z.number().optional(),
       sentence_limit: z.number().optional(),
       pause_limit: z.number().optional(),
       min_pause_seconds: z.number().optional()
@@ -398,9 +414,11 @@ export const TOOL_DEFINITIONS = {
     description: '执行一轮保守的口播拼稿。它会基于当前结果优先删除明显重复 take、明显重复句，并顺手清理推荐停顿；适合用户只说“执行口播拼稿”但没有给更细约束时先落一轮安全修改。',
     schema: {
       take_limit: z.number().optional(),
+      block_limit: z.number().optional(),
       sentence_limit: z.number().optional(),
       pause_limit: z.number().optional(),
-      min_pause_seconds: z.number().optional()
+      min_pause_seconds: z.number().optional(),
+      max_passes: z.number().optional()
     },
     mutatesProject: true,
     execute: (projectId, args) => toolAutoAssembleScript(projectId, args)

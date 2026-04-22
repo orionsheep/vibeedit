@@ -1766,9 +1766,10 @@ async function loadProjectEditableState(projectId) {
   };
 }
 
-function mapAssembleCandidateVersion(version = {}) {
+function mapAssembleCandidateVersion(version = {}, extras = {}) {
   return {
     id: version.id,
+    order: Number(extras.order || 0) || null,
     asset_id: version.asset_id,
     asset_title: version.asset_title,
     start: version.start,
@@ -1783,9 +1784,10 @@ function mapAssembleCandidateVersion(version = {}) {
   };
 }
 
-function mapAssembleCandidateBlockVersion(block = {}) {
+function mapAssembleCandidateBlockVersion(block = {}, extras = {}) {
   return {
     id: block.id,
+    order: Number(extras.order || 0) || null,
     asset_id: block.asset_id,
     asset_title: block.asset_title,
     start: block.start,
@@ -2044,6 +2046,8 @@ export async function toolGetAssembleCandidates(
   const activeWords = buildActiveWordsWithOriginalIndices(state);
   const activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
   const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+  const sentenceOrderMap = new Map(activeSentences.map((sentence, index) => [String(sentence.id || '').trim(), index + 1]));
+  const blockOrderMap = new Map(scriptBlocks.map((block, index) => [String(block.id || '').trim(), index + 1]));
   const pauseCandidates = buildPauseCandidates(state, {
     minGapSeconds: minPauseSeconds,
     limit: Math.max(1, Number(pauseLimit || 12))
@@ -2052,7 +2056,9 @@ export async function toolGetAssembleCandidates(
   const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
     .map((cluster, index) => ({
       id: `take_group_${index + 1}`,
-      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+      versions: cluster.map((version) => mapAssembleCandidateVersion(version, {
+        order: sentenceOrderMap.get(String(version.id || '').trim()) || 0
+      })),
       score: cluster.reduce((sum, version) => sum + scoreAssembleTakeBlock(version), 0)
     }))
     .filter((group) => group.versions.length > 1)
@@ -2062,7 +2068,9 @@ export async function toolGetAssembleCandidates(
   const rawBlockGroups = buildDuplicateBlockClusters(scriptBlocks)
     .map((cluster, index) => ({
       id: `block_group_${index + 1}`,
-      versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version)),
+      versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version, {
+        order: blockOrderMap.get(String(version.id || '').trim()) || 0
+      })),
       score: cluster.reduce((sum, version) => sum + scoreAssembleBlock(version), 0)
     }))
     .filter((group) => group.versions.length > 1)
@@ -2072,13 +2080,20 @@ export async function toolGetAssembleCandidates(
   const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
     .map((cluster, index) => ({
       id: `sentence_group_${index + 1}`,
-      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+      versions: cluster.map((version) => mapAssembleCandidateVersion(version, {
+        order: sentenceOrderMap.get(String(version.id || '').trim()) || 0
+      })),
       score: cluster.reduce((sum, version) => sum + scoreAssembleSentence(version), 0)
     }))
     .filter((group) => group.versions.length > 1)
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(sentenceLimit || 12)));
-  const restartCandidates = buildRestartFragmentCandidates(scriptBlocks).slice(0, 16);
+  const restartCandidates = buildRestartFragmentCandidates(scriptBlocks)
+    .slice(0, 16)
+    .map((candidate) => ({
+      ...candidate,
+      order: blockOrderMap.get(String(candidate.id || '').trim()) || null
+    }));
 
   return {
     success: true,
