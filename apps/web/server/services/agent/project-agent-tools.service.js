@@ -79,6 +79,23 @@ const SAFE_INLINE_FILLER_PHRASES = Array.from(new Set([
   '啊哈'
 ].map((item) => normalizeText(item)).filter(Boolean)));
 
+const RESTART_LEAD_CONNECTORS = Array.from(new Set([
+  'ok',
+  'okay',
+  '那么',
+  '那',
+  '然后',
+  '然后呢',
+  '所以',
+  '首先',
+  '就是',
+  '这个',
+  '那其中',
+  '那么其中',
+  '对于这个',
+  '我们现在'
+].map((item) => normalizeText(item)).filter(Boolean)));
+
 function normalizeAssembleScriptText(text = '') {
   let value = normalizeText(text);
   for (const phrase of BROAD_FILLER_NOISE_PHRASES) {
@@ -97,6 +114,23 @@ function countFillerPhraseHits(text = '') {
     if (!needle) return count;
     return count + normalized.split(needle).length - 1;
   }, 0);
+}
+
+function stripRestartLeadConnectors(text = '') {
+  let value = normalizeAssembleScriptText(text);
+  let changed = true;
+  while (changed && value.length > 2) {
+    changed = false;
+    for (const connector of RESTART_LEAD_CONNECTORS) {
+      if (!connector) continue;
+      if (!value.startsWith(connector)) continue;
+      if (value.length <= connector.length + 2) continue;
+      value = value.slice(connector.length).trim();
+      changed = true;
+      break;
+    }
+  }
+  return value.trim();
 }
 
 function buildCharacterBigrams(text = '') {
@@ -872,6 +906,17 @@ function markWordRangeDeleted(keptMask = [], startIndex = 0, endIndex = 0) {
   }
 }
 
+function commonPrefixLength(left = '', right = '') {
+  const safeLeft = String(left || '');
+  const safeRight = String(right || '');
+  const maxLength = Math.min(safeLeft.length, safeRight.length);
+  let index = 0;
+  while (index < maxLength && safeLeft[index] === safeRight[index]) {
+    index += 1;
+  }
+  return index;
+}
+
 function stripLeadingFillerWordsFromSentences(sentences = [], words = [], keptMask = []) {
   let removedWordCount = 0;
 
@@ -900,6 +945,102 @@ function stripLeadingFillerWordsFromSentences(sentences = [], words = [], keptMa
         Number(sentence.original_word_end || sentence.word_end || 0)
       );
     }
+  }
+
+  return removedWordCount;
+}
+
+function stripStandaloneFillerSentences(sentences = [], words = [], keptMask = []) {
+  let removedWordCount = 0;
+
+  for (const sentence of sentences) {
+    const sentenceText = String(sentence.text || '').trim();
+    const normalizedText = normalizeText(sentenceText);
+    if (!sentenceText) continue;
+
+    const wordCount = Number(sentence.word_end || 0) - Number(sentence.word_start || 0) + 1;
+    const fillerOnly =
+      SAFE_INLINE_FILLER_PHRASES.includes(normalizedText) ||
+      (normalizedText.length <= 2 && countFillerPhraseHits(sentenceText) >= 1);
+    if (!fillerOnly || wordCount > 3) continue;
+
+    markWordRangeDeleted(
+      keptMask,
+      Number(sentence.original_word_start || sentence.word_start || 0),
+      Number(sentence.original_word_end || sentence.word_end || 0)
+    );
+    removedWordCount += Math.max(1, wordCount);
+  }
+
+  return removedWordCount;
+}
+
+function findRestartPrefixCut(sentence = {}, words = []) {
+  const wordStart = Number(sentence.word_start || 0);
+  const wordEnd = Number(sentence.word_end || 0);
+  const sentenceWords = words.slice(wordStart, wordEnd + 1);
+  if (sentenceWords.length < 8) return null;
+
+  const leadWindow = Math.min(8, sentenceWords.length);
+  const leadSample = normalizeText(sentenceWords.slice(0, leadWindow).map((word) => word.text || '').join(''));
+  if (leadSample.length < 6) return null;
+
+  for (let restartWordIndex = 3; restartWordIndex <= sentenceWords.length - 4; restartWordIndex += 1) {
+    const prefixWords = sentenceWords.slice(0, restartWordIndex);
+    const suffixWords = sentenceWords.slice(restartWordIndex);
+    const prefixText = prefixWords.map((word) => word.text || '').join('');
+    const suffixText = suffixWords.map((word) => word.text || '').join('');
+    const prefixNormalized = normalizeText(prefixText);
+    const suffixNormalized = normalizeText(suffixText);
+    if (prefixNormalized.length < 8 || suffixNormalized.length < 14) continue;
+
+    const restartSample = normalizeText(suffixWords.slice(0, leadWindow).map((word) => word.text || '').join(''));
+    if (restartSample.length < 6) continue;
+
+    const prefixCoverage = commonPrefixLength(leadSample, restartSample) / Math.max(1, Math.min(leadSample.length, restartSample.length));
+    const prefixSimilarity = diceSimilarity(leadSample, restartSample);
+    const repeatedStart =
+      prefixCoverage >= 0.58 ||
+      prefixSimilarity >= 0.72 ||
+      suffixNormalized.startsWith(leadSample.slice(0, Math.min(leadSample.length, restartSample.length)));
+    if (!repeatedStart) continue;
+
+    const prefixLooksWeak =
+      prefixNormalized.length <= 34 &&
+      (
+        countFillerPhraseHits(prefixText) >= 1 ||
+        /[，、,:：]$/.test(String(prefixText || '').trim()) ||
+        !/[。！？!?；;]/.test(prefixText)
+      );
+    const suffixLooksStronger = suffixNormalized.length >= Math.max(prefixNormalized.length + 6, 18);
+    const restartInFirstHalf = restartWordIndex <= Math.floor(sentenceWords.length * 0.6);
+    if (!prefixLooksWeak || !suffixLooksStronger || !restartInFirstHalf) continue;
+
+    const lastRemovedWord = prefixWords[prefixWords.length - 1];
+    if (!lastRemovedWord) continue;
+
+    return {
+      original_word_start: Number(sentence.original_word_start ?? sentence.word_start ?? 0),
+      original_word_end: Number(lastRemovedWord.original_index ?? wordStart + restartWordIndex - 1),
+      removed_word_count: prefixWords.length
+    };
+  }
+
+  return null;
+}
+
+function stripRestartedSentencePrefixes(sentences = [], words = [], keptMask = []) {
+  let removedWordCount = 0;
+
+  for (const sentence of sentences) {
+    const cut = findRestartPrefixCut(sentence, words);
+    if (!cut) continue;
+    markWordRangeDeleted(
+      keptMask,
+      Number(cut.original_word_start || 0),
+      Number(cut.original_word_end || 0)
+    );
+    removedWordCount += Number(cut.removed_word_count || 0);
   }
 
   return removedWordCount;
@@ -1642,6 +1783,23 @@ function mapAssembleCandidateVersion(version = {}) {
   };
 }
 
+function mapAssembleCandidateBlockVersion(block = {}) {
+  return {
+    id: block.id,
+    asset_id: block.asset_id,
+    asset_title: block.asset_title,
+    start: block.start,
+    end: block.end,
+    duration: block.duration,
+    text: block.text,
+    sentence_ids: Array.isArray(block.sentence_ids) ? block.sentence_ids : [],
+    sentence_count: Number(block.sentence_count || 0),
+    filler_hits: Number(block.filler_hits || 0),
+    pause_seconds: Number(block.pause_seconds || 0),
+    long_pause_count: Number(block.long_pause_count || 0)
+  };
+}
+
 function chooseBestMappedTakeVersion(versions = []) {
   const sorted = [...versions].sort((left, right) => {
     const scoreGap = scoreAssembleTakeBlock(right) - scoreAssembleTakeBlock(left);
@@ -1664,22 +1822,112 @@ function chooseBestMappedSentenceVersion(versions = []) {
   return sorted[0] || null;
 }
 
+function chooseBestMappedBlockVersion(versions = []) {
+  const sorted = [...versions].sort((left, right) => {
+    const scoreGap = scoreAssembleBlock(right) - scoreAssembleBlock(left);
+    if (scoreGap !== 0) return scoreGap;
+    const completenessGap = String(right.text || '').length - String(left.text || '').length;
+    if (completenessGap !== 0) return completenessGap;
+    return Number(left.start || 0) - Number(right.start || 0);
+  });
+  return sorted[0] || null;
+}
+
+function buildRestartFragmentCandidates(blocks = []) {
+  const candidates = [];
+
+  for (let index = 0; index < blocks.length - 1; index += 1) {
+    const current = blocks[index];
+    if (!current) continue;
+    const currentNormalized = normalizeAssembleScriptText(current.text || '');
+    if (!currentNormalized) continue;
+
+    for (let lookahead = 1; lookahead <= 2; lookahead += 1) {
+      const next = blocks[index + lookahead];
+      if (!next) continue;
+      if (normalizeText(current.asset_id) !== normalizeText(next.asset_id)) continue;
+
+      const nextNormalized = normalizeAssembleScriptText(next.text || '');
+      if (!nextNormalized) continue;
+      const currentRelaxed = stripRestartLeadConnectors(current.text || '');
+      const nextRelaxed = stripRestartLeadConnectors(next.text || '');
+
+      const shorter = currentNormalized.length <= nextNormalized.length ? currentNormalized : nextNormalized;
+      const longer = currentNormalized.length > nextNormalized.length ? currentNormalized : nextNormalized;
+      const overlapRatio = shorter.length / Math.max(longer.length, 1);
+      const currentHead = currentNormalized.slice(0, Math.min(18, currentNormalized.length));
+      const nextHead = nextNormalized.slice(0, Math.min(18, nextNormalized.length));
+      const currentRelaxedHead = currentRelaxed.slice(0, Math.min(18, currentRelaxed.length));
+      const nextRelaxedHead = nextRelaxed.slice(0, Math.min(18, nextRelaxed.length));
+      const headCoverage = commonPrefixLength(currentHead, nextHead) / Math.max(1, Math.min(currentHead.length, nextHead.length));
+      const relaxedHeadCoverage = commonPrefixLength(currentRelaxedHead, nextRelaxedHead) / Math.max(1, Math.min(currentRelaxedHead.length || 1, nextRelaxedHead.length || 1));
+      const prefixRetry =
+        currentNormalized.length < nextNormalized.length &&
+        (
+          nextNormalized.startsWith(currentNormalized) ||
+          nextNormalized.includes(currentNormalized) ||
+          currentNormalized.includes(nextHead) ||
+          headCoverage >= 0.55 ||
+          (currentRelaxed.length >= 4 && nextRelaxed.length > currentRelaxed.length && (
+            nextRelaxed.startsWith(currentRelaxed) ||
+            nextRelaxed.includes(currentRelaxed) ||
+            relaxedHeadCoverage >= 0.5 ||
+            diceSimilarity(currentRelaxedHead, nextRelaxedHead) >= 0.62
+          )) ||
+          diceSimilarity(currentHead, nextHead) >= 0.7 ||
+          diceSimilarity(currentNormalized, nextNormalized.slice(0, Math.min(nextNormalized.length, currentNormalized.length + 12))) >= 0.68
+        ) &&
+        overlapRatio >= 0.18;
+
+      const currentLooksWeak =
+        Number(current.duration || 0) <= 4.5 ||
+        Number(current.sentence_count || 0) <= 1 ||
+        String(currentNormalized || '').length <= 36 ||
+        countFillerPhraseHits(current.text || '') >= 1 ||
+        /[，、,:：]$/.test(String(current.text || '').trim()) ||
+        (currentRelaxed.length > 0 && currentRelaxed.length <= 14);
+
+      if (!prefixRetry || !currentLooksWeak) continue;
+
+      candidates.push({
+        id: `restart_${String(current.id || index)}`,
+        sentence_ids: Array.isArray(current.sentence_ids) ? current.sentence_ids : [],
+        asset_id: current.asset_id,
+        asset_title: current.asset_title,
+        start: current.start,
+        end: current.end,
+        text: current.text,
+        reason: '短起手碎片在后续更完整段落里被重说覆盖'
+      });
+      break;
+    }
+  }
+
+  return candidates;
+}
+
 export function planConservativeAssemblePass(
   {
     takeGroups = [],
+    blockGroups = [],
     sentenceGroups = [],
-    pauseCandidates = []
+    pauseCandidates = [],
+    restartCandidates = []
   } = {},
   {
     maxTakeVersionsToDelete = 8,
+    maxBlockVersionsToDelete = 8,
     maxSentenceVersionsToDelete = 10,
-    maxPauseCandidatesToDelete = 8
+    maxPauseCandidatesToDelete = 8,
+    maxRestartFragmentsToDelete = 10
   } = {}
 ) {
   const protectedSentenceIds = new Set();
   const sentenceIdsToDelete = new Set();
   const deletedTakeVersionIds = [];
+  const deletedBlockVersionIds = [];
   const deletedSentenceVersionIds = [];
+  const deletedRestartSentenceIds = [];
 
   for (const group of Array.isArray(takeGroups) ? takeGroups : []) {
     if (deletedTakeVersionIds.length >= maxTakeVersionsToDelete) break;
@@ -1705,6 +1953,30 @@ export function planConservativeAssemblePass(
     }
   }
 
+  for (const group of Array.isArray(blockGroups) ? blockGroups : []) {
+    if (deletedBlockVersionIds.length >= maxBlockVersionsToDelete) break;
+    const versions = Array.isArray(group?.versions) ? group.versions : [];
+    if (versions.length <= 1) continue;
+    const bestVersion = chooseBestMappedBlockVersion(versions);
+    if (!bestVersion) continue;
+    for (const sentenceId of Array.isArray(bestVersion.sentence_ids) ? bestVersion.sentence_ids : []) {
+      protectedSentenceIds.add(String(sentenceId || '').trim());
+    }
+    const removableVersions = versions
+      .filter((version) => String(version?.id || '').trim() && String(version?.id || '').trim() !== String(bestVersion.id || '').trim())
+      .sort((left, right) => Number(left.start || 0) - Number(right.start || 0));
+    for (const version of removableVersions) {
+      if (deletedBlockVersionIds.length >= maxBlockVersionsToDelete) break;
+      const sentenceIds = (Array.isArray(version.sentence_ids) ? version.sentence_ids : [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .filter((value) => !protectedSentenceIds.has(value));
+      if (!sentenceIds.length) continue;
+      sentenceIds.forEach((value) => sentenceIdsToDelete.add(value));
+      deletedBlockVersionIds.push(String(version.id || '').trim());
+    }
+  }
+
   for (const group of Array.isArray(sentenceGroups) ? sentenceGroups : []) {
     if (deletedSentenceVersionIds.length >= maxSentenceVersionsToDelete) break;
     const versions = Array.isArray(group?.versions) ? group.versions : [];
@@ -1724,6 +1996,17 @@ export function planConservativeAssemblePass(
     }
   }
 
+  for (const candidate of Array.isArray(restartCandidates) ? restartCandidates : []) {
+    if (deletedRestartSentenceIds.length >= maxRestartFragmentsToDelete) break;
+    const sentenceIds = (Array.isArray(candidate?.sentence_ids) ? candidate.sentence_ids : [candidate?.sentence_id])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .filter((value) => !protectedSentenceIds.has(value) && !sentenceIdsToDelete.has(value));
+    if (!sentenceIds.length) continue;
+    sentenceIds.forEach((value) => sentenceIdsToDelete.add(value));
+    deletedRestartSentenceIds.push(...sentenceIds);
+  }
+
   const preferredPauses = (Array.isArray(pauseCandidates) ? pauseCandidates : []).filter((candidate) => Boolean(candidate?.recommended));
   const fallbackPauses = preferredPauses.length
     ? preferredPauses
@@ -1739,7 +2022,9 @@ export function planConservativeAssemblePass(
   return {
     sentence_ids_to_delete: [...sentenceIdsToDelete],
     deleted_take_version_ids: deletedTakeVersionIds,
+    deleted_block_version_ids: deletedBlockVersionIds,
     deleted_sentence_version_ids: deletedSentenceVersionIds,
+    deleted_restart_sentence_ids: deletedRestartSentenceIds,
     pause_gap_keys: pauseGapKeys,
     removed_pause_seconds: removedPauseSeconds
   };
@@ -1749,6 +2034,7 @@ export async function toolGetAssembleCandidates(
   projectId,
   {
     take_limit: takeLimit = 12,
+    block_limit: blockLimit = 10,
     sentence_limit: sentenceLimit = 12,
     pause_limit: pauseLimit = 12,
     min_pause_seconds: minPauseSeconds = 0.35
@@ -1773,6 +2059,16 @@ export async function toolGetAssembleCandidates(
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(takeLimit || 12)));
 
+  const rawBlockGroups = buildDuplicateBlockClusters(scriptBlocks)
+    .map((cluster, index) => ({
+      id: `block_group_${index + 1}`,
+      versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version)),
+      score: cluster.reduce((sum, version) => sum + scoreAssembleBlock(version), 0)
+    }))
+    .filter((group) => group.versions.length > 1)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(1, Number(blockLimit || 10)));
+
   const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
     .map((cluster, index) => ({
       id: `sentence_group_${index + 1}`,
@@ -1782,18 +2078,23 @@ export async function toolGetAssembleCandidates(
     .filter((group) => group.versions.length > 1)
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(sentenceLimit || 12)));
+  const restartCandidates = buildRestartFragmentCandidates(scriptBlocks).slice(0, 16);
 
   return {
     success: true,
     change: 'get_assemble_candidates',
-    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawSentenceGroups.length} 组重复句候选、${pauseCandidates.length} 个明显停顿候选（其中 ${pauseCandidates.filter((candidate) => candidate.recommended).length} 个推荐优先处理）。`,
+    summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawBlockGroups.length} 组重复段落候选、${rawSentenceGroups.length} 组重复句候选、${restartCandidates.length} 个起手重说碎片候选、${pauseCandidates.length} 个明显停顿候选（其中 ${pauseCandidates.filter((candidate) => candidate.recommended).length} 个推荐优先处理）。`,
     script_block_count: scriptBlocks.length,
     take_group_count: rawTakeGroups.length,
+    block_group_count: rawBlockGroups.length,
     sentence_group_count: rawSentenceGroups.length,
+    restart_fragment_count: restartCandidates.length,
     pause_candidate_count: pauseCandidates.length,
     recommended_pause_candidate_count: pauseCandidates.filter((candidate) => candidate.recommended).length,
     take_groups: rawTakeGroups,
+    block_groups: rawBlockGroups,
     sentence_groups: rawSentenceGroups,
+    restart_candidates: restartCandidates,
     pause_candidates: pauseCandidates
   };
 }
@@ -1822,70 +2123,156 @@ export async function toolGetPauseCandidates(projectId, { min_gap_seconds: minGa
 export async function toolAutoAssembleScript(
   projectId,
   {
-    take_limit: takeLimit = 8,
-    sentence_limit: sentenceLimit = 10,
-    pause_limit: pauseLimit = 8,
-    min_pause_seconds: minPauseSeconds = 0.35
+    take_limit: takeLimit = 12,
+    block_limit: blockLimit = 10,
+    sentence_limit: sentenceLimit = 14,
+    pause_limit: pauseLimit = 12,
+    min_pause_seconds: minPauseSeconds = 0.35,
+    max_passes: maxPasses = 2
   } = {},
   context = {}
 ) {
   const state = await loadProjectEditableState(projectId);
-  const activeWords = buildActiveWordsWithOriginalIndices(state);
-  const activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
-  const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
-    .map((cluster, index) => ({
-      id: `take_group_${index + 1}`,
-      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
-      score: cluster.reduce((sum, version) => sum + scoreAssembleTakeBlock(version), 0)
-    }))
-    .filter((group) => group.versions.length > 1)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, Math.max(1, Number(takeLimit || 8)));
-  const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
-    .map((cluster, index) => ({
-      id: `sentence_group_${index + 1}`,
-      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
-      score: cluster.reduce((sum, version) => sum + scoreAssembleSentence(version), 0)
-    }))
-    .filter((group) => group.versions.length > 1)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, Math.max(1, Number(sentenceLimit || 10)));
-  const pauseCandidates = buildPauseCandidates(state, {
-    minGapSeconds: minPauseSeconds,
-    limit: Math.max(1, Number(pauseLimit || 8))
-  });
-  const plan = planConservativeAssemblePass({
-    takeGroups: rawTakeGroups,
-    sentenceGroups: rawSentenceGroups,
-    pauseCandidates
-  }, {
-    maxTakeVersionsToDelete: Math.max(1, Number(takeLimit || 8)),
-    maxSentenceVersionsToDelete: Math.max(1, Number(sentenceLimit || 10)),
-    maxPauseCandidatesToDelete: Math.max(1, Number(pauseLimit || 8))
-  });
+  let activeWords = buildActiveWordsWithOriginalIndices(state);
+  let activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
+  let removedLeadingFillerWords = 0;
+  let removedRestartPrefixWords = 0;
+  let removedStandaloneFillerWords = 0;
+  let preTrimChanged = false;
 
-  const sentenceIdSet = new Set((plan.sentence_ids_to_delete || []).map((value) => String(value || '').trim()).filter(Boolean));
-  const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
-  let changed = false;
-
-  if (sentenceIdSet.size) {
-    for (const sentence of activeSentences) {
-      if (!sentenceIdSet.has(String(sentence.id || '').trim())) continue;
-      markWordRangeDeleted(
-        state.keptMask,
-        Number(sentence.original_word_start || sentence.word_start || 0),
-        Number(sentence.original_word_end || sentence.word_end || 0)
-      );
-      changed = true;
+  for (let cleanupPass = 0; cleanupPass < 2; cleanupPass += 1) {
+    const fillerRemoved = stripLeadingFillerWordsFromSentences(activeSentences, activeWords, state.keptMask);
+    if (fillerRemoved) {
+      removedLeadingFillerWords += fillerRemoved;
+      preTrimChanged = true;
+      activeWords = buildActiveWordsWithOriginalIndices(state);
+      activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
     }
+
+    const standaloneFillerRemoved = stripStandaloneFillerSentences(activeSentences, activeWords, state.keptMask);
+    if (standaloneFillerRemoved) {
+      removedStandaloneFillerWords += standaloneFillerRemoved;
+      preTrimChanged = true;
+      activeWords = buildActiveWordsWithOriginalIndices(state);
+      activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
+    }
+
+    const restartPrefixRemoved = stripRestartedSentencePrefixes(activeSentences, activeWords, state.keptMask);
+    if (restartPrefixRemoved) {
+      removedRestartPrefixWords += restartPrefixRemoved;
+      preTrimChanged = true;
+      activeWords = buildActiveWordsWithOriginalIndices(state);
+      activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
+    }
+
+    if (!fillerRemoved && !standaloneFillerRemoved && !restartPrefixRemoved) break;
   }
 
-  for (const gapKey of plan.pause_gap_keys || []) {
-    const normalizedGapKey = String(gapKey || '').trim();
-    if (!normalizedGapKey || deletedGapKeys.has(normalizedGapKey)) continue;
-    deletedGapKeys.add(normalizedGapKey);
-    changed = true;
+  const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
+  const deletedTakeVersionIds = [];
+  const deletedBlockVersionIds = [];
+  const deletedSentenceVersionIds = [];
+  const deletedRestartSentenceIds = [];
+  const deletedSentenceIds = new Set();
+  let removedPauseSeconds = 0;
+  let passesApplied = 0;
+  let detectedTakeGroupCount = 0;
+  let detectedBlockGroupCount = 0;
+  let detectedSentenceGroupCount = 0;
+  let detectedRestartFragmentCount = 0;
+  let detectedPauseCandidateCount = 0;
+
+  for (let assemblePass = 0; assemblePass < Math.max(1, Number(maxPasses || 2)); assemblePass += 1) {
+    activeWords = buildActiveWordsWithOriginalIndices(state);
+    activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
+    const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+    const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
+      .map((cluster, index) => ({
+        id: `take_group_${index + 1}`,
+        versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+        score: cluster.reduce((sum, version) => sum + scoreAssembleTakeBlock(version), 0)
+      }))
+      .filter((group) => group.versions.length > 1)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.max(1, Number(takeLimit || 12)));
+    const rawBlockGroups = buildDuplicateBlockClusters(scriptBlocks)
+      .map((cluster, index) => ({
+        id: `block_group_${index + 1}`,
+        versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version)),
+        score: cluster.reduce((sum, version) => sum + scoreAssembleBlock(version), 0)
+      }))
+      .filter((group) => group.versions.length > 1)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.max(1, Number(blockLimit || 10)));
+    const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
+      .map((cluster, index) => ({
+        id: `sentence_group_${index + 1}`,
+        versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+        score: cluster.reduce((sum, version) => sum + scoreAssembleSentence(version), 0)
+      }))
+      .filter((group) => group.versions.length > 1)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.max(1, Number(sentenceLimit || 14)));
+    const restartCandidates = buildRestartFragmentCandidates(scriptBlocks).slice(0, 16);
+    const pauseCandidates = buildPauseCandidates(state, {
+      minGapSeconds: minPauseSeconds,
+      limit: Math.max(1, Number(pauseLimit || 12))
+    });
+    const plan = planConservativeAssemblePass({
+      takeGroups: rawTakeGroups,
+      blockGroups: rawBlockGroups,
+      sentenceGroups: rawSentenceGroups,
+      pauseCandidates,
+      restartCandidates
+    }, {
+      maxTakeVersionsToDelete: Math.max(1, Number(takeLimit || 12)),
+      maxBlockVersionsToDelete: Math.max(1, Number(blockLimit || 10)),
+      maxSentenceVersionsToDelete: Math.max(1, Number(sentenceLimit || 14)),
+      maxPauseCandidatesToDelete: Math.max(1, Number(pauseLimit || 12)),
+      maxRestartFragmentsToDelete: 16
+    });
+
+    detectedTakeGroupCount = rawTakeGroups.length;
+    detectedBlockGroupCount = rawBlockGroups.length;
+    detectedSentenceGroupCount = rawSentenceGroups.length;
+    detectedRestartFragmentCount = restartCandidates.length;
+    detectedPauseCandidateCount = pauseCandidates.length;
+
+    const sentenceIdSet = new Set((plan.sentence_ids_to_delete || []).map((value) => String(value || '').trim()).filter(Boolean));
+    let passChanged = false;
+
+    if (sentenceIdSet.size) {
+      for (const sentence of activeSentences) {
+        const sentenceId = String(sentence.id || '').trim();
+        if (!sentenceIdSet.has(sentenceId)) continue;
+        markWordRangeDeleted(
+          state.keptMask,
+          Number(sentence.original_word_start || sentence.word_start || 0),
+          Number(sentence.original_word_end || sentence.word_end || 0)
+        );
+        deletedSentenceIds.add(sentenceId);
+        passChanged = true;
+      }
+    }
+
+    for (const gapKey of plan.pause_gap_keys || []) {
+      const normalizedGapKey = String(gapKey || '').trim();
+      if (!normalizedGapKey || deletedGapKeys.has(normalizedGapKey)) continue;
+      deletedGapKeys.add(normalizedGapKey);
+      passChanged = true;
+    }
+
+    if (!passChanged) break;
+
+    passesApplied += 1;
+    deletedTakeVersionIds.push(...(plan.deleted_take_version_ids || []));
+    deletedBlockVersionIds.push(...(plan.deleted_block_version_ids || []));
+    deletedSentenceVersionIds.push(...(plan.deleted_sentence_version_ids || []));
+    deletedRestartSentenceIds.push(...(plan.deleted_restart_sentence_ids || []));
+    removedPauseSeconds += Number(plan.removed_pause_seconds || 0);
   }
+
+  const changed = preTrimChanged || deletedSentenceIds.size > 0 || deletedGapKeys.size !== (state.editState?.deleted_gap_keys || []).length;
 
   if (!changed) {
     return {
@@ -1893,9 +2280,11 @@ export async function toolAutoAssembleScript(
       changed: false,
       change: 'auto_assemble_script',
       summary: '当前没有识别到可安全落地的重复 take、重复句或推荐停顿，保守拼稿未执行修改。',
-      detected_take_group_count: rawTakeGroups.length,
-      detected_sentence_group_count: rawSentenceGroups.length,
-      detected_pause_candidate_count: pauseCandidates.length
+      detected_take_group_count: detectedTakeGroupCount,
+      detected_block_group_count: detectedBlockGroupCount,
+      detected_sentence_group_count: detectedSentenceGroupCount,
+      detected_restart_fragment_count: detectedRestartFragmentCount,
+      detected_pause_candidate_count: detectedPauseCandidateCount
     };
   }
 
@@ -1905,30 +2294,43 @@ export async function toolAutoAssembleScript(
       'auto_assemble_script',
       {
         take_limit: takeLimit,
+        block_limit: blockLimit,
         sentence_limit: sentenceLimit,
         pause_limit: pauseLimit,
         min_pause_seconds: minPauseSeconds,
-        deleted_take_version_ids: plan.deleted_take_version_ids,
-        deleted_sentence_version_ids: plan.deleted_sentence_version_ids,
-        pause_gap_keys: plan.pause_gap_keys
+        max_passes: maxPasses,
+        removed_leading_filler_words: removedLeadingFillerWords,
+        removed_standalone_filler_words: removedStandaloneFillerWords,
+        removed_restart_prefix_words: removedRestartPrefixWords,
+        deleted_take_version_ids: deletedTakeVersionIds,
+        deleted_block_version_ids: deletedBlockVersionIds,
+        deleted_sentence_version_ids: deletedSentenceVersionIds,
+        deleted_restart_sentence_ids: deletedRestartSentenceIds,
+        pause_gap_keys: [...deletedGapKeys]
       },
       context,
       'Agent 执行一轮保守口播拼稿'
     )
   });
 
-  const deletedBlockIds = [...sentenceIdSet];
+  const deletedBlockIds = [...deletedSentenceIds];
   return {
     success: true,
     changed: true,
     change: 'auto_assemble_script',
-    summary: `已执行一轮保守口播拼稿：删除 ${plan.deleted_take_version_ids.length} 个重复 take 版本、${plan.deleted_sentence_version_ids.length} 个重复句，并清理 ${plan.pause_gap_keys.length} 个明显停顿。`,
-    deleted_take_version_ids: plan.deleted_take_version_ids,
-    deleted_sentence_version_ids: plan.deleted_sentence_version_ids,
+    summary: `已执行 ${passesApplied || 1} 轮保守口播拼稿：去掉 ${removedLeadingFillerWords} 个起手口头禅词、${removedStandaloneFillerWords} 个独立口头禅词、${removedRestartPrefixWords} 个句内重说前缀词，删除 ${deletedTakeVersionIds.length} 个重复 take 版本、${deletedBlockVersionIds.length} 组重复段落、${deletedSentenceVersionIds.length} 个重复句、${deletedRestartSentenceIds.length} 个起手重说碎片，并清理 ${deletedGapKeys.size - (state.editState?.deleted_gap_keys || []).length} 个明显停顿。`,
+    removed_leading_filler_word_count: removedLeadingFillerWords,
+    removed_standalone_filler_word_count: removedStandaloneFillerWords,
+    removed_restart_prefix_word_count: removedRestartPrefixWords,
+    passes_applied: passesApplied,
+    deleted_take_version_ids: deletedTakeVersionIds,
+    deleted_block_version_ids: deletedBlockVersionIds,
+    deleted_sentence_version_ids: deletedSentenceVersionIds,
+    deleted_restart_sentence_ids: deletedRestartSentenceIds,
     deleted_block_ids: deletedBlockIds,
-    deleted_gap_count: plan.pause_gap_keys.length,
-    deleted_gap_keys: plan.pause_gap_keys,
-    removed_seconds: roundTime(plan.removed_pause_seconds || 0),
+    deleted_gap_count: deletedGapKeys.size - (state.editState?.deleted_gap_keys || []).length,
+    deleted_gap_keys: [...deletedGapKeys].filter((value) => !(state.editState?.deleted_gap_keys || []).includes(value)),
+    removed_seconds: roundTime(removedPauseSeconds || 0),
     timeline
   };
 }

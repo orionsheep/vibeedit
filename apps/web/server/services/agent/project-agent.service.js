@@ -16,6 +16,7 @@ import {
   classifyProjectAgentRequest,
   normalizeProjectAgentMode
 } from './project-agent-intent.service.js';
+import { executeProjectAgentToolDirect } from './claude-agent-mcp.service.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
 import { getProjectEditState } from '../projects/project-edit-state.service.js';
 import { getProjectById } from '../projects/project.service.js';
@@ -209,6 +210,41 @@ function resultRequiresMutation(mode, result = {}) {
   });
 }
 
+function isHighLevelAssembleEdit(change = {}) {
+  const tool = String(change?.tool || change?.change || change?.type || '').trim();
+  return [
+    'delete_subtitle_blocks',
+    'restore_subtitle_blocks',
+    'delete_words_by_phrase',
+    'restore_words_by_phrase',
+    'replace_subtitle_text',
+    'reorder_project_assets',
+    'remove_project_asset'
+  ].includes(tool);
+}
+
+function needsAssembleDeepening(appliedChanges = []) {
+  const succeededChanges = (Array.isArray(appliedChanges) ? appliedChanges : []).filter((change) => didAppliedChangeSucceed(change));
+  if (!succeededChanges.length) return false;
+
+  const hasDeterministicCleanup = succeededChanges.some((change) => {
+    const tool = String(change?.tool || change?.change || change?.type || '').trim();
+    return ['auto_assemble_script', 'remove_pauses', 'remove_all_pauses'].includes(tool);
+  });
+  const hasHighLevelEdit = succeededChanges.some((change) => isHighLevelAssembleEdit(change));
+  return hasDeterministicCleanup && !hasHighLevelEdit;
+}
+
+function buildAssembleDeepeningPrompt(prompt = '') {
+  return [
+    String(prompt || '').trim() || '执行 口播拼稿',
+    '',
+    '系统补充要求：上一轮只完成了保守清理，现在必须继续通读当前脚本和字幕。',
+    '这一轮不能只做停顿清理，也不能直接结束；要重点删除悬空碎片、失败起手、重复解释、录制准备语句和弱过渡句。',
+    '必要时请直接使用 delete_subtitle_blocks 做块级删减，并在结束前重新读稿确认主线是否更完整、更像可直接发布的视频。'
+  ].join('\n');
+}
+
 function isNoMutationError(error) {
   const message = String(error?.message || '');
   return message.includes('没有产生任何实际修改') || message.includes('没有真正调用需要的工具');
@@ -374,6 +410,167 @@ async function finalizeAssembleNoopRun({
   };
 }
 
+async function runDeterministicAssembleFallback({
+  projectId,
+  session,
+  sessionId,
+  runId,
+  userPrompt,
+  requestedProvider = '',
+  requestedModel = '',
+  existingRun = null,
+  existingResult = null
+}) {
+  const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
+  const appliedChanges = Array.isArray(runRecord?.applied_changes)
+    ? [...runRecord.applied_changes]
+    : Array.isArray(existingResult?.applied_changes)
+      ? [...existingResult.applied_changes]
+      : [];
+
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'stage',
+    step: 'deterministic_assemble_fallback',
+    message: '模型没有稳定落地口播拼稿，系统正在自动补做确定性保守拼稿。',
+    payload: {}
+  });
+
+  const toolContext = {
+    llmProvider: requestedProvider,
+    llmModel: requestedModel,
+    requestContext: {
+      mode: 'assemble_script',
+      prompt: userPrompt,
+      sessionId,
+      runId
+    }
+  };
+
+  if (!appliedChanges.some((change) => String(change?.tool || change?.change || '').trim() === 'save_snapshot')) {
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_call',
+      step: 'save_snapshot',
+      message: '执行 save_snapshot',
+      payload: { tool: 'save_snapshot', args: { note: '系统自动补做口播拼稿前快照' } }
+    });
+    const snapshotResult = await executeProjectAgentToolDirect(projectId, 'save_snapshot', { note: '系统自动补做口播拼稿前快照' }, toolContext);
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_result',
+      step: 'save_snapshot',
+      message: snapshotResult?.summary || '已保存时间线快照。',
+      payload: { tool: 'save_snapshot', result: snapshotResult }
+    });
+    if (snapshotResult?.changed) {
+      appliedChanges.push({
+        tool: 'save_snapshot',
+        ...snapshotResult
+      });
+    }
+  }
+
+  const assembleArgs = {
+    take_limit: 12,
+    block_limit: 10,
+    sentence_limit: 14,
+    pause_limit: 12,
+    min_pause_seconds: 0.35,
+    max_passes: 2
+  };
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_call',
+    step: 'auto_assemble_script',
+    message: '执行 auto_assemble_script',
+    payload: { tool: 'auto_assemble_script', args: assembleArgs }
+  });
+  const assembleResult = await executeProjectAgentToolDirect(projectId, 'auto_assemble_script', assembleArgs, toolContext);
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_result',
+    step: 'auto_assemble_script',
+    message: assembleResult?.summary || '已执行一轮保守口播拼稿。',
+    payload: { tool: 'auto_assemble_script', result: assembleResult }
+  });
+
+  if (!assembleResult?.changed) {
+    return null;
+  }
+
+  appliedChanges.push({
+    tool: 'auto_assemble_script',
+    ...assembleResult
+  });
+  const reply = [
+    `系统已自动补做口播拼稿：${String(assembleResult.summary || '').trim()}`,
+    '',
+    '顺序：默认保持当前素材顺序不变。',
+    '通顺：已先做保守清理，建议你重点抽查删改交界处是否顺耳。',
+    '逻辑：本轮优先删除重复起手、失败重说和明显停顿，不会主动改写原句。',
+    '断句：如仍有悬空碎片，我可以继续按段精修。',
+    '重复：本轮已优先清掉确定性重复和重说片段。',
+    '停顿：本轮已同步清理明显停顿。',
+    '误删：这是保守自动清理结果，建议你再听一遍关键段落。',
+    '改进：如果你要更接近人工终稿，我下一轮可以继续删弱过渡句和空转解释。'
+  ].join('\n');
+  const result = {
+    ...(runRecord?.result || existingResult || {}),
+    reply,
+    summary: String(assembleResult.summary || '已自动补做一轮保守口播拼稿。').trim(),
+    applied_changes: appliedChanges,
+    recovered_from_no_mutation: true
+  };
+
+  await updateAgentRunRecord(runId, {
+    status: 'completed',
+    result,
+    requiresConfirmation: false,
+    appliedChanges,
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'complete',
+    step: 'deterministic_assemble_complete',
+    message: '系统自动保守拼稿已完成，本轮结果已写回项目。',
+    payload: {
+      recovered_from_no_mutation: true
+    }
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content: reply,
+    metadata: {
+      status: 'completed',
+      recovered_from_no_mutation: true
+    }
+  });
+  await touchAgentSession(sessionId, {
+    summary: mergeSessionSummary(session.summary, userPrompt, reply, appliedChanges)
+  });
+
+  return {
+    success: true,
+    session_id: sessionId,
+    run_id: runId,
+    reply,
+    status: 'completed',
+    requires_confirmation: false,
+    applied_changes: appliedChanges,
+    result
+  };
+}
+
 async function runProjectAgentInternal({
   projectId,
   sessionId,
@@ -503,6 +700,18 @@ async function runProjectAgentInternal({
           });
         } catch (retryError) {
           if (isNoMutationError(retryError)) {
+            const deterministicFallbackResult = await runDeterministicAssembleFallback({
+              projectId,
+              session,
+              sessionId,
+              runId: run.id,
+              userPrompt,
+              requestedProvider,
+              requestedModel
+            });
+            if (deterministicFallbackResult) {
+              return deterministicFallbackResult;
+            }
             return finalizeAssembleNoopRun({
               projectId,
               session,
@@ -518,9 +727,9 @@ async function runProjectAgentInternal({
       }
     }
 
-    const latestRun = await getAgentRunRecord(projectId, run.id);
-    const assistantReply = String(result.reply || latestRun?.result?.reply || '').trim();
-    const mutationSignatureAfter = await readProjectMutationSignature(projectId);
+    let latestRun = await getAgentRunRecord(projectId, run.id);
+    let assistantReply = String(result.reply || latestRun?.result?.reply || '').trim();
+    let mutationSignatureAfter = await readProjectMutationSignature(projectId);
     const requiresMutation = requestProfile.requiresMutation || resultRequiresMutation(normalizedMode, latestRun?.result || result);
 
     if (requiresMutation && mutationSignatureAfter === mutationSignatureBefore) {
@@ -552,6 +761,20 @@ async function runProjectAgentInternal({
         const retriedRun = await getAgentRunRecord(projectId, run.id);
         const retriedMutationSignature = await readProjectMutationSignature(projectId);
         if (resultRequiresMutation(normalizedMode, retriedRun?.result || retriedResult) && retriedMutationSignature === mutationSignatureBefore) {
+          const deterministicFallbackResult = await runDeterministicAssembleFallback({
+            projectId,
+            session,
+            sessionId,
+            runId: run.id,
+            userPrompt,
+            requestedProvider,
+            requestedModel,
+            existingRun: retriedRun,
+            existingResult: retriedResult
+          });
+          if (deterministicFallbackResult) {
+            return deterministicFallbackResult;
+          }
           return finalizeAssembleNoopRun({
             projectId,
             session,
@@ -602,6 +825,51 @@ async function runProjectAgentInternal({
         });
       }
       throw new Error('本次 Agent 没有产生任何实际修改，请重试或换更明确的指令。');
+    }
+
+    if (normalizedMode === 'assemble_script' && needsAssembleDeepening(latestRun?.applied_changes || result.applied_changes || [])) {
+      await appendAgentEvent({
+        sessionId,
+        runId: run.id,
+        type: 'stage',
+        step: 'deepen_assemble',
+        message: '保守清理已完成，系统正在自动发起第二轮精修，继续删除悬空碎片和弱过渡句。',
+        payload: {}
+      });
+      try {
+        const deepenedResult = await runAgentWithAutoContextCompression({
+          projectId,
+          sessionId,
+          runId: run.id,
+          mode: normalizedMode,
+          prompt: buildAssembleDeepeningPrompt(userPrompt),
+          topic: String(topic || '').trim(),
+          targetMinutes: Number(targetMinutes || 0),
+          preferencePrompt: String(preferencePrompt || '').trim(),
+          preferredProvider: requestedProvider,
+          preferredModel: requestedModel,
+          signal: abortController.signal,
+          onEvent,
+          persistAssistantMessage: false
+        });
+        const deepenedRun = await getAgentRunRecord(projectId, run.id);
+        const deepenedMutationSignature = await readProjectMutationSignature(projectId);
+        if (deepenedMutationSignature !== mutationSignatureAfter) {
+          result = deepenedResult;
+          latestRun = deepenedRun;
+          mutationSignatureAfter = deepenedMutationSignature;
+          assistantReply = String(deepenedResult.reply || deepenedRun?.result?.reply || assistantReply).trim();
+        }
+      } catch (deepenError) {
+        await appendAgentEvent({
+          sessionId,
+          runId: run.id,
+          type: 'stage',
+          step: 'deepen_assemble_skipped',
+          message: `第二轮精修未成功完成：${String(deepenError?.message || 'unknown error')}`,
+          payload: {}
+        });
+      }
     }
 
     if (String(latestRun?.status || result.status || '') === 'completed') {

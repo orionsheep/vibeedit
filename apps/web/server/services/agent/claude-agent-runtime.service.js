@@ -373,6 +373,7 @@ function didChangeApply(change = {}) {
 function isMutatingChange(change = {}) {
   const tool = String(change.tool || change.change || change.type || '').trim();
   return didChangeApply(change) && new Set([
+    'auto_assemble_script',
     'delete_subtitle_blocks',
     'restore_subtitle_blocks',
     'create_project_slice',
@@ -394,6 +395,7 @@ function isMutatingChange(change = {}) {
 function isTimelineEditingChange(change = {}) {
   const tool = String(change.tool || change.change || change.type || '').trim();
   return didChangeApply(change) && new Set([
+    'auto_assemble_script',
     'delete_subtitle_blocks',
     'restore_subtitle_blocks',
     'remove_project_asset',
@@ -463,6 +465,7 @@ async function emitDirectToolLifecycle(emit, toolName, args = {}, result = null)
 
 async function runAutomaticPauseCleanupFallback({
   projectId,
+  runId,
   emit,
   signal,
   appliedChanges,
@@ -500,6 +503,11 @@ async function runAutomaticPauseCleanupFallback({
         tool: 'remove_all_pauses',
         ...removeResult
       });
+      if (runId) {
+        await updateAgentRunRecord(runId, {
+          appliedChanges
+        });
+      }
     }
     return {
       applied: Number(removeResult?.deleted_gap_count || 0) > 0,
@@ -557,6 +565,11 @@ async function runAutomaticPauseCleanupFallback({
       tool: 'remove_pauses',
       ...removeResult
     });
+    if (runId) {
+      await updateAgentRunRecord(runId, {
+        appliedChanges
+      });
+    }
   }
   return {
     applied: Number(removeResult?.deleted_gap_count || 0) > 0,
@@ -574,6 +587,7 @@ function hasAppliedSnapshot(appliedChanges = []) {
 
 async function runAutomaticAssembleMutationFallback({
   projectId,
+  runId,
   emit,
   signal,
   appliedChanges,
@@ -607,14 +621,21 @@ async function runAutomaticAssembleMutationFallback({
         tool: 'save_snapshot',
         ...snapshotResult
       });
+      if (runId) {
+        await updateAgentRunRecord(runId, {
+          appliedChanges
+        });
+      }
     }
   }
 
   const assembleArgs = {
-    take_limit: 8,
-    sentence_limit: 10,
-    pause_limit: 8,
-    min_pause_seconds: 0.35
+    take_limit: 12,
+    block_limit: 10,
+    sentence_limit: 14,
+    pause_limit: 12,
+    min_pause_seconds: 0.35,
+    max_passes: 2
   };
   await emitDirectToolLifecycle(emit, 'auto_assemble_script', assembleArgs);
   const assembleResult = await executeProjectAgentToolDirect(projectId, 'auto_assemble_script', assembleArgs, toolContext);
@@ -624,6 +645,11 @@ async function runAutomaticAssembleMutationFallback({
       tool: 'auto_assemble_script',
       ...assembleResult
     });
+    if (runId) {
+      await updateAgentRunRecord(runId, {
+        appliedChanges
+      });
+    }
   } else {
     await emit({
       type: 'stage',
@@ -1111,6 +1137,7 @@ export async function runClaudeAgentSession({
         if (requiresPauseCleanup && !hasAppliedPauseCleanup(appliedChanges)) {
           await runAutomaticPauseCleanupFallback({
             projectId,
+            runId,
             emit,
             signal: abortController.signal,
             appliedChanges,
@@ -1134,6 +1161,7 @@ export async function runClaudeAgentSession({
         ) {
           await runAutomaticAssembleMutationFallback({
             projectId,
+            runId,
             emit,
             signal: abortController.signal,
             appliedChanges,
