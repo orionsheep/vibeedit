@@ -559,6 +559,13 @@ function buildAssembleNoopReply() {
   ].join('\n');
 }
 
+function seedAppliedChanges(existingRun = null, existingResult = null) {
+  const runChanges = Array.isArray(existingRun?.applied_changes) ? existingRun.applied_changes : [];
+  if (runChanges.length) return [...runChanges];
+  const resultChanges = Array.isArray(existingResult?.applied_changes) ? existingResult.applied_changes : [];
+  return [...resultChanges];
+}
+
 async function finalizeAssembleNoopRun({
   projectId,
   session,
@@ -569,11 +576,7 @@ async function finalizeAssembleNoopRun({
   existingResult = null
 }) {
   const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
-  const appliedChanges = Array.isArray(runRecord?.applied_changes)
-    ? runRecord.applied_changes
-    : Array.isArray(existingResult?.applied_changes)
-      ? existingResult.applied_changes
-      : [];
+  const appliedChanges = seedAppliedChanges(runRecord, existingResult);
   const reply = buildAssembleNoopReply();
   const summary = '本轮复查后未发现需要继续执行的口播拼稿修改，已保持当前时间线不变。';
   const result = {
@@ -642,20 +645,7 @@ async function runStructuredAssembleDeepeningFallback({
   existingResult = null
 }) {
   const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
-  const appliedChanges = Array.isArray(runRecord?.applied_changes)
-    ? [...runRecord.applied_changes]
-    : Array.isArray(existingResult?.applied_changes)
-      ? [...existingResult.applied_changes]
-      : [];
-
-  await appendAgentEvent({
-    sessionId,
-    runId,
-    type: 'stage',
-    step: 'assemble_planner',
-    message: '系统正在生成第二轮结构精修计划，准备删除悬空碎片、弱过渡和重复解释。',
-    payload: {}
-  });
+  const appliedChanges = seedAppliedChanges(runRecord, existingResult);
 
   const toolContext = {
     llmProvider: requestedProvider,
@@ -668,149 +658,192 @@ async function runStructuredAssembleDeepeningFallback({
     }
   };
 
-  const [projectContext, assetMap, scriptBlocks, assembleCandidates] = await Promise.all([
-    executeProjectAgentToolDirect(projectId, 'get_project_context', {}, toolContext),
-    executeProjectAgentToolDirect(projectId, 'get_asset_script_map', {}, toolContext),
-    executeProjectAgentToolDirect(projectId, 'get_script_blocks', {}, toolContext),
-    executeProjectAgentToolDirect(projectId, 'get_assemble_candidates', {
-      take_limit: 12,
-      block_limit: 12,
-      sentence_limit: 14,
-      pause_limit: 12,
-      min_pause_seconds: 0.35
-    }, toolContext)
-  ]);
+  let completedRounds = 0;
+  let lastPlan = null;
+  let lastPlanningMeta = null;
+  const planReasons = [];
+  const maxRounds = 3;
 
-  const plannerPrompt = [
-    `用户要求：${String(userPrompt || '').trim() || '执行 口播拼稿'}`,
-    '',
-    '任务：基于当前项目结果，规划第二轮结构精修，只返回一个 JSON。',
-    '目标是让视频更像可直接发布的成片，而不是只停留在去停顿。',
-    '优先删除：悬空碎片、失败起手、重复解释、录制准备语句、无信息量弱过渡。',
-    '优先保留：产品定位/核心价值、与现有方案的差异点、实际操作流程、典型使用场景、关键结论。',
-    '如果素材顺序明显不合理，可以给出 reorder_asset_titles；只能改素材之间的顺序，不能改单素材内部顺序。',
-    'delete_block_orders 里只能填写当前 SCRIPT_BLOCKS 中出现的 order，最多 14 个。',
-    '如果暂时没有足够安全的删减，就返回空数组，不要乱删。',
-    '',
-    `PROJECT_CONTEXT:\n${String(projectContext.summary || '').trim()}`,
-    '',
-    `ASSET_SCRIPT_MAP:\n${formatAssetScriptMapForPlanner(assetMap) || '无'}`,
-    '',
-    `SCRIPT_BLOCKS:\n${formatScriptBlocksForPlanner(scriptBlocks) || '无'}`,
-    '',
-    `ASSEMBLE_CANDIDATES:\n${formatAssembleCandidatesForPlanner(assembleCandidates) || '无'}`,
-    '',
-    '只输出 JSON，格式如下：',
-    '{"reorder_asset_titles":[],"delete_block_orders":[],"reason":"","confidence":"high|medium|low"}'
-  ].join('\n');
-
-  let planningText = '';
-  let planningMeta = null;
-  try {
-    planningMeta = await runAssemblePlannerQuery({
-      prompt: plannerPrompt,
-      preferredProvider: requestedProvider,
-      preferredModel: requestedModel,
-      signal
-    });
-    planningText = String(planningMeta?.text || '').trim();
-  } catch (error) {
+  for (let round = 1; round <= maxRounds; round += 1) {
     await appendAgentEvent({
       sessionId,
       runId,
       type: 'stage',
-      step: 'assemble_planner_failed',
-      message: `第二轮结构精修计划生成失败：${String(error?.message || 'unknown error')}`,
-      payload: {}
+      step: 'assemble_planner',
+      message: round === 1
+        ? '系统正在生成第二轮结构精修计划，准备删除悬空碎片、弱过渡和重复解释。'
+        : `系统正在继续第 ${round} 轮结构精修，进一步压缩弱过渡和空转解释。`,
+      payload: { round }
     });
-    return null;
-  }
 
-  const plan = parseStructuredAssemblePlan(planningText);
-  if (!plan || (!plan.delete_block_orders.length && !plan.reorder_asset_titles.length)) {
-    await appendAgentEvent({
-      sessionId,
-      runId,
-      type: 'stage',
-      step: 'assemble_planner_empty',
-      message: '第二轮结构精修没有识别到足够安全的块级删减计划，本轮保持当前结果。',
-      payload: {
-        planner_preview: previewPlannerText(planningText, 220)
-      }
-    });
-    return null;
-  }
+    const [projectContext, assetMap, scriptBlocks, assembleCandidates] = await Promise.all([
+      executeProjectAgentToolDirect(projectId, 'get_project_context', {}, toolContext),
+      executeProjectAgentToolDirect(projectId, 'get_asset_script_map', {}, toolContext),
+      executeProjectAgentToolDirect(projectId, 'get_script_blocks', {}, toolContext),
+      executeProjectAgentToolDirect(projectId, 'get_assemble_candidates', {
+        take_limit: 14,
+        block_limit: 16,
+        sentence_limit: 18,
+        pause_limit: 12,
+        min_pause_seconds: 0.35
+      }, toolContext)
+    ]);
 
-  if (plan.reorder_asset_titles.length) {
-    await appendAgentEvent({
-      sessionId,
-      runId,
-      type: 'tool_call',
-      step: 'reorder_project_assets',
-      message: '执行 reorder_project_assets',
-      payload: {
-        tool: 'reorder_project_assets',
-        args: {
-          ordered_titles: plan.reorder_asset_titles
-        }
-      }
-    });
-    const reorderResult = await executeProjectAgentToolDirect(projectId, 'reorder_project_assets', {
-      ordered_titles: plan.reorder_asset_titles
-    }, toolContext);
-    await appendAgentEvent({
-      sessionId,
-      runId,
-      type: 'tool_result',
-      step: 'reorder_project_assets',
-      message: reorderResult?.summary || '已更新素材顺序。',
-      payload: {
-        tool: 'reorder_project_assets',
-        result: reorderResult
-      }
-    });
-    if (didAppliedChangeSucceed(reorderResult) && reorderResult?.changed) {
-      appliedChanges.push({
-        tool: 'reorder_project_assets',
-        ...reorderResult
+    const totalAssetDuration = Array.isArray(assetMap.assets)
+      ? assetMap.assets.reduce((sum, asset) => sum + Number(asset.duration_seconds || 0), 0)
+      : 0;
+    const currentDuration = Number(projectContext.current_cut_duration_seconds || 0);
+    const durationRatio = totalAssetDuration > 0 ? currentDuration / totalAssetDuration : 1;
+    const plannerPrompt = [
+      `用户要求：${String(userPrompt || '').trim() || '执行 口播拼稿'}`,
+      '',
+      `任务：基于当前项目结果，规划第 ${round} 轮结构精修，只返回一个 JSON。`,
+      '目标是让视频更像可直接发布的成片，而不是只停留在去停顿。',
+      '优先删除：悬空碎片、失败起手、重复解释、录制准备语句、无信息量弱过渡、口头确认、自我重复铺垫。',
+      '优先保留：产品定位/核心价值、与现有方案的差异点、实际操作流程、典型使用场景、关键结论。',
+      '对多素材产品介绍视频，允许继续删除表达同一个意思但信息增量很低的重复解释。',
+      `当前成片时长约 ${formatPlannerTime(currentDuration)}s，总素材时长约 ${formatPlannerTime(totalAssetDuration)}s，当前压缩比例约 ${(durationRatio * 100).toFixed(0)}%。`,
+      '对于这种多素材产品介绍视频，如果逻辑仍完整，目标可以压到原始总时长的 45%-60% 区间；不要为了“保守”把明显冗余段落留住。',
+      '如果当前仍明显偏长，并且还有安全的弱块，可以继续给出删减计划；不要因为已经做过一轮就保守停住。',
+      '当压缩比例仍高于 60% 时，可以更积极地删除：重复卖点解释、同义重复补充、录制过程中的自我确认、没有信息增量的延展句。',
+      '如果素材顺序明显不合理，可以给出 reorder_asset_titles；只能改素材之间的顺序，不能改单素材内部顺序。',
+      'delete_block_orders 里只能填写当前 SCRIPT_BLOCKS 中出现的 order，最多 18 个。',
+      '如果暂时没有足够安全的删减，就返回空数组，不要乱删。',
+      '',
+      `PROJECT_CONTEXT:\n${String(projectContext.summary || '').trim()}`,
+      '',
+      `ASSET_SCRIPT_MAP:\n${formatAssetScriptMapForPlanner(assetMap) || '无'}`,
+      '',
+      `SCRIPT_BLOCKS:\n${formatScriptBlocksForPlanner(scriptBlocks) || '无'}`,
+      '',
+      `ASSEMBLE_CANDIDATES:\n${formatAssembleCandidatesForPlanner(assembleCandidates) || '无'}`,
+      '',
+      '只输出 JSON，格式如下：',
+      '{"reorder_asset_titles":[],"delete_block_orders":[],"reason":"","confidence":"high|medium|low"}'
+    ].join('\n');
+
+    let planningText = '';
+    let planningMeta = null;
+    try {
+      planningMeta = await runAssemblePlannerQuery({
+        prompt: plannerPrompt,
+        preferredProvider: requestedProvider,
+        preferredModel: requestedModel,
+        signal
       });
-    }
-  }
-
-  if (plan.delete_block_orders.length) {
-    await appendAgentEvent({
-      sessionId,
-      runId,
-      type: 'tool_call',
-      step: 'delete_subtitle_blocks',
-      message: '执行 delete_subtitle_blocks',
-      payload: {
-        tool: 'delete_subtitle_blocks',
-        args: {
-          orders: plan.delete_block_orders
-        }
-      }
-    });
-    const deleteResult = await executeProjectAgentToolDirect(projectId, 'delete_subtitle_blocks', {
-      orders: plan.delete_block_orders
-    }, toolContext);
-    await appendAgentEvent({
-      sessionId,
-      runId,
-      type: 'tool_result',
-      step: 'delete_subtitle_blocks',
-      message: deleteResult?.summary || '已删除结构精修选中的口播块。',
-      payload: {
-        tool: 'delete_subtitle_blocks',
-        result: deleteResult
-      }
-    });
-    if (didAppliedChangeSucceed(deleteResult) && deleteResult?.changed) {
-      appliedChanges.push({
-        tool: 'delete_subtitle_blocks',
-        ...deleteResult
+      planningText = String(planningMeta?.text || '').trim();
+      lastPlanningMeta = planningMeta;
+    } catch (error) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_planner_failed',
+        message: `第 ${round} 轮结构精修计划生成失败：${String(error?.message || 'unknown error')}`,
+        payload: { round }
       });
+      break;
     }
+
+    const plan = parseStructuredAssemblePlan(planningText);
+    lastPlan = plan;
+    if (!plan || (!plan.delete_block_orders.length && !plan.reorder_asset_titles.length)) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_planner_empty',
+        message: round === 1
+          ? '第二轮结构精修没有识别到足够安全的块级删减计划，本轮保持当前结果。'
+          : `第 ${round} 轮结构精修未再识别到足够安全的删减计划。`,
+        payload: {
+          round,
+          planner_preview: previewPlannerText(planningText, 220)
+        }
+      });
+      break;
+    }
+
+    if (plan.reorder_asset_titles.length) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_call',
+        step: 'reorder_project_assets',
+        message: '执行 reorder_project_assets',
+        payload: {
+          tool: 'reorder_project_assets',
+          args: {
+            ordered_titles: plan.reorder_asset_titles
+          },
+          round
+        }
+      });
+      const reorderResult = await executeProjectAgentToolDirect(projectId, 'reorder_project_assets', {
+        ordered_titles: plan.reorder_asset_titles
+      }, toolContext);
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_result',
+        step: 'reorder_project_assets',
+        message: reorderResult?.summary || '已更新素材顺序。',
+        payload: {
+          tool: 'reorder_project_assets',
+          round,
+          result: reorderResult
+        }
+      });
+      if (didAppliedChangeSucceed(reorderResult) && reorderResult?.changed) {
+        appliedChanges.push({
+          tool: 'reorder_project_assets',
+          ...reorderResult
+        });
+      }
+    }
+
+    if (plan.delete_block_orders.length) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_call',
+        step: 'delete_subtitle_blocks',
+        message: '执行 delete_subtitle_blocks',
+        payload: {
+          tool: 'delete_subtitle_blocks',
+          args: {
+            orders: plan.delete_block_orders
+          },
+          round
+        }
+      });
+      const deleteResult = await executeProjectAgentToolDirect(projectId, 'delete_subtitle_blocks', {
+        orders: plan.delete_block_orders
+      }, toolContext);
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_result',
+        step: 'delete_subtitle_blocks',
+        message: deleteResult?.summary || '已删除结构精修选中的口播块。',
+        payload: {
+          tool: 'delete_subtitle_blocks',
+          round,
+          result: deleteResult
+        }
+      });
+      if (didAppliedChangeSucceed(deleteResult) && deleteResult?.changed) {
+        appliedChanges.push({
+          tool: 'delete_subtitle_blocks',
+          ...deleteResult
+        });
+      }
+    }
+
+    if (plan.reason) {
+      planReasons.push(`第 ${round} 轮：${plan.reason}`);
+    }
+    completedRounds += 1;
   }
 
   if (!appliedChanges.some((change) => isHighLevelAssembleEdit(change))) {
@@ -818,27 +851,28 @@ async function runStructuredAssembleDeepeningFallback({
   }
 
   const reply = [
-    `系统已自动执行第二轮结构精修：${plan.reason || '删除了悬空碎片、弱过渡和重复解释。'}`,
+    `系统已自动执行 ${completedRounds || 1} 轮结构精修：${planReasons.join('；') || lastPlan?.reason || '删除了悬空碎片、弱过渡和重复解释。'}`,
     '',
-    `顺序：${plan.reorder_asset_titles.length ? `已按素材级顺序调整为 ${plan.reorder_asset_titles.join(' → ')}` : '保持素材顺序不变。'}`,
-    `通顺：本轮按块级删减，避免句中抠词；建议重点抽查删改交界处。`,
-    `逻辑：本轮删除的是弱过渡、失败起手或重复解释，主线表达应更集中。`,
-    `断句：本轮使用字幕块级删除，断句风险低于句中删词。`,
-    `重复：已继续清理仍残留的重复解释和起手重说。`,
-    `停顿：保留上一轮停顿清理结果，本轮重点做语义级精修。`,
-    `误删：这是结构精修结果，建议你复听核心论述段确认没有删掉关键细节。`,
-    `改进：如还想继续逼近人工终稿，我下一轮可以再专门删弱承接句和空转解释。`
+    `顺序：${lastPlan?.reorder_asset_titles?.length ? `已按素材级顺序调整为 ${lastPlan.reorder_asset_titles.join(' → ')}` : '保持素材顺序不变。'}`,
+    '通顺：本轮按块级删减，避免句中抠词；建议重点抽查删改交界处。',
+    '逻辑：本轮删除的是弱过渡、失败起手或重复解释，主线表达应更集中。',
+    '断句：本轮使用字幕块级删除，断句风险低于句中删词。',
+    '重复：已继续清理仍残留的重复解释和起手重说。',
+    '停顿：保留上一轮停顿清理结果，本轮重点做语义级精修。',
+    '误删：这是结构精修结果，建议你复听核心论述段确认没有删掉关键细节。',
+    '改进：如还想继续逼近人工终稿，我下一轮可以再专门删弱承接句和空转解释。'
   ].join('\n');
 
   const result = {
     ...(runRecord?.result || existingResult || {}),
     reply,
-    summary: String(plan.reason || '已自动完成第二轮结构精修。').trim(),
+    summary: String(planReasons.join('；') || lastPlan?.reason || '已自动完成结构精修。').trim(),
     applied_changes: appliedChanges,
     structured_assemble_plan: {
-      ...plan,
-      provider: planningMeta?.provider || requestedProvider,
-      model: planningMeta?.model || requestedModel
+      ...(lastPlan || {}),
+      rounds_applied: completedRounds,
+      provider: lastPlanningMeta?.provider || requestedProvider,
+      model: lastPlanningMeta?.model || requestedModel
     },
     recovered_from_no_mutation: true
   };
@@ -857,8 +891,9 @@ async function runStructuredAssembleDeepeningFallback({
     step: 'assemble_planner_complete',
     message: '第二轮结构精修已完成，本轮结果已写回项目。',
     payload: {
-      reordered_asset_titles: plan.reorder_asset_titles,
-      deleted_block_orders: plan.delete_block_orders
+      rounds_applied: completedRounds,
+      reordered_asset_titles: lastPlan?.reorder_asset_titles || [],
+      deleted_block_orders: lastPlan?.delete_block_orders || []
     }
   });
   await appendAgentMessage({
@@ -900,11 +935,7 @@ async function runDeterministicAssembleFallback({
   existingResult = null
 }) {
   const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
-  const appliedChanges = Array.isArray(runRecord?.applied_changes)
-    ? [...runRecord.applied_changes]
-    : Array.isArray(existingResult?.applied_changes)
-      ? [...existingResult.applied_changes]
-      : [];
+  const appliedChanges = seedAppliedChanges(runRecord, existingResult);
 
   await appendAgentEvent({
     sessionId,
