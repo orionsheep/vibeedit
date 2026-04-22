@@ -11,42 +11,68 @@
       @cancel="closeConfirmDialog"
     />
     <section class="hero">
-      <div class="hero-copy">
-        <div class="eyebrow">PROJECTS</div>
-        <h1>多视频项目工作区</h1>
-        <p>先建项目，再把素材库里的视频加入项目，最后进入主时间线和 Agent 工作台。</p>
+      <div class="hero-main">
+        <div class="hero-header">
+          <div class="hero-copy">
+            <div class="eyebrow">PROJECTS</div>
+            <h1>多视频项目工作区</h1>
+            <p>先建项目，再把素材库里的视频加入项目，最后进入主时间线和 Agent 工作台。这里更适合快速创建、继续编辑和集中管理多个视频项目。</p>
+          </div>
+          <router-link class="ghost-link hero-library-link" to="/library">打开素材库</router-link>
+        </div>
         <div class="hero-stats">
-          <span>{{ projects.length }} 个项目</span>
-          <span>{{ categories.length }} 个分类</span>
-          <span>主流程：项目 → 素材库 → 工作台</span>
+          <article class="stat-panel">
+            <span class="stat-label">项目数</span>
+            <strong>{{ projects.length }}</strong>
+            <span class="stat-meta">当前工作区</span>
+          </article>
+          <article class="stat-panel">
+            <span class="stat-label">分类</span>
+            <strong>{{ categories.length }}</strong>
+            <span class="stat-meta">已建立标签</span>
+          </article>
+          <article class="stat-panel stat-panel-wide">
+            <span class="stat-label">主流程</span>
+            <strong>项目 → 素材库 → 工作台</strong>
+            <span class="stat-meta">项目组织素材，工作台完成字幕、Agent 和导出。</span>
+          </article>
+        </div>
+        <div class="hero-footnote">
+          <span>适合：口播剪辑、直播切片、多素材合并讲解。</span>
+          <span>默认工作流：建项目 → 加素材 → 进入工作台继续处理。</span>
         </div>
       </div>
-      <div class="hero-side">
-        <div class="hero-side-title">工作方式</div>
-        <ul>
-          <li>项目负责组织素材、时间线和导出结果。</li>
-          <li>素材库负责统一上传、检索和转写状态。</li>
-          <li>工作台负责字幕编辑、Agent 操作和精确导出。</li>
-        </ul>
+      <aside class="hero-side">
+        <div class="hero-side-section">
+          <div class="hero-side-title">工作方式</div>
+          <ul>
+            <li>项目负责组织素材、时间线和导出结果。</li>
+            <li>素材库负责统一上传、检索和转写状态。</li>
+            <li>工作台负责字幕编辑、Agent 操作和精确导出。</li>
+          </ul>
+        </div>
         <div class="community-card">
           <div class="community-copy">
             <span class="community-label">扫码加入微信群</span>
             <strong>VibeEdit 共创群</strong>
             <span>作者微信：AInatives</span>
+            <small>有问题直接进群交流，或加微信反馈使用体验。</small>
           </div>
           <img class="community-qr" src="/vibeedit-wechat-group-qr.jpg" alt="VibeEdit 微信群二维码" />
         </div>
-        <router-link class="ghost-link" to="/library">打开素材库</router-link>
-      </div>
+      </aside>
     </section>
 
     <section class="create-card">
       <div class="card-head">
         <div>
-          <h2>创建项目</h2>
-          <p>用一个清晰的项目名，把后续的素材导入、直播切片和工程导出收进同一工作区。</p>
+          <h2>快速创建项目</h2>
+          <p>项目名尽量直接描述内容主题。建好后，把素材加进来，再进入工作台继续剪辑。</p>
         </div>
-        <span class="chip-label">{{ categories.length }} 个分类</span>
+        <div class="card-head-meta">
+          <span class="chip-label">{{ categories.length }} 个分类</span>
+          <span class="chip-label">支持多素材 / 多切片</span>
+        </div>
       </div>
       <form class="create-form" @submit.prevent="handleCreateProject">
         <input v-model="form.name" type="text" placeholder="项目名称" required />
@@ -196,10 +222,10 @@ onMounted(loadData);
 
 <style scoped>
 .projects-page {
-  max-width: 1280px;
-  margin: 0 auto;
+  width: min(1560px, calc(100vw - 40px));
+  margin: 0 auto 24px;
   display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .hero,
@@ -212,11 +238,11 @@ onMounted(loadData);
 }
 
 .hero {
-  padding: 28px;
+  padding: 22px;
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.9fr);
-  gap: 22px;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.92fr);
+  gap: 16px;
+  align-items: start;
 }
 
 .eyebrow {
@@ -228,28 +254,39 @@ onMounted(loadData);
 }
 
 h1 {
-  font-size: 42px;
-  margin-bottom: 10px;
+  font-size: clamp(30px, 3.2vw, 44px);
+  margin-bottom: 8px;
   letter-spacing: -0.03em;
 }
 
 .hero p {
   color: var(--app-copy-muted);
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
+.hero-main,
 .hero-copy {
   display: grid;
   gap: 14px;
 }
 
-.hero-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+.hero-main {
+  min-width: 0;
 }
 
-.hero-stats span,
+.hero-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.hero-stats {
+  display: grid;
+  grid-template-columns: 132px 132px minmax(0, 1fr);
+  gap: 12px;
+}
+
 .chip-label {
   border: 1px solid rgba(88, 219, 255, 0.16);
   background: rgba(10, 18, 27, 0.82);
@@ -258,13 +295,69 @@ h1 {
   font-size: 12px;
 }
 
+.stat-panel {
+  min-height: 104px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  border: 1px solid rgba(88, 219, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(12, 20, 30, 0.96), rgba(7, 14, 22, 0.92));
+}
+
+.stat-panel strong {
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #f6fbff;
+}
+
+.stat-panel-wide strong {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.stat-label,
+.stat-meta,
+.hero-footnote span {
+  font-size: 12px;
+}
+
+.stat-label {
+  color: var(--app-copy-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+}
+
+.stat-meta {
+  color: var(--app-copy-muted);
+  line-height: 1.5;
+}
+
+.hero-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.hero-footnote span {
+  color: var(--app-copy-soft);
+}
+
 .hero-side {
   border: 1px solid rgba(88, 219, 255, 0.16);
   background: rgba(8, 16, 25, 0.8);
-  padding: 18px;
+  padding: 16px;
   display: grid;
   gap: 14px;
   align-content: start;
+}
+
+.hero-side-section {
+  display: grid;
+  gap: 10px;
 }
 
 .hero-side-title {
@@ -276,15 +369,18 @@ h1 {
 }
 
 .hero-side ul {
+  margin: 0;
   padding-left: 18px;
   color: var(--app-copy);
-  line-height: 1.65;
+  line-height: 1.55;
+  display: grid;
+  gap: 8px;
 }
 
 .community-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 162px;
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 126px;
+  gap: 12px;
   align-items: center;
   padding: 12px;
   border: 1px solid rgba(88, 219, 255, 0.16);
@@ -307,13 +403,18 @@ h1 {
   font-size: 16px;
 }
 
-.community-copy span:last-child {
+.community-copy span:last-of-type {
   color: var(--app-copy-muted);
   font-size: 12px;
 }
 
+.community-copy small {
+  color: var(--app-copy-soft);
+  line-height: 1.45;
+}
+
 .community-qr {
-  width: 162px;
+  width: 126px;
   aspect-ratio: 939 / 1461;
   height: auto;
   object-fit: contain;
@@ -324,12 +425,20 @@ h1 {
 
 .ghost-link,
 .chip-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--app-copy);
   text-decoration: none;
   border: 1px solid var(--app-border-strong);
   background: rgba(10, 18, 27, 0.92);
   padding: 10px 14px;
   transition: 0.18s ease;
+}
+
+.hero-library-link {
+  min-height: 42px;
+  white-space: nowrap;
 }
 
 .ghost-link:hover,
@@ -339,9 +448,9 @@ h1 {
 }
 
 .create-card {
-  padding: 22px;
+  padding: 18px 20px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .card-head {
@@ -354,6 +463,12 @@ h1 {
 .card-head p {
   margin-top: 6px;
   color: var(--app-copy-muted);
+}
+
+.card-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .create-form {
@@ -382,15 +497,15 @@ h1 {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
 }
 
 .empty-card,
 .project-card {
-  padding: 20px;
+  padding: 16px 18px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .empty-card {
@@ -421,12 +536,14 @@ h1 {
 }
 
 .project-name {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
+  line-height: 1.3;
 }
 
 .project-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   color: var(--app-copy-soft);
   font-size: 13px;
@@ -435,8 +552,8 @@ h1 {
 
 .project-desc {
   color: var(--app-copy);
-  line-height: 1.6;
-  min-height: 48px;
+  line-height: 1.55;
+  min-height: 44px;
 }
 
 .project-footer {
@@ -461,19 +578,28 @@ h1 {
 }
 
 @media (max-width: 900px) {
-  .create-form,
-  .project-grid {
+  .projects-page {
+    width: min(100%, calc(100vw - 24px));
+  }
+
+  .create-form {
     grid-template-columns: 1fr;
   }
 
   .hero,
-  .card-head,
-  .project-top {
+  .community-card {
     grid-template-columns: 1fr;
-    display: grid;
   }
 
-  .community-card {
+  .hero-header,
+  .hero-stats,
+  .card-head,
+  .project-top {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .project-grid {
     grid-template-columns: 1fr;
   }
 
@@ -481,6 +607,10 @@ h1 {
     width: 180px;
     height: auto;
     justify-self: start;
+  }
+
+  .hero-library-link {
+    width: 100%;
   }
 }
 </style>
