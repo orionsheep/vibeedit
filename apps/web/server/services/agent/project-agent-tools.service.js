@@ -1642,6 +1642,109 @@ function mapAssembleCandidateVersion(version = {}) {
   };
 }
 
+function chooseBestMappedTakeVersion(versions = []) {
+  const sorted = [...versions].sort((left, right) => {
+    const scoreGap = scoreAssembleTakeBlock(right) - scoreAssembleTakeBlock(left);
+    if (scoreGap !== 0) return scoreGap;
+    const completenessGap = String(right.text || '').length - String(left.text || '').length;
+    if (completenessGap !== 0) return completenessGap;
+    return Number(left.start || 0) - Number(right.start || 0);
+  });
+  return sorted[0] || null;
+}
+
+function chooseBestMappedSentenceVersion(versions = []) {
+  const sorted = [...versions].sort((left, right) => {
+    const scoreGap = scoreAssembleSentence(right) - scoreAssembleSentence(left);
+    if (scoreGap !== 0) return scoreGap;
+    const completenessGap = String(right.text || '').length - String(left.text || '').length;
+    if (completenessGap !== 0) return completenessGap;
+    return Number(left.start || 0) - Number(right.start || 0);
+  });
+  return sorted[0] || null;
+}
+
+export function planConservativeAssemblePass(
+  {
+    takeGroups = [],
+    sentenceGroups = [],
+    pauseCandidates = []
+  } = {},
+  {
+    maxTakeVersionsToDelete = 8,
+    maxSentenceVersionsToDelete = 10,
+    maxPauseCandidatesToDelete = 8
+  } = {}
+) {
+  const protectedSentenceIds = new Set();
+  const sentenceIdsToDelete = new Set();
+  const deletedTakeVersionIds = [];
+  const deletedSentenceVersionIds = [];
+
+  for (const group of Array.isArray(takeGroups) ? takeGroups : []) {
+    if (deletedTakeVersionIds.length >= maxTakeVersionsToDelete) break;
+    const versions = Array.isArray(group?.versions) ? group.versions : [];
+    if (versions.length <= 1) continue;
+    const bestVersion = chooseBestMappedTakeVersion(versions);
+    if (!bestVersion) continue;
+    for (const sentenceId of Array.isArray(bestVersion.sentence_ids) ? bestVersion.sentence_ids : []) {
+      protectedSentenceIds.add(String(sentenceId || '').trim());
+    }
+    const removableVersions = versions
+      .filter((version) => String(version?.id || '').trim() && String(version?.id || '').trim() !== String(bestVersion.id || '').trim())
+      .sort((left, right) => Number(left.start || 0) - Number(right.start || 0));
+    for (const version of removableVersions) {
+      if (deletedTakeVersionIds.length >= maxTakeVersionsToDelete) break;
+      const sentenceIds = (Array.isArray(version.sentence_ids) ? version.sentence_ids : [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .filter((value) => !protectedSentenceIds.has(value));
+      if (!sentenceIds.length) continue;
+      sentenceIds.forEach((value) => sentenceIdsToDelete.add(value));
+      deletedTakeVersionIds.push(String(version.id || '').trim());
+    }
+  }
+
+  for (const group of Array.isArray(sentenceGroups) ? sentenceGroups : []) {
+    if (deletedSentenceVersionIds.length >= maxSentenceVersionsToDelete) break;
+    const versions = Array.isArray(group?.versions) ? group.versions : [];
+    if (versions.length <= 1) continue;
+    const bestVersion = chooseBestMappedSentenceVersion(versions);
+    if (!bestVersion) continue;
+    protectedSentenceIds.add(String(bestVersion.id || '').trim());
+    const removableVersions = versions
+      .filter((version) => String(version?.id || '').trim() && String(version?.id || '').trim() !== String(bestVersion.id || '').trim())
+      .sort((left, right) => Number(left.start || 0) - Number(right.start || 0));
+    for (const version of removableVersions) {
+      if (deletedSentenceVersionIds.length >= maxSentenceVersionsToDelete) break;
+      const sentenceId = String(version.id || '').trim();
+      if (!sentenceId || protectedSentenceIds.has(sentenceId) || sentenceIdsToDelete.has(sentenceId)) continue;
+      sentenceIdsToDelete.add(sentenceId);
+      deletedSentenceVersionIds.push(sentenceId);
+    }
+  }
+
+  const preferredPauses = (Array.isArray(pauseCandidates) ? pauseCandidates : []).filter((candidate) => Boolean(candidate?.recommended));
+  const fallbackPauses = preferredPauses.length
+    ? preferredPauses
+    : (Array.isArray(pauseCandidates) ? pauseCandidates : []).filter((candidate) => (
+        Number(candidate?.gap_seconds || 0) >= 0.45 || String(candidate?.safety_level || '') === 'high'
+      ));
+  const selectedPauseCandidates = fallbackPauses
+    .slice(0, Math.max(1, Number(maxPauseCandidatesToDelete || 1)))
+    .filter((candidate) => String(candidate?.gap_key || '').trim());
+  const pauseGapKeys = [...new Set(selectedPauseCandidates.map((candidate) => String(candidate.gap_key || '').trim()))];
+  const removedPauseSeconds = roundTime(selectedPauseCandidates.reduce((sum, candidate) => sum + Number(candidate?.gap_seconds || 0), 0));
+
+  return {
+    sentence_ids_to_delete: [...sentenceIdsToDelete],
+    deleted_take_version_ids: deletedTakeVersionIds,
+    deleted_sentence_version_ids: deletedSentenceVersionIds,
+    pause_gap_keys: pauseGapKeys,
+    removed_pause_seconds: removedPauseSeconds
+  };
+}
+
 export async function toolGetAssembleCandidates(
   projectId,
   {
@@ -1713,6 +1816,120 @@ export async function toolGetPauseCandidates(projectId, { min_gap_seconds: minGa
     min_gap_seconds: Number(minGapSeconds || 0.35),
     recommended_count: candidates.filter((candidate) => candidate.recommended).length,
     candidates
+  };
+}
+
+export async function toolAutoAssembleScript(
+  projectId,
+  {
+    take_limit: takeLimit = 8,
+    sentence_limit: sentenceLimit = 10,
+    pause_limit: pauseLimit = 8,
+    min_pause_seconds: minPauseSeconds = 0.35
+  } = {},
+  context = {}
+) {
+  const state = await loadProjectEditableState(projectId);
+  const activeWords = buildActiveWordsWithOriginalIndices(state);
+  const activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
+  const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
+    .map((cluster, index) => ({
+      id: `take_group_${index + 1}`,
+      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+      score: cluster.reduce((sum, version) => sum + scoreAssembleTakeBlock(version), 0)
+    }))
+    .filter((group) => group.versions.length > 1)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(1, Number(takeLimit || 8)));
+  const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
+    .map((cluster, index) => ({
+      id: `sentence_group_${index + 1}`,
+      versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
+      score: cluster.reduce((sum, version) => sum + scoreAssembleSentence(version), 0)
+    }))
+    .filter((group) => group.versions.length > 1)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(1, Number(sentenceLimit || 10)));
+  const pauseCandidates = buildPauseCandidates(state, {
+    minGapSeconds: minPauseSeconds,
+    limit: Math.max(1, Number(pauseLimit || 8))
+  });
+  const plan = planConservativeAssemblePass({
+    takeGroups: rawTakeGroups,
+    sentenceGroups: rawSentenceGroups,
+    pauseCandidates
+  }, {
+    maxTakeVersionsToDelete: Math.max(1, Number(takeLimit || 8)),
+    maxSentenceVersionsToDelete: Math.max(1, Number(sentenceLimit || 10)),
+    maxPauseCandidatesToDelete: Math.max(1, Number(pauseLimit || 8))
+  });
+
+  const sentenceIdSet = new Set((plan.sentence_ids_to_delete || []).map((value) => String(value || '').trim()).filter(Boolean));
+  const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
+  let changed = false;
+
+  if (sentenceIdSet.size) {
+    for (const sentence of activeSentences) {
+      if (!sentenceIdSet.has(String(sentence.id || '').trim())) continue;
+      markWordRangeDeleted(
+        state.keptMask,
+        Number(sentence.original_word_start || sentence.word_start || 0),
+        Number(sentence.original_word_end || sentence.word_end || 0)
+      );
+      changed = true;
+    }
+  }
+
+  for (const gapKey of plan.pause_gap_keys || []) {
+    const normalizedGapKey = String(gapKey || '').trim();
+    if (!normalizedGapKey || deletedGapKeys.has(normalizedGapKey)) continue;
+    deletedGapKeys.add(normalizedGapKey);
+    changed = true;
+  }
+
+  if (!changed) {
+    return {
+      success: true,
+      changed: false,
+      change: 'auto_assemble_script',
+      summary: '当前没有识别到可安全落地的重复 take、重复句或推荐停顿，保守拼稿未执行修改。',
+      detected_take_group_count: rawTakeGroups.length,
+      detected_sentence_group_count: rawSentenceGroups.length,
+      detected_pause_candidate_count: pauseCandidates.length
+    };
+  }
+
+  const timeline = await persistEditableProjectState(projectId, state, {
+    deletedGapKeys: [...deletedGapKeys].filter(Boolean),
+    audit: buildAgentEditHistoryContext(
+      'auto_assemble_script',
+      {
+        take_limit: takeLimit,
+        sentence_limit: sentenceLimit,
+        pause_limit: pauseLimit,
+        min_pause_seconds: minPauseSeconds,
+        deleted_take_version_ids: plan.deleted_take_version_ids,
+        deleted_sentence_version_ids: plan.deleted_sentence_version_ids,
+        pause_gap_keys: plan.pause_gap_keys
+      },
+      context,
+      'Agent 执行一轮保守口播拼稿'
+    )
+  });
+
+  const deletedBlockIds = [...sentenceIdSet];
+  return {
+    success: true,
+    changed: true,
+    change: 'auto_assemble_script',
+    summary: `已执行一轮保守口播拼稿：删除 ${plan.deleted_take_version_ids.length} 个重复 take 版本、${plan.deleted_sentence_version_ids.length} 个重复句，并清理 ${plan.pause_gap_keys.length} 个明显停顿。`,
+    deleted_take_version_ids: plan.deleted_take_version_ids,
+    deleted_sentence_version_ids: plan.deleted_sentence_version_ids,
+    deleted_block_ids: deletedBlockIds,
+    deleted_gap_count: plan.pause_gap_keys.length,
+    deleted_gap_keys: plan.pause_gap_keys,
+    removed_seconds: roundTime(plan.removed_pause_seconds || 0),
+    timeline
   };
 }
 

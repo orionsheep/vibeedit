@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
+  toolAutoAssembleScript,
   toolGetAssembleCandidates,
   toolGetDeletedSubtitleBlocks,
   toolGetPauseCandidates,
@@ -130,6 +131,16 @@ function compactResultPayload(toolName, result = {}) {
         candidate_count: Array.isArray(result.candidates) ? result.candidates.length : 0,
         recommended_count: result.recommended_count
       };
+    case 'auto_assemble_script':
+      return {
+        success: result?.success !== false,
+        changed: result?.changed !== false,
+        deleted_take_version_count: Array.isArray(result?.deleted_take_version_ids) ? result.deleted_take_version_ids.length : 0,
+        deleted_sentence_version_count: Array.isArray(result?.deleted_sentence_version_ids) ? result.deleted_sentence_version_ids.length : 0,
+        deleted_gap_count: Number(result?.deleted_gap_count || 0),
+        removed_seconds: result?.removed_seconds,
+        timeline: result?.timeline || undefined
+      };
     case 'search_project_subtitles':
       return {
         match_count: Array.isArray(result.matches) ? result.matches.length : 0
@@ -236,6 +247,14 @@ function toolResultToText(result = {}, toolName = '') {
     }
     case 'get_pause_candidates':
       return [result.summary || '', formatPauseCandidates(result.candidates || [])].filter(Boolean).join('\n\n');
+    case 'auto_assemble_script': {
+      return [
+        result.summary || '',
+        `删除重复 take：${Array.isArray(result.deleted_take_version_ids) ? result.deleted_take_version_ids.length : 0}`,
+        `删除重复句：${Array.isArray(result.deleted_sentence_version_ids) ? result.deleted_sentence_version_ids.length : 0}`,
+        `清理停顿：${Number(result.deleted_gap_count || 0)} 个`
+      ].filter(Boolean).join('\n');
+    }
     case 'search_project_subtitles': {
       const matches = Array.isArray(result.matches) ? result.matches : [];
       const lines = matches.map((match, index) => `${index + 1}. [${match.asset_title}] ${formatTime(match.start)}-${formatTime(match.end)} ${match.text}`);
@@ -355,6 +374,17 @@ export const TOOL_DEFINITIONS = {
     },
     mutatesProject: false,
     execute: (projectId, args) => toolGetAssembleCandidates(projectId, args)
+  },
+  auto_assemble_script: {
+    description: '执行一轮保守的口播拼稿。它会基于当前结果优先删除明显重复 take、明显重复句，并顺手清理推荐停顿；适合用户只说“执行口播拼稿”但没有给更细约束时先落一轮安全修改。',
+    schema: {
+      take_limit: z.number().optional(),
+      sentence_limit: z.number().optional(),
+      pause_limit: z.number().optional(),
+      min_pause_seconds: z.number().optional()
+    },
+    mutatesProject: true,
+    execute: (projectId, args) => toolAutoAssembleScript(projectId, args)
   },
   get_pause_candidates: {
     description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。优先看带“推荐”标签的候选；如果用户明确要“一键去掉全部停顿”，改用 remove_all_pauses。',

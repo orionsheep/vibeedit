@@ -10,3 +10,12 @@ test('project agent exposes deterministic all-pause cleanup tool', () => {
     /一键去除当前项目里所有可删停顿/
   );
 });
+
+test('project agent exposes deterministic conservative assemble tool', () => {
+  assert.ok(TOOL_DEFINITIONS.auto_assemble_script);
+  assert.equal(TOOL_DEFINITIONS.auto_assemble_script.mutatesProject, true);
+  assert.match(
+    String(TOOL_DEFINITIONS.auto_assemble_script.description || ''),
+    /保守的口播拼稿/
+  );
+});
