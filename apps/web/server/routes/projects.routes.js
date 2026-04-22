@@ -534,15 +534,18 @@ router.post('/:projectId/agent/sessions/:sessionId/runs/stream', async (req, res
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const heartbeat = setInterval(() => {
-    if (!res.writableEnded) {
-      res.write(': keep-alive\n\n');
-    }
-  }, 10000);
-
   const sendEvent = (data) => {
+    if (res.writableEnded) return;
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+    res.flush?.();
   };
+
+  const heartbeat = setInterval(() => {
+    sendEvent({
+      type: 'heartbeat',
+      created_at: new Date().toISOString()
+    });
+  }, 5000);
 
   try {
     const normalizedBody = {

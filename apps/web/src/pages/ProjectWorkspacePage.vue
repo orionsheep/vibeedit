@@ -1873,6 +1873,123 @@ function buildVideoExportDownloadUrlFromJob(job) {
   return `/api/projects/${projectId.value}/downloads/${encodeURIComponent(filename)}`;
 }
 
+function waitForAgentRecovery(ms = 0, signal = null) {
+  const delayMs = Math.max(0, Number(ms || 0));
+  if (!delayMs) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+
+    const handleAbort = () => {
+      cleanup();
+      reject(new DOMException('Agent recovery aborted', 'AbortError'));
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', handleAbort);
+    };
+
+    if (signal?.aborted) {
+      cleanup();
+      reject(new DOMException('Agent recovery aborted', 'AbortError'));
+      return;
+    }
+
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
+  });
+}
+
+function isAgentRunTerminalStatus(status = '') {
+  return ['completed', 'failed', 'cancelled'].includes(String(status || '').trim());
+}
+
+function findRecoverableAgentRun(detail, userPrompt = '', requestStartedAt = 0) {
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  const normalizedPrompt = String(userPrompt || '').trim();
+  const lowerBound = requestStartedAt ? requestStartedAt - 15000 : 0;
+  return runs.find((run) => (
+    String(run?.prompt || '').trim() === normalizedPrompt
+    && (!lowerBound || new Date(run?.createdAt || run?.created_at || 0).getTime() >= lowerBound)
+  )) || null;
+}
+
+function syncAgentStateFromDetail(detail, preferredRunId = '') {
+  agentSession.value = detail;
+  messages.value = detail?.messages || [];
+
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  const run = runs.find((item) => item.id === preferredRunId) || runs[0] || null;
+  const runId = String(run?.id || '').trim();
+  const runEvents = runId
+    ? (detail?.events || []).filter((event) => event.run_id === runId)
+    : [];
+
+  activeRunId.value = runId;
+  selectedRunId.value = runId;
+  selectedRunEvents.value = runEvents;
+  liveRunEvents.value = ['running', 'waiting_confirmation', 'cancelling'].includes(String(run?.status || ''))
+    ? runEvents
+    : [];
+  activeRunStatus.value = run?.status ? getRunStatusText(run.status) : '';
+
+  if (!['running', 'waiting_confirmation', 'cancelling'].includes(String(run?.status || ''))) {
+    cancelRequestedRunId.value = '';
+  }
+
+  return run;
+}
+
+async function pollRecoveredAgentRun(sessionId, runId, signal) {
+  const maxAttempts = 80;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const detail = await getProjectAgentSession(projectId.value, sessionId);
+    const run = syncAgentStateFromDetail(detail, runId);
+    const status = String(run?.status || '').trim();
+    if (!run || isAgentRunTerminalStatus(status) || status === 'waiting_confirmation') {
+      return { detail, run };
+    }
+    await waitForAgentRecovery(1500, signal);
+  }
+
+  const detail = await getProjectAgentSession(projectId.value, sessionId);
+  const run = syncAgentStateFromDetail(detail, runId);
+  return { detail, run };
+}
+
+async function recoverAgentAfterStreamFailure(sessionId, userPrompt, requestStartedAt, signal) {
+  const detail = await ensureAgentSessionLoaded();
+  const recoverableRun = findRecoverableAgentRun(detail, userPrompt, requestStartedAt);
+  if (!recoverableRun?.id) {
+    return { recovered: false };
+  }
+
+  const recovered = syncAgentStateFromDetail(detail, recoverableRun.id);
+  const recoveredStatus = String(recovered?.status || '').trim();
+  if (!recovered) {
+    return { recovered: false };
+  }
+
+  if (isAgentRunTerminalStatus(recoveredStatus) || recoveredStatus === 'waiting_confirmation') {
+    return {
+      recovered: true,
+      status: recoveredStatus,
+      run: recovered
+    };
+  }
+
+  runningAgent.value = true;
+  activeRunStatus.value = getRunStatusText(recoveredStatus || 'running');
+  const finalState = await pollRecoveredAgentRun(sessionId, recovered.id, signal);
+  return {
+    recovered: true,
+    status: String(finalState?.run?.status || recoveredStatus || '').trim(),
+    run: finalState?.run || recovered
+  };
+}
+
 function resetVideoExportStatus({ preserveDownload = false } = {}) {
   videoExportProgress.value = 0;
   videoExportMessage.value = '';
@@ -1976,22 +2093,12 @@ async function ensureAgentSessionLoaded() {
   const sessions = await listProjectAgentSessions(projectId.value);
   const session = sessions[0] || await createProjectAgentSession(projectId.value, {});
   const detail = await getProjectAgentSession(projectId.value, session.id);
-  agentSession.value = detail;
-  messages.value = detail.messages || [];
-  const latestRun = (detail.runs || [])[0] || null;
-  liveRunEvents.value = ['running', 'waiting_confirmation', 'cancelling'].includes(String(latestRun?.status || ''))
-    ? (detail.events || []).filter((event) => event.run_id === latestRun.id)
-    : [];
-  activeRunId.value = latestRun?.id || '';
-  activeRunStatus.value = latestRun?.status || '';
-  if (!['running', 'waiting_confirmation', 'cancelling'].includes(String(latestRun?.status || ''))) {
-    cancelRequestedRunId.value = '';
+  const latestRun = syncAgentStateFromDetail(detail, selectedRunId.value);
+  if (!latestRun?.id) {
+    selectedRunId.value = '';
+    selectedRunEvents.value = [];
   }
-  const preferredRunId = selectedRunId.value || latestRun?.id || '';
-  selectedRunId.value = preferredRunId;
-  selectedRunEvents.value = preferredRunId
-    ? (detail.events || []).filter((event) => event.run_id === preferredRunId)
-    : [];
+  return detail;
 }
 
 async function inspectRun(runId) {
@@ -2210,6 +2317,8 @@ function handleGlobalWorkspaceKeydown(event) {
 
 async function runAgent() {
   if (runningAgent.value || stoppingAgent.value) return;
+  const requestStartedAt = Date.now();
+  let recoveredAfterStreamFailure = null;
   runningAgent.value = true;
   stoppingAgent.value = false;
   cancelRequestedRunId.value = '';
@@ -2292,15 +2401,32 @@ async function runAgent() {
     if (String(message).toLowerCase().includes('abort') || String(message).toLowerCase().includes('cancel')) {
       Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
     } else {
-      await Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
-      messages.value.push({
-        id: `e_${Date.now()}`,
-        role: 'assistant',
-        content: `执行失败：${message}`
-      });
+      let recoveredState = null;
+      try {
+        recoveredState = await recoverAgentAfterStreamFailure(
+          agentSession.value?.id || '',
+          userMessage,
+          requestStartedAt,
+          agentRunAbortController.value?.signal || null
+        );
+      } catch {
+        recoveredState = null;
+      }
+      recoveredAfterStreamFailure = recoveredState;
+
+      if (!recoveredState?.recovered) {
+        await Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
+        messages.value.push({
+          id: `e_${Date.now()}`,
+          role: 'assistant',
+          content: `执行失败：${message}`
+        });
+      }
     }
   } finally {
-    runningAgent.value = false;
+    const keepRunningState = recoveredAfterStreamFailure?.recovered
+      && ['running', 'cancelling'].includes(String(recoveredAfterStreamFailure.status || '').trim());
+    runningAgent.value = Boolean(keepRunningState);
     stoppingAgent.value = false;
     agentRunAbortController.value = null;
   }

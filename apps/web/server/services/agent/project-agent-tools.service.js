@@ -2768,3 +2768,64 @@ export async function toolGetProjectContext(projectId) {
     }))
   };
 }
+
+export async function toolGetAssetScriptMap(projectId) {
+  const state = await loadProjectEditableState(projectId);
+  const currentTimeline = state.currentTimeline || state.timeline || (await getProjectTimeline(projectId));
+  const orderedProjectAssets = orderProjectAssetsForBaseline(state.project.projectAssets || [], currentTimeline);
+  const activeWords = buildActiveWordsWithOriginalIndices(state);
+  const subtitleBlocks = buildProjectSentenceUnits(activeWords, 0.65);
+  const scriptBlocks = buildProjectScriptBlocks(subtitleBlocks);
+
+  const scriptGroups = new Map();
+  for (const block of scriptBlocks) {
+    const key = String(block.asset_id || '');
+    const list = scriptGroups.get(key) || [];
+    list.push(block);
+    scriptGroups.set(key, list);
+  }
+
+  const subtitleGroups = new Map();
+  for (const block of subtitleBlocks) {
+    const key = String(block.asset_id || '');
+    const list = subtitleGroups.get(key) || [];
+    list.push(block);
+    subtitleGroups.set(key, list);
+  }
+
+  const assets = orderedProjectAssets.map((relation, index) => {
+    const assetId = String(relation.asset.id || '');
+    const assetScriptBlocks = scriptGroups.get(assetId) || [];
+    const assetSubtitleBlocks = subtitleGroups.get(assetId) || [];
+    const assetWords = activeWords.filter((word) => String(word.asset_id || '') === assetId);
+    const combinedText = assetScriptBlocks.map((block) => String(block.text || '').trim()).filter(Boolean).join('');
+    const preview = combinedText.length > 180 ? `${combinedText.slice(0, 180).trim()}…` : combinedText;
+    const firstBlock = assetScriptBlocks[0] || assetSubtitleBlocks[0] || null;
+    const lastBlock = assetScriptBlocks[assetScriptBlocks.length - 1] || assetSubtitleBlocks[assetSubtitleBlocks.length - 1] || null;
+
+    return {
+      order: index + 1,
+      id: assetId,
+      title: String(relation.asset.title || '').trim() || `素材 ${index + 1}`,
+      duration_seconds: Number(relation.asset.duration_seconds || 0),
+      kept_word_count: assetWords.length,
+      script_block_count: assetScriptBlocks.length,
+      subtitle_block_count: assetSubtitleBlocks.length,
+      start: roundTime(Number(firstBlock?.start || 0)),
+      end: roundTime(Number(lastBlock?.end || firstBlock?.end || 0)),
+      first_line: String(firstBlock?.text || '').trim(),
+      last_line: String(lastBlock?.text || '').trim(),
+      preview
+    };
+  });
+
+  return {
+    success: true,
+    change: 'get_asset_script_map',
+    summary: assets.length
+      ? `已按当前素材顺序返回 ${assets.length} 个素材的脚本地图，适合先判断每个视频分别讲了什么、顺序是否合理，再决定是否继续完整读稿。`
+      : '当前项目还没有可分析的素材脚本。',
+    asset_count: assets.length,
+    assets
+  };
+}

@@ -159,6 +159,9 @@ export async function runProjectAgentWithProgress(projectId, sessionId, payload,
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.slice(6));
+          if (data.type === 'heartbeat') {
+            continue;
+          }
           if (onProgress) {
             onProgress(data);
           }
@@ -172,7 +175,7 @@ export async function runProjectAgentWithProgress(projectId, sessionId, payload,
       }
     }
   } finally {
-    reader.cancel();
+    await reader.cancel().catch(() => {});
   }
 
   return result;

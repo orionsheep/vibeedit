@@ -19,3 +19,12 @@ test('project agent exposes deterministic conservative assemble tool', () => {
     /保守的口播拼稿/
   );
 });
+
+test('project agent exposes multi-asset script map reader', () => {
+  assert.ok(TOOL_DEFINITIONS.get_asset_script_map);
+  assert.equal(TOOL_DEFINITIONS.get_asset_script_map.mutatesProject, false);
+  assert.match(
+    String(TOOL_DEFINITIONS.get_asset_script_map.description || ''),
+    /多素材口播拼稿/
+  );
+});

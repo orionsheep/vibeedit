@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-
 import { z } from 'zod';
 import {
   toolAutoAssembleScript,
+  toolGetAssetScriptMap,
   toolGetAssembleCandidates,
   toolGetDeletedSubtitleBlocks,
   toolGetPauseCandidates,
@@ -67,6 +68,7 @@ function formatPauseCandidates(candidates = []) {
 function compactResultPayload(toolName, result = {}) {
   switch (toolName) {
     case 'get_project_context':
+    case 'get_asset_script_map':
       return {
         project_name: result.project_name,
         project_description: result.project_description,
@@ -180,6 +182,17 @@ function toolResultToText(result = {}, toolName = '') {
         result.summary || '',
         assetLines.length ? `素材列表：\n${assetLines.join('\n')}` : ''
       ].filter(Boolean).join('\n\n');
+    }
+    case 'get_asset_script_map': {
+      const assets = Array.isArray(result.assets) ? result.assets : [];
+      const lines = assets.map((asset) => [
+        `${asset.order}. ${asset.title} | ${formatTime(asset.duration_seconds)}s | 口播块 ${asset.script_block_count} | 字幕块 ${asset.subtitle_block_count} | 保留 ${asset.kept_word_count} 字`,
+        `起止：${formatTime(asset.start)}-${formatTime(asset.end)}`,
+        `首句：${asset.first_line || '—'}`,
+        `末句：${asset.last_line || '—'}`,
+        `预览：${asset.preview || '—'}`
+      ].join('\n'));
+      return [result.summary || '', lines.join('\n\n')].filter(Boolean).join('\n\n');
     }
     case 'get_timeline_detail': {
       const clips = Array.isArray(result.clips) ? result.clips : [];
@@ -336,6 +349,12 @@ export const TOOL_DEFINITIONS = {
       limit: z.number().optional()
     },
     execute: (projectId, args) => toolSearchProjectSubtitles(projectId, args)
+  },
+  get_asset_script_map: {
+    description: '按当前素材顺序读取每个视频各自的脚本地图：每个素材讲了什么、首尾句是什么、当前保留了多少口播块。适合多素材口播拼稿时先快速判断每个视频的角色、顺序和是否需要整段重排，再决定要不要继续完整读稿。',
+    schema: {},
+    mutatesProject: false,
+    execute: (projectId) => toolGetAssetScriptMap(projectId)
   },
   get_subtitle_blocks: {
     description: '读取当前项目字幕流的连续字幕块。这里返回的是当前已保留内容，顺序与当前成片一致，不是完整原始素材全文。默认直接返回当前项目的全部字幕块；只有在你明确传 offset/limit 时才分页，适合在当前结果上继续局部修改、定位重复片段和规划删改。',
