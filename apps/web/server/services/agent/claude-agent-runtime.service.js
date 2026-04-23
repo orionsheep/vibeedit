@@ -475,11 +475,20 @@ async function runAutomaticPauseCleanupFallback({
   llmModel = ''
 }) {
   const aggressive = requestWantsAggressivePauseCleanup(requestContext);
+  const toolStageBridge = async (stage = {}) => {
+    await emit({
+      type: 'stage',
+      step: stage.step || 'tool_progress',
+      message: stage.message || '工具正在处理当前项目…',
+      payload: stage.payload || {}
+    });
+  };
   const toolContext = {
     signal,
     llmProvider,
     llmModel,
-    requestContext
+    requestContext,
+    onStage: toolStageBridge
   };
 
   await emit({
@@ -596,11 +605,20 @@ async function runAutomaticAssembleMutationFallback({
   llmProvider = '',
   llmModel = ''
 }) {
+  const toolStageBridge = async (stage = {}) => {
+    await emit({
+      type: 'stage',
+      step: stage.step || 'tool_progress',
+      message: stage.message || '工具正在处理当前项目…',
+      payload: stage.payload || {}
+    });
+  };
   const toolContext = {
     signal,
     llmProvider,
     llmModel,
-    requestContext
+    requestContext,
+    onStage: toolStageBridge
   };
 
   await emit({
@@ -730,6 +748,11 @@ export async function runClaudeAgentSession({
       message: event.message || '',
       payload: event.payload || {}
     });
+    try {
+      bumpProgress();
+    } catch {
+      // ignore progress refresh errors
+    }
     onEvent(appended);
     return appended;
   };
@@ -762,7 +785,10 @@ export async function runClaudeAgentSession({
     const candidate = getHealthyGlmCandidate(requestedModel, requestedProvider);
     const abortController = new AbortController();
     const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
-    const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || (normalizedMode === 'assemble_script' ? 45000 : 20000));
+    const configuredInactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 0);
+    const inactivityTimeoutMs = normalizedMode === 'assemble_script'
+      ? Math.max(configuredInactivityTimeoutMs || 45000, 90000)
+      : Number(configuredInactivityTimeoutMs || 20000);
     const assembleReviewReserveMs = normalizedMode === 'assemble_script'
       ? getAssembleReviewReserveMs(timeoutMs, config)
       : 0;

@@ -301,6 +301,21 @@ export async function appendAgentEvent({ sessionId, runId = null, type, step = '
       }
     });
 
+    if (runId) {
+      const currentRun = await db.agentRun.findUnique({
+        where: { id: runId },
+        select: { status: true }
+      });
+      if (currentRun) {
+        await db.agentRun.update({
+          where: { id: runId },
+          data: {
+            status: currentRun.status
+          }
+        });
+      }
+    }
+
     await db.agentSession.update({
       where: { id: sessionId },
       data: { lastActiveAt: new Date() }

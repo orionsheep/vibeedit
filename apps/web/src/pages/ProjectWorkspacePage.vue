@@ -1022,7 +1022,15 @@ async function retryAssetTranscription(assetId) {
   }
 }
 
-function getRunStatusText(status) {
+function getRunStatusText(runOrStatus) {
+  const run = typeof runOrStatus === 'object' && runOrStatus !== null ? runOrStatus : null;
+  const status = run ? run.status : runOrStatus;
+  if (run?.result?.recovered_from_stall) {
+    return '已保底收口';
+  }
+  if (run?.result?.fallback_run) {
+    return '系统兜底完成';
+  }
   const map = {
     running: '执行中',
     completed: '已完成',
@@ -1952,7 +1960,7 @@ function syncAgentStateFromDetail(detail, preferredRunId = '') {
   liveRunEvents.value = ['running', 'waiting_confirmation', 'cancelling'].includes(String(run?.status || ''))
     ? runEvents
     : [];
-  activeRunStatus.value = run?.status ? getRunStatusText(run.status) : '';
+  activeRunStatus.value = run?.status ? getRunStatusText(run) : '';
 
   if (!['running', 'waiting_confirmation', 'cancelling'].includes(String(run?.status || ''))) {
     cancelRequestedRunId.value = '';
@@ -1966,14 +1974,14 @@ async function beginRecoveredAgentRunPolling(sessionId, run) {
   if (!sessionId || !runId) return null;
   if (!isAgentRunActiveStatus(run?.status || '')) {
     runningAgent.value = false;
-    activeRunStatus.value = run?.status ? getRunStatusText(run.status) : '';
+    activeRunStatus.value = run?.status ? getRunStatusText(run) : '';
     stopAgentRunRecoveryPolling();
     return run;
   }
 
   if (recoveringAgentRunId.value === runId) {
     runningAgent.value = ['running', 'cancelling'].includes(String(run?.status || '').trim());
-    activeRunStatus.value = run?.status ? getRunStatusText(run.status) : activeRunStatus.value;
+    activeRunStatus.value = run?.status ? getRunStatusText(run) : activeRunStatus.value;
     return run;
   }
 
@@ -1989,7 +1997,7 @@ async function beginRecoveredAgentRunPolling(sessionId, run) {
       const finalRun = finalState?.run || null;
       const finalStatus = String(finalRun?.status || '').trim();
       runningAgent.value = ['running', 'cancelling'].includes(finalStatus);
-      activeRunStatus.value = finalRun?.status ? getRunStatusText(finalRun.status) : '';
+      activeRunStatus.value = finalRun?.status ? getRunStatusText(finalRun) : '';
     })
     .catch((pollError) => {
       if (pollError?.name === 'AbortError') return;
@@ -2047,7 +2055,7 @@ async function recoverAgentAfterStreamFailure(sessionId, userPrompt, requestStar
   }
 
   runningAgent.value = true;
-  activeRunStatus.value = getRunStatusText(recoveredStatus || 'running');
+  activeRunStatus.value = getRunStatusText(recovered || recoveredStatus || 'running');
   const finalState = await pollRecoveredAgentRun(sessionId, recovered.id, signal);
   return {
     recovered: true,
@@ -2475,6 +2483,12 @@ async function runAgent() {
       }
       if (event?.type === 'stage' || event?.type === 'start') {
         activeRunStatus.value = event.message || event.step || '执行中';
+      }
+      if (event?.type === 'stage' && event?.step === 'assemble_planner_failed') {
+        activeRunStatus.value = '规划超时，正在系统兜底';
+      }
+      if (event?.type === 'stage' && event?.step === 'recovered_complete') {
+        activeRunStatus.value = '已保底收口';
       }
       if (event?.type === 'tool_call') {
         activeRunStatus.value = `执行 ${event.payload?.tool || '工具'}...`;

@@ -534,7 +534,8 @@ async function runAssemblePlannerQuery({
   prompt = '',
   preferredProvider = '',
   preferredModel = '',
-  signal = null
+  signal = null,
+  onProgress = null
 }) {
   const candidate = getHealthyGlmCandidate(preferredModel, preferredProvider);
   const settings = getAgentLlmSettings();
@@ -543,6 +544,7 @@ async function runAssemblePlannerQuery({
   fs.mkdirSync(runtimeDir, { recursive: true });
   const abortController = new AbortController();
   let timedOut = false;
+  let heartbeatId = null;
   const onAbort = () => abortController.abort(signal?.reason || new Error('Planning query aborted'));
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
@@ -556,6 +558,27 @@ async function runAssemblePlannerQuery({
   let stream = null;
   let finalResultText = '';
   try {
+    if (typeof onProgress === 'function') {
+      await onProgress({
+        step: 'assemble_planner_running',
+        message: '结构精修规划器已启动，正在分析素材地图与当前脚本块。',
+        payload: {
+          model: candidate.model,
+          provider: candidate.provider
+        }
+      });
+      heartbeatId = setInterval(() => {
+        Promise.resolve(onProgress({
+          step: 'assemble_planner_running',
+          message: '结构精修规划器仍在分析当前成片，尚未返回最终计划。',
+          payload: {
+            model: candidate.model,
+            provider: candidate.provider,
+            heartbeat: true
+          }
+        })).catch(() => {});
+      }, 8000);
+    }
     stream = query({
       prompt,
       options: {
@@ -584,6 +607,16 @@ async function runAssemblePlannerQuery({
     });
 
     for await (const message of stream) {
+      if (typeof onProgress === 'function' && message?.type !== 'result') {
+        await onProgress({
+          step: 'assemble_planner_progress',
+          message: '结构精修规划器正在持续生成计划。',
+          payload: {
+            model: candidate.model,
+            provider: candidate.provider
+          }
+        });
+      }
       if (message?.type === 'result') {
         if (message.subtype !== 'success') {
           throw new Error((message.errors || []).join('\n') || `Claude SDK planning failed: ${message.subtype}`);
@@ -605,6 +638,10 @@ async function runAssemblePlannerQuery({
     throw error;
   } finally {
     clearTimeout(timeoutHandle);
+    if (heartbeatId) {
+      clearInterval(heartbeatId);
+      heartbeatId = null;
+    }
     if (signal) {
       signal.removeEventListener('abort', onAbort);
     }
@@ -798,10 +835,21 @@ async function runStructuredAssembleDeepeningFallback({
 }) {
   const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
   const appliedChanges = seedAppliedChanges(runRecord, existingResult);
+  const toolStageBridge = async (stage = {}) => {
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'stage',
+      step: stage.step || 'tool_progress',
+      message: stage.message || '工具正在处理当前项目…',
+      payload: stage.payload || {}
+    });
+  };
 
   const toolContext = {
     llmProvider: requestedProvider,
     llmModel: requestedModel,
+    onStage: toolStageBridge,
     requestContext: {
       mode: 'assemble_script',
       prompt: userPrompt,
@@ -879,10 +927,11 @@ async function runStructuredAssembleDeepeningFallback({
     try {
       planningMeta = await runAssemblePlannerQuery({
         prompt: plannerPrompt,
-        preferredProvider: requestedProvider,
-        preferredModel: requestedModel,
-        signal
-      });
+      preferredProvider: requestedProvider,
+      preferredModel: requestedModel,
+      signal,
+      onProgress: toolStageBridge
+    });
       planningText = String(planningMeta?.text || '').trim();
       lastPlanningMeta = planningMeta;
     } catch (error) {
@@ -1137,6 +1186,16 @@ async function runDeterministicAssembleFallback({
 }) {
   const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
   const appliedChanges = seedAppliedChanges(runRecord, existingResult);
+  const toolStageBridge = async (stage = {}) => {
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'stage',
+      step: stage.step || 'tool_progress',
+      message: stage.message || '工具正在处理当前项目…',
+      payload: stage.payload || {}
+    });
+  };
 
   await appendAgentEvent({
     sessionId,
@@ -1150,6 +1209,7 @@ async function runDeterministicAssembleFallback({
   const toolContext = {
     llmProvider: requestedProvider,
     llmModel: requestedModel,
+    onStage: toolStageBridge,
     requestContext: {
       mode: 'assemble_script',
       prompt: userPrompt,

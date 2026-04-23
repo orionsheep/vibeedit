@@ -2147,6 +2147,22 @@ export async function toolAutoAssembleScript(
   } = {},
   context = {}
 ) {
+  const emitStage = async (step, message, payload = {}) => {
+    if (typeof context?.onStage !== 'function') return;
+    await context.onStage({
+      step,
+      message,
+      payload
+    });
+  };
+  const yieldToEventLoop = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  await emitStage('auto_assemble_prepare', '正在读取当前口播稿并准备执行保守拼稿。', {
+    max_passes: Number(maxPasses || 2),
+    min_pause_seconds: Number(minPauseSeconds || 0.35)
+  });
   const state = await loadProjectEditableState(projectId);
   let activeWords = buildActiveWordsWithOriginalIndices(state);
   let activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
@@ -2156,6 +2172,12 @@ export async function toolAutoAssembleScript(
   let preTrimChanged = false;
 
   for (let cleanupPass = 0; cleanupPass < 2; cleanupPass += 1) {
+    await emitStage(
+      'auto_assemble_pretrim',
+      `正在执行预清理第 ${cleanupPass + 1} 轮：优先去掉起手口头禅、独立语气词和句内重说前缀。`,
+      { pass: cleanupPass + 1 }
+    );
+    await yieldToEventLoop();
     const fillerRemoved = stripLeadingFillerWordsFromSentences(activeSentences, activeWords, state.keptMask);
     if (fillerRemoved) {
       removedLeadingFillerWords += fillerRemoved;
@@ -2181,6 +2203,17 @@ export async function toolAutoAssembleScript(
     }
 
     if (!fillerRemoved && !standaloneFillerRemoved && !restartPrefixRemoved) break;
+
+    await emitStage(
+      'auto_assemble_pretrim_applied',
+      `预清理第 ${cleanupPass + 1} 轮已处理 ${fillerRemoved + standaloneFillerRemoved + restartPrefixRemoved} 个口头禅/重说词。`,
+      {
+        pass: cleanupPass + 1,
+        removed_leading_filler_words: fillerRemoved,
+        removed_standalone_filler_words: standaloneFillerRemoved,
+        removed_restart_prefix_words: restartPrefixRemoved
+      }
+    );
   }
 
   const deletedGapKeys = new Set(state.editState?.deleted_gap_keys || []);
@@ -2198,9 +2231,16 @@ export async function toolAutoAssembleScript(
   let detectedPauseCandidateCount = 0;
 
   for (let assemblePass = 0; assemblePass < Math.max(1, Number(maxPasses || 2)); assemblePass += 1) {
+    await emitStage(
+      'auto_assemble_scan',
+      `正在执行保守拼稿第 ${assemblePass + 1} 轮：扫描重复 take、重复句、起手重说和明显停顿。`,
+      { pass: assemblePass + 1 }
+    );
+    await yieldToEventLoop();
     activeWords = buildActiveWordsWithOriginalIndices(state);
     activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
     const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+    await yieldToEventLoop();
     const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
       .map((cluster, index) => ({
         id: `take_group_${index + 1}`,
@@ -2228,11 +2268,24 @@ export async function toolAutoAssembleScript(
       .filter((group) => group.versions.length > 1)
       .sort((left, right) => right.score - left.score)
       .slice(0, Math.max(1, Number(sentenceLimit || 14)));
+    await yieldToEventLoop();
     const restartCandidates = buildRestartFragmentCandidates(scriptBlocks).slice(0, 16);
     const pauseCandidates = buildPauseCandidates(state, {
       minGapSeconds: minPauseSeconds,
       limit: Math.max(1, Number(pauseLimit || 12))
     });
+    await emitStage(
+      'auto_assemble_candidates',
+      `第 ${assemblePass + 1} 轮候选扫描完成：${rawTakeGroups.length} 组重复 take、${rawBlockGroups.length} 组重复段落、${rawSentenceGroups.length} 组重复句、${restartCandidates.length} 个起手重说、${pauseCandidates.length} 个停顿候选。`,
+      {
+        pass: assemblePass + 1,
+        take_group_count: rawTakeGroups.length,
+        block_group_count: rawBlockGroups.length,
+        sentence_group_count: rawSentenceGroups.length,
+        restart_fragment_count: restartCandidates.length,
+        pause_candidate_count: pauseCandidates.length
+      }
+    );
     const plan = planConservativeAssemblePass({
       takeGroups: rawTakeGroups,
       blockGroups: rawBlockGroups,
@@ -2255,6 +2308,16 @@ export async function toolAutoAssembleScript(
 
     const sentenceIdSet = new Set((plan.sentence_ids_to_delete || []).map((value) => String(value || '').trim()).filter(Boolean));
     let passChanged = false;
+    await emitStage(
+      'auto_assemble_apply',
+      `第 ${assemblePass + 1} 轮正在应用保守删减：计划删除 ${sentenceIdSet.size} 个句块并清理 ${(plan.pause_gap_keys || []).length} 个停顿。`,
+      {
+        pass: assemblePass + 1,
+        sentence_delete_count: sentenceIdSet.size,
+        gap_delete_count: Array.isArray(plan.pause_gap_keys) ? plan.pause_gap_keys.length : 0
+      }
+    );
+    await yieldToEventLoop();
 
     if (sentenceIdSet.size) {
       for (const sentence of activeSentences) {
@@ -2285,11 +2348,24 @@ export async function toolAutoAssembleScript(
     deletedSentenceVersionIds.push(...(plan.deleted_sentence_version_ids || []));
     deletedRestartSentenceIds.push(...(plan.deleted_restart_sentence_ids || []));
     removedPauseSeconds += Number(plan.removed_pause_seconds || 0);
+    await emitStage(
+      'auto_assemble_applied',
+      `第 ${assemblePass + 1} 轮保守拼稿已落地：删除 ${sentenceIdSet.size} 个句块，新增清理 ${(plan.pause_gap_keys || []).length} 个停顿。`,
+      {
+        pass: assemblePass + 1,
+        sentence_delete_count: sentenceIdSet.size,
+        gap_delete_count: Array.isArray(plan.pause_gap_keys) ? plan.pause_gap_keys.length : 0,
+        removed_pause_seconds: Number(plan.removed_pause_seconds || 0)
+      }
+    );
   }
 
   const changed = preTrimChanged || deletedSentenceIds.size > 0 || deletedGapKeys.size !== (state.editState?.deleted_gap_keys || []).length;
 
   if (!changed) {
+    await emitStage('auto_assemble_complete', '当前没有识别到可安全落地的重复块或明显停顿，本轮保守拼稿保持不变。', {
+      changed: false
+    });
     return {
       success: true,
       changed: false,
@@ -2303,6 +2379,11 @@ export async function toolAutoAssembleScript(
     };
   }
 
+  await emitStage('auto_assemble_persist', '正在持久化本轮保守拼稿结果并刷新时间线。', {
+    passes_applied: passesApplied,
+    deleted_sentence_count: deletedSentenceIds.size,
+    deleted_gap_count: deletedGapKeys.size - (state.editState?.deleted_gap_keys || []).length
+  });
   const timeline = await persistEditableProjectState(projectId, state, {
     deletedGapKeys: [...deletedGapKeys].filter(Boolean),
     audit: buildAgentEditHistoryContext(
@@ -2329,6 +2410,12 @@ export async function toolAutoAssembleScript(
   });
 
   const deletedBlockIds = [...deletedSentenceIds];
+  await emitStage('auto_assemble_complete', `保守拼稿完成：共执行 ${passesApplied || 1} 轮，删除 ${deletedSentenceIds.size} 个句块并清理 ${deletedGapKeys.size - (state.editState?.deleted_gap_keys || []).length} 个停顿。`, {
+    changed: true,
+    passes_applied: passesApplied,
+    deleted_sentence_count: deletedSentenceIds.size,
+    deleted_gap_count: deletedGapKeys.size - (state.editState?.deleted_gap_keys || []).length
+  });
   return {
     success: true,
     changed: true,
