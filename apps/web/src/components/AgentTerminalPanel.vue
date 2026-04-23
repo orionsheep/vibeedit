@@ -2,7 +2,9 @@
   <div class="agent-terminal" :class="{ 'performance-mode': props.performanceMode }">
     <div class="terminal-toolbar">
       <button class="terminal-link" :disabled="!canOpenDocument" @click="$emit('open-document')">文稿</button>
-      <button class="terminal-link" :disabled="runningAgent" @click="$emit('new-session')">新会话</button>
+      <button class="terminal-link" :disabled="runningAgent || creatingSession" @click="$emit('new-session')">
+        {{ creatingSession ? '新建中...' : '新会话' }}
+      </button>
       <button class="terminal-link" title="隐藏 Agent 栏" @click="$emit('toggle-collapse')">&gt;&gt;</button>
     </div>
 
@@ -141,6 +143,7 @@ const props = defineProps({
   promptValue: { type: String, default: '' },
   placeholder: { type: String, default: '' },
   runningAgent: { type: Boolean, default: false },
+  creatingSession: { type: Boolean, default: false },
   stoppingAgent: { type: Boolean, default: false },
   canStop: { type: Boolean, default: false },
   performanceMode: { type: Boolean, default: false },

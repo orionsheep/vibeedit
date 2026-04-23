@@ -295,6 +295,7 @@
               :prompt-value="agentPrompt"
               :placeholder="agentPlaceholder"
               :running-agent="runningAgent"
+              :creating-session="creatingAgentSession"
               :stopping-agent="stoppingAgent"
               :can-stop="Boolean(activeRunId)"
               :can-open-document="canOpenDocumentPreview"
@@ -440,6 +441,7 @@ const loadingSliceDetail = ref(false);
 const deletingSliceId = ref('');
 const mutatingSlice = ref(false);
 const runningAgent = ref(false);
+const creatingAgentSession = ref(false);
 const exportingVideo = ref(false);
 const videoExportProgress = ref(0);
 const videoExportMessage = ref('');
@@ -495,6 +497,7 @@ const contextMenu = ref({
   assetId: ''
 });
 let confirmDialogAction = null;
+let ensureAgentSessionPromise = null;
 const {
   agentCollapsed,
   isPaneResizing,
@@ -2152,22 +2155,40 @@ async function refreshProcessingAssets() {
   }
 }
 
-async function ensureAgentSessionLoaded() {
-  const sessions = await listProjectAgentSessions(projectId.value);
-  const session = sessions[0] || await createProjectAgentSession(projectId.value, {});
-  const detail = await getProjectAgentSession(projectId.value, session.id);
-  const latestRun = syncAgentStateFromDetail(detail, selectedRunId.value);
-  if (latestRun?.id && isAgentRunActiveStatus(latestRun.status)) {
-    await beginRecoveredAgentRunPolling(session.id, latestRun);
-  } else {
-    runningAgent.value = false;
-    stopAgentRunRecoveryPolling();
+async function ensureAgentSessionLoaded(options = {}) {
+  if (ensureAgentSessionPromise) {
+    return ensureAgentSessionPromise;
   }
-  if (!latestRun?.id) {
-    selectedRunId.value = '';
-    selectedRunEvents.value = [];
+
+  const preferredSessionId = String(options.preferredSessionId || agentSession.value?.id || '').trim();
+
+  ensureAgentSessionPromise = (async () => {
+    const sessions = await listProjectAgentSessions(projectId.value);
+    let session = null;
+    if (preferredSessionId) {
+      session = sessions.find((item) => String(item.id || '').trim() === preferredSessionId) || null;
+    }
+    session = session || sessions[0] || await createProjectAgentSession(projectId.value, {});
+    const detail = await getProjectAgentSession(projectId.value, session.id);
+    const latestRun = syncAgentStateFromDetail(detail, selectedRunId.value);
+    if (latestRun?.id && isAgentRunActiveStatus(latestRun.status)) {
+      await beginRecoveredAgentRunPolling(session.id, latestRun);
+    } else {
+      runningAgent.value = false;
+      stopAgentRunRecoveryPolling();
+    }
+    if (!latestRun?.id) {
+      selectedRunId.value = '';
+      selectedRunEvents.value = [];
+    }
+    return detail;
+  })();
+
+  try {
+    return await ensureAgentSessionPromise;
+  } finally {
+    ensureAgentSessionPromise = null;
   }
-  return detail;
 }
 
 async function inspectRun(runId) {
@@ -2183,23 +2204,35 @@ async function inspectRun(runId) {
 }
 
 async function createFreshAgentSession() {
-  if (runningAgent.value) return;
+  if (runningAgent.value || creatingAgentSession.value) return;
+  creatingAgentSession.value = true;
   stopAgentRunRecoveryPolling();
-  const session = await createProjectAgentSession(projectId.value, {
-    reuse: false,
-    title: `项目会话 ${new Date().toLocaleTimeString()}`
-  });
-  const detail = await getProjectAgentSession(projectId.value, session.id);
-  agentSession.value = detail;
-  messages.value = detail.messages || [];
-  liveRunEvents.value = [];
-  activeRunId.value = '';
-  activeRunStatus.value = '';
-  cancelRequestedRunId.value = '';
-  selectedRunId.value = '';
-  selectedRunEvents.value = [];
-  recoveredActiveRunNoticeId.value = '';
-  agentPanelTab.value = 'chat';
+  try {
+    const session = await createProjectAgentSession(projectId.value, {
+      reuse: false,
+      title: `项目会话 ${new Date().toLocaleTimeString()}`
+    });
+    const detail = await getProjectAgentSession(projectId.value, session.id);
+    agentSession.value = detail;
+    messages.value = detail.messages || [];
+    liveRunEvents.value = [];
+    activeRunId.value = '';
+    activeRunStatus.value = '';
+    cancelRequestedRunId.value = '';
+    selectedRunId.value = '';
+    selectedRunEvents.value = [];
+    recoveredActiveRunNoticeId.value = '';
+    agentPanelTab.value = 'chat';
+  } catch (err) {
+    const message = err.response?.data?.error || err.message || '新会话创建失败';
+    messages.value.push({
+      id: `create_session_err_${Date.now()}`,
+      role: 'assistant',
+      content: `新会话创建失败：${message}`
+    });
+  } finally {
+    creatingAgentSession.value = false;
+  }
 }
 
 function triggerProjectUploadPicker() {
