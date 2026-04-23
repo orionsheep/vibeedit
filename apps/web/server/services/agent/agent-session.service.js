@@ -67,7 +67,43 @@ function getAgentRunStaleTimeoutMs(config = loadConfig()) {
   if (configured > 0) return configured;
   const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
   const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 45000);
-  return Math.max(timeoutMs, inactivityTimeoutMs) + 120000;
+  return Math.max(timeoutMs, inactivityTimeoutMs) + 60000;
+}
+
+async function settleStaleAgentRuns(db, { projectId = null, sessionId = null } = {}) {
+  const staleBefore = new Date(Date.now() - getAgentRunStaleTimeoutMs());
+  const staleRuns = await db.agentRun.findMany({
+    where: {
+      ...(projectId ? { projectId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      status: {
+        in: ['running', 'waiting_confirmation']
+      },
+      updatedAt: {
+        lt: staleBefore
+      }
+    },
+    select: {
+      id: true,
+      status: true,
+      result: true
+    }
+  });
+
+  for (const run of staleRuns) {
+    await db.agentRun.update({
+      where: { id: run.id },
+      data: {
+        status: 'failed',
+        result: {
+          ...(run.result || {}),
+          reply: '执行失败：上一轮 Agent 任务长时间无进展，系统已自动结束旧任务，请重新执行。',
+          summary: 'Stale agent run auto-failed on session load'
+        },
+        finishedAt: new Date()
+      }
+    });
+  }
 }
 
 export class ActiveAgentRunExistsError extends Error {
@@ -83,6 +119,7 @@ export class ActiveAgentRunExistsError extends Error {
 
 export async function listProjectAgentSessions(projectId) {
   return withDatabase(async (db) => {
+    await settleStaleAgentRuns(db, { projectId });
     const sessions = await db.agentSession.findMany({
       where: { projectId },
       orderBy: [
@@ -128,6 +165,7 @@ export async function createProjectAgentSession(projectId, payload = {}) {
 
 export async function getProjectAgentSession(projectId, sessionId) {
   return withDatabase(async (db) => {
+    await settleStaleAgentRuns(db, { projectId, sessionId });
     const session = await db.agentSession.findFirst({
       where: {
         id: sessionId,

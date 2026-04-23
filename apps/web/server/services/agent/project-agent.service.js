@@ -530,6 +530,22 @@ function buildDeterministicStructuredAssemblePlan({
   };
 }
 
+async function withTimeout(taskFactory, timeoutMs, label = 'Operation timed out') {
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(taskFactory),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(label));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 async function runAssemblePlannerQuery({
   prompt = '',
   preferredProvider = '',
@@ -862,9 +878,28 @@ async function runStructuredAssembleDeepeningFallback({
   let lastPlan = null;
   let lastPlanningMeta = null;
   const planReasons = [];
-  const maxRounds = 3;
+  const maxRounds = 2;
+  const structuredBudgetMs = 105000;
+  const contextReadTimeoutMs = 18000;
+  const structuredStartedAt = Date.now();
 
   for (let round = 1; round <= maxRounds; round += 1) {
+    const elapsedMs = Date.now() - structuredStartedAt;
+    if (elapsedMs >= structuredBudgetMs) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_planner_budget_reached',
+        message: '结构精修已达到本轮总预算，系统将保留当前改动并直接收口。',
+        payload: {
+          round,
+          elapsed_ms: elapsedMs
+        }
+      });
+      break;
+    }
+
     await appendAgentEvent({
       sessionId,
       runId,
@@ -876,18 +911,58 @@ async function runStructuredAssembleDeepeningFallback({
       payload: { round }
     });
 
-    const [projectContext, assetMap, scriptBlocks, assembleCandidates] = await Promise.all([
-      executeProjectAgentToolDirect(projectId, 'get_project_context', {}, toolContext),
-      executeProjectAgentToolDirect(projectId, 'get_asset_script_map', {}, toolContext),
-      executeProjectAgentToolDirect(projectId, 'get_script_blocks', {}, toolContext),
-      executeProjectAgentToolDirect(projectId, 'get_assemble_candidates', {
-        take_limit: 14,
-        block_limit: 16,
-        sentence_limit: 18,
-        pause_limit: 12,
-        min_pause_seconds: 0.35
-      }, toolContext)
-    ]);
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'stage',
+      step: 'assemble_context_refresh',
+      message: `正在刷新第 ${round} 轮结构精修所需的上下文。`,
+      payload: { round }
+    });
+
+    let projectContext;
+    let assetMap;
+    let scriptBlocks;
+    let assembleCandidates;
+    try {
+      [projectContext, assetMap, scriptBlocks, assembleCandidates] = await withTimeout(
+        () => Promise.all([
+          executeProjectAgentToolDirect(projectId, 'get_project_context', {}, toolContext),
+          executeProjectAgentToolDirect(projectId, 'get_asset_script_map', {}, toolContext),
+          executeProjectAgentToolDirect(projectId, 'get_script_blocks', {}, toolContext),
+          executeProjectAgentToolDirect(projectId, 'get_assemble_candidates', {
+            take_limit: 14,
+            block_limit: 16,
+            sentence_limit: 18,
+            pause_limit: 12,
+            min_pause_seconds: 0.35
+          }, toolContext)
+        ]),
+        contextReadTimeoutMs,
+        `Assemble context refresh timed out after ${contextReadTimeoutMs}ms`
+      );
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_context_ready',
+        message: `第 ${round} 轮结构精修上下文已刷新完成。`,
+        payload: { round }
+      });
+    } catch (error) {
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_context_timeout',
+        message: `第 ${round} 轮结构精修在刷新上下文时超时，系统将保留当前改动并直接收口。`,
+        payload: {
+          round,
+          error: String(error?.message || 'context refresh failed')
+        }
+      });
+      break;
+    }
 
     const totalAssetDuration = Array.isArray(assetMap.assets)
       ? assetMap.assets.reduce((sum, asset) => sum + Number(asset.duration_seconds || 0), 0)
