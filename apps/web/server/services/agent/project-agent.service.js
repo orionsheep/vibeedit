@@ -217,6 +217,83 @@ function resultRequiresMutation(mode, result = {}) {
   });
 }
 
+function isDirectDocumentOpenRequest({ prompt = '', topic = '' } = {}) {
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
+  if (!text) return false;
+  if (/^(?:请)?(?:帮我)?(?:直接)?(?:打开|查看|显示|展开)(?:一下)?(?:当前|项目|切片|成片|最终)?(?:文稿|脚本|逐字稿|字幕稿|全文|全稿)$/i.test(text)) {
+    return true;
+  }
+  return /(打开|查看|显示|展开)(?:一下)?(?:当前|项目|切片|成片|最终)?.{0,6}(文稿|脚本|逐字稿|字幕稿|全文|全稿)/i.test(text);
+}
+
+async function finalizeDirectDocumentOpenRun({
+  session,
+  sessionId,
+  runId,
+  userPrompt,
+  mode = 'custom'
+}) {
+  const normalizedMode = String(mode || 'custom').trim();
+  const reply = normalizedMode === 'live_slicing'
+    ? '已为你打开当前切片文稿，可直接在文稿面板查看当前切片的段落内容。'
+    : '已为你打开当前文稿，可直接在文稿面板查看当前成片内容。';
+  const result = {
+    reply,
+    summary: reply,
+    open_document_preview: true,
+    document_scope: normalizedMode === 'live_slicing' ? 'slice' : 'master',
+    applied_changes: []
+  };
+
+  await updateAgentRunRecord(runId, {
+    status: 'completed',
+    result,
+    requiresConfirmation: false,
+    appliedChanges: [],
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'complete',
+    step: 'open_document_preview',
+    message: normalizedMode === 'live_slicing'
+      ? '已准备好当前切片文稿预览。'
+      : '已准备好当前文稿预览。',
+    payload: {
+      open_document_preview: true,
+      document_scope: result.document_scope
+    }
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content: reply,
+    metadata: {
+      status: 'completed',
+      open_document_preview: true,
+      document_scope: result.document_scope
+    }
+  });
+  await touchAgentSession(sessionId, {
+    summary: mergeSessionSummary(session.summary, userPrompt, reply, [])
+  });
+
+  return {
+    success: true,
+    session_id: sessionId,
+    run_id: runId,
+    reply,
+    status: 'completed',
+    requires_confirmation: false,
+    applied_changes: [],
+    open_document_preview: true,
+    document_scope: result.document_scope,
+    result
+  };
+}
+
 function isHighLevelAssembleEdit(change = {}) {
   const tool = String(change?.tool || change?.change || change?.type || '').trim();
   return [
@@ -1153,6 +1230,16 @@ async function runProjectAgentInternal({
       routing_reason: requestProfile.routingReason || ''
     }
   });
+
+  if (isDirectDocumentOpenRequest({ prompt: userPrompt, topic })) {
+    return finalizeDirectDocumentOpenRun({
+      session,
+      sessionId,
+      runId: run.id,
+      userPrompt,
+      mode: normalizedMode
+    });
+  }
 
   const mutationSignatureBefore = await readProjectMutationSignature(projectId);
   const abortController = new AbortController();

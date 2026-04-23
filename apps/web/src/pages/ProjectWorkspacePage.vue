@@ -2396,6 +2396,9 @@ async function runAgent() {
     }, agentRunAbortController.value.signal);
     agentPrompt.value = '';
     await Promise.all([loadWorkspace(), loadSnapshots(), ensureAgentSessionLoaded()]);
+    if (result?.open_document_preview || result?.result?.open_document_preview) {
+      await openDocumentPreview();
+    }
   } catch (err) {
     const message = err.response?.data?.error || err.message || '';
     if (String(message).toLowerCase().includes('abort') || String(message).toLowerCase().includes('cancel')) {
