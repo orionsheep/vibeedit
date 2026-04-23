@@ -381,6 +381,7 @@ import {
   listProjectSlices,
   listProjectAgentSessions,
   listProjectSnapshots,
+  ProjectAgentStreamError,
   removeProjectAsset,
   reorderProjectAssets,
   runProjectAgentWithProgress,
@@ -478,6 +479,9 @@ const editorBaselineSignature = ref('');
 const stoppingAgent = ref(false);
 const cancelRequestedRunId = ref('');
 const agentRunAbortController = ref(null);
+const agentRecoveryAbortController = ref(null);
+const recoveringAgentRunId = ref('');
+const recoveredActiveRunNoticeId = ref('');
 const documentPreviewVisible = ref(false);
 const documentPreviewLoading = ref(false);
 const documentPreviewSectionId = ref('master');
@@ -1906,6 +1910,10 @@ function isAgentRunTerminalStatus(status = '') {
   return ['completed', 'failed', 'cancelled'].includes(String(status || '').trim());
 }
 
+function isAgentRunActiveStatus(status = '') {
+  return ['running', 'waiting_confirmation', 'cancelling'].includes(String(status || '').trim());
+}
+
 function findRecoverableAgentRun(detail, userPrompt = '', requestStartedAt = 0) {
   const runs = Array.isArray(detail?.runs) ? detail.runs : [];
   const normalizedPrompt = String(userPrompt || '').trim();
@@ -1914,6 +1922,14 @@ function findRecoverableAgentRun(detail, userPrompt = '', requestStartedAt = 0) 
     String(run?.prompt || '').trim() === normalizedPrompt
     && (!lowerBound || new Date(run?.createdAt || run?.created_at || 0).getTime() >= lowerBound)
   )) || null;
+}
+
+function stopAgentRunRecoveryPolling() {
+  if (agentRecoveryAbortController.value) {
+    agentRecoveryAbortController.value.abort();
+    agentRecoveryAbortController.value = null;
+  }
+  recoveringAgentRunId.value = '';
 }
 
 function syncAgentStateFromDetail(detail, preferredRunId = '') {
@@ -1940,6 +1956,53 @@ function syncAgentStateFromDetail(detail, preferredRunId = '') {
   }
 
   return run;
+}
+
+async function beginRecoveredAgentRunPolling(sessionId, run) {
+  const runId = String(run?.id || '').trim();
+  if (!sessionId || !runId) return null;
+  if (!isAgentRunActiveStatus(run?.status || '')) {
+    runningAgent.value = false;
+    activeRunStatus.value = run?.status ? getRunStatusText(run.status) : '';
+    stopAgentRunRecoveryPolling();
+    return run;
+  }
+
+  if (recoveringAgentRunId.value === runId) {
+    runningAgent.value = ['running', 'cancelling'].includes(String(run?.status || '').trim());
+    activeRunStatus.value = run?.status ? getRunStatusText(run.status) : activeRunStatus.value;
+    return run;
+  }
+
+  stopAgentRunRecoveryPolling();
+  const controller = new AbortController();
+  agentRecoveryAbortController.value = controller;
+  recoveringAgentRunId.value = runId;
+  runningAgent.value = ['running', 'cancelling'].includes(String(run?.status || '').trim());
+  activeRunStatus.value = run?.status ? getRunStatusText(run.status) : activeRunStatus.value;
+
+  pollRecoveredAgentRun(sessionId, runId, controller.signal)
+    .then((finalState) => {
+      const finalRun = finalState?.run || null;
+      const finalStatus = String(finalRun?.status || '').trim();
+      runningAgent.value = ['running', 'cancelling'].includes(finalStatus);
+      activeRunStatus.value = finalRun?.status ? getRunStatusText(finalRun.status) : '';
+    })
+    .catch((pollError) => {
+      if (pollError?.name === 'AbortError') return;
+    })
+    .finally(() => {
+      if (recoveringRunIdMatches(runId)) {
+        agentRecoveryAbortController.value = null;
+        recoveringAgentRunId.value = '';
+      }
+    });
+
+  return run;
+}
+
+function recoveringRunIdMatches(runId = '') {
+  return String(recoveringAgentRunId.value || '').trim() === String(runId || '').trim();
 }
 
 async function pollRecoveredAgentRun(sessionId, runId, signal) {
@@ -2094,6 +2157,12 @@ async function ensureAgentSessionLoaded() {
   const session = sessions[0] || await createProjectAgentSession(projectId.value, {});
   const detail = await getProjectAgentSession(projectId.value, session.id);
   const latestRun = syncAgentStateFromDetail(detail, selectedRunId.value);
+  if (latestRun?.id && isAgentRunActiveStatus(latestRun.status)) {
+    await beginRecoveredAgentRunPolling(session.id, latestRun);
+  } else {
+    runningAgent.value = false;
+    stopAgentRunRecoveryPolling();
+  }
   if (!latestRun?.id) {
     selectedRunId.value = '';
     selectedRunEvents.value = [];
@@ -2115,6 +2184,7 @@ async function inspectRun(runId) {
 
 async function createFreshAgentSession() {
   if (runningAgent.value) return;
+  stopAgentRunRecoveryPolling();
   const session = await createProjectAgentSession(projectId.value, {
     reuse: false,
     title: `项目会话 ${new Date().toLocaleTimeString()}`
@@ -2128,6 +2198,7 @@ async function createFreshAgentSession() {
   cancelRequestedRunId.value = '';
   selectedRunId.value = '';
   selectedRunEvents.value = [];
+  recoveredActiveRunNoticeId.value = '';
   agentPanelTab.value = 'chat';
 }
 
@@ -2319,9 +2390,11 @@ async function runAgent() {
   if (runningAgent.value || stoppingAgent.value) return;
   const requestStartedAt = Date.now();
   let recoveredAfterStreamFailure = null;
+  stopAgentRunRecoveryPolling();
   runningAgent.value = true;
   stoppingAgent.value = false;
   cancelRequestedRunId.value = '';
+  recoveredActiveRunNoticeId.value = '';
   agentRunAbortController.value = new AbortController();
   if (autosaveTimer.value) {
     clearTimeout(autosaveTimer.value);
@@ -2334,6 +2407,22 @@ async function runAgent() {
     });
   }
   await ensureAgentSessionLoaded();
+  const existingActiveRun = (agentSession.value?.runs || [])[0] || null;
+  if (existingActiveRun?.id && isAgentRunActiveStatus(existingActiveRun.status)) {
+    await beginRecoveredAgentRunPolling(agentSession.value?.id || '', existingActiveRun);
+    if (recoveredActiveRunNoticeId.value !== existingActiveRun.id) {
+      messages.value.push({
+        id: `active_run_notice_${existingActiveRun.id}`,
+        role: 'assistant',
+        content: '当前会话里已有一条任务正在执行，我已经为你恢复到这条运行状态。你可以等待它完成，或点击“停止”后再发新任务。'
+      });
+      recoveredActiveRunNoticeId.value = existingActiveRun.id;
+    }
+    runningAgent.value = ['running', 'cancelling'].includes(String(existingActiveRun.status || '').trim());
+    stoppingAgent.value = false;
+    agentRunAbortController.value = null;
+    return;
+  }
   const userMessage = agentPrompt.value.trim() || `执行 ${agentActionLabel.value}`;
   liveRunEvents.value = [];
   activeRunId.value = '';
@@ -2401,8 +2490,43 @@ async function runAgent() {
     }
   } catch (err) {
     const message = err.response?.data?.error || err.message || '';
+    const activeRunPayload = err instanceof ProjectAgentStreamError
+      ? err.payload?.active_run || null
+      : null;
     if (String(message).toLowerCase().includes('abort') || String(message).toLowerCase().includes('cancel')) {
       Promise.resolve().then(() => ensureAgentSessionLoaded()).catch(() => {});
+    } else if (
+      activeRunPayload?.id
+      || String(message).includes('当前会话已有任务在执行')
+    ) {
+      let detail = null;
+      let activeRun = null;
+      try {
+        detail = await ensureAgentSessionLoaded();
+        const preferredRunId = String(activeRunPayload?.id || '').trim();
+        activeRun = syncAgentStateFromDetail(detail, preferredRunId);
+        if (activeRun?.id && isAgentRunActiveStatus(activeRun.status)) {
+          await beginRecoveredAgentRunPolling(detail?.id || agentSession.value?.id || '', activeRun);
+          if (recoveredActiveRunNoticeId.value !== activeRun.id) {
+            messages.value.push({
+              id: `active_run_notice_${activeRun.id}`,
+              role: 'assistant',
+              content: '当前会话里已有一条任务正在执行，我已经为你恢复到这条运行状态。你可以等待它完成，或点击“停止”后再发新任务。'
+            });
+            recoveredActiveRunNoticeId.value = activeRun.id;
+          }
+        }
+      } catch {
+        // fall through to generic error handling below
+      }
+
+      if (!activeRun?.id) {
+        messages.value.push({
+          id: `e_${Date.now()}`,
+          role: 'assistant',
+          content: `执行失败：${message}`
+        });
+      }
     } else {
       let recoveredState = null;
       try {
@@ -2429,7 +2553,9 @@ async function runAgent() {
   } finally {
     const keepRunningState = recoveredAfterStreamFailure?.recovered
       && ['running', 'cancelling'].includes(String(recoveredAfterStreamFailure.status || '').trim());
-    runningAgent.value = Boolean(keepRunningState);
+    if (!recoveringAgentRunId.value) {
+      runningAgent.value = Boolean(keepRunningState);
+    }
     stoppingAgent.value = false;
     agentRunAbortController.value = null;
   }
@@ -2440,6 +2566,7 @@ async function cancelRunningAgent() {
   stoppingAgent.value = true;
   activeRunStatus.value = '正在停止...';
   try {
+    stopAgentRunRecoveryPolling();
     if (agentRunAbortController.value) {
       agentRunAbortController.value.abort();
     }
@@ -2949,6 +3076,7 @@ onBeforeUnmount(() => {
   previewPlayerRef.value?.pausePlayback?.();
   document.removeEventListener('click', closeContextMenu);
   document.removeEventListener('keydown', handleGlobalWorkspaceKeydown);
+  stopAgentRunRecoveryPolling();
   editorStore.reset();
 });
 </script>

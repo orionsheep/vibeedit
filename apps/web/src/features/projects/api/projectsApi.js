@@ -2,6 +2,16 @@ import axios from 'axios';
 
 const API_BASE = '/api/projects';
 
+export class ProjectAgentStreamError extends Error {
+  constructor(message, { code = '', payload = {}, result = null } = {}) {
+    super(message);
+    this.name = 'ProjectAgentStreamError';
+    this.code = code;
+    this.payload = payload || {};
+    this.result = result || null;
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -137,7 +147,10 @@ export async function runProjectAgentWithProgress(projectId, sessionId, payload,
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Project agent failed' }));
-    throw new Error(error.error || 'Project agent failed');
+    throw new ProjectAgentStreamError(error.error || 'Project agent failed', {
+      code: error.code || '',
+      payload: error.payload || {}
+    });
   }
 
   const reader = response.body.getReader();
@@ -169,7 +182,10 @@ export async function runProjectAgentWithProgress(projectId, sessionId, payload,
             result = data.result;
           }
           if (data.type === 'error') {
-            throw new Error(data.message || 'Project agent failed');
+            throw new ProjectAgentStreamError(data.message || 'Project agent failed', {
+              code: data.code || '',
+              payload: data.payload || {}
+            });
           }
         }
       }

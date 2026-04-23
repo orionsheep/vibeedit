@@ -70,6 +70,17 @@ function getAgentRunStaleTimeoutMs(config = loadConfig()) {
   return Math.max(timeoutMs, inactivityTimeoutMs) + 120000;
 }
 
+export class ActiveAgentRunExistsError extends Error {
+  constructor(run, message = '当前会话已有任务在执行，请等待完成或先停止当前任务。') {
+    super(message);
+    this.name = 'ActiveAgentRunExistsError';
+    this.code = 'agent_run_active';
+    this.payload = {
+      active_run: run ? mapRun(run) : null
+    };
+  }
+}
+
 export async function listProjectAgentSessions(projectId) {
   return withDatabase(async (db) => {
     const sessions = await db.agentSession.findMany({
@@ -200,7 +211,7 @@ export async function createAgentRunRecord({ projectId, sessionId, mode, prompt,
     }
 
     if (activeRun) {
-      throw new Error('当前会话已有任务在执行，请等待完成或先停止当前任务。');
+      throw new ActiveAgentRunExistsError(activeRun);
     }
 
     const run = await db.agentRun.create({

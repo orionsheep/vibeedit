@@ -576,7 +576,9 @@ router.post('/:projectId/agent/sessions/:sessionId/runs/stream', async (req, res
   } catch (error) {
     sendEvent({
       type: 'error',
-      message: error.message
+      code: error.code || '',
+      message: error.message,
+      payload: error.payload || {}
     });
   } finally {
     clearInterval(heartbeat);
