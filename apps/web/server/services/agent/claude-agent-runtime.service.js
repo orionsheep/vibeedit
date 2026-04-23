@@ -26,6 +26,7 @@ import {
   touchAgentSession,
   updateAgentRunRecord
 } from './agent-session.service.js';
+import { buildClaudeSdkPermissionOptions } from './claude-agent-permissions.service.js';
 
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script', 'live_slicing']);
 const MEMORY_PROFILES = {
@@ -821,7 +822,6 @@ export async function runClaudeAgentSession({
         prompt: buildAssembleReviewFollowupPrompt(),
         options: {
           cwd: getProjectRoot(),
-          permissionMode: 'bypassPermissions',
           tools: [],
           model: candidate.model,
           maxTurns: 24,
@@ -838,7 +838,8 @@ export async function runClaudeAgentSession({
             ANTHROPIC_AUTH_TOKEN: candidate.key,
             CLAUDE_CONFIG_DIR: runtimeDir,
             CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/claude-sdk'
-          }
+          },
+          ...buildClaudeSdkPermissionOptions({ autoApproveProjectTools: true })
         }
       });
       activeStreamRef.current = reviewStream;
@@ -975,7 +976,6 @@ export async function runClaudeAgentSession({
           prompt: buildUserPrompt({ mode: normalizedMode, prompt, topic, targetMinutes, sessionDetail, assembleRetryPass, pauseOnlyRequest, requestProfile, memoryProfile }),
           options: {
             cwd: getProjectRoot(),
-            permissionMode: 'bypassPermissions',
             tools: [],
             model: candidate.model,
             maxTurns: 120,
@@ -992,7 +992,8 @@ export async function runClaudeAgentSession({
               ANTHROPIC_AUTH_TOKEN: candidate.key,
               CLAUDE_CONFIG_DIR: runtimeDir,
               CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/claude-sdk'
-            }
+            },
+            ...buildClaudeSdkPermissionOptions({ autoApproveProjectTools: true })
           }
         });
         activeStreamRef.current = stream;

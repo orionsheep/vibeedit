@@ -22,6 +22,7 @@ import {
   classifyProjectAgentRequest,
   normalizeProjectAgentMode
 } from './project-agent-intent.service.js';
+import { buildClaudeSdkPermissionOptions } from './claude-agent-permissions.service.js';
 import { executeProjectAgentToolDirect } from './claude-agent-mcp.service.js';
 import { getProjectRoot } from '../editor/config.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
@@ -489,7 +490,6 @@ async function runAssemblePlannerQuery({
       prompt,
       options: {
         cwd: getProjectRoot(),
-        permissionMode: 'bypassPermissions',
         tools: [],
         model: candidate.model,
         maxTurns: 2,
@@ -508,7 +508,8 @@ async function runAssemblePlannerQuery({
           ANTHROPIC_AUTH_TOKEN: candidate.key,
           CLAUDE_CONFIG_DIR: runtimeDir,
           CLAUDE_AGENT_SDK_CLIENT_APP: 'autoedit/assemble-planner'
-        }
+        },
+        ...buildClaudeSdkPermissionOptions()
       }
     });
 
