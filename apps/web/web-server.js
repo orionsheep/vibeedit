@@ -5,6 +5,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -81,7 +82,30 @@ app.get('/api/system/status', async (_req, res) => {
 
 const vueDistPath = path.join(__dirname, 'dist');
 if (fs.existsSync(vueDistPath)) {
-  app.use(express.static(vueDistPath));
+  app.use(compression());
+
+  const staticAssetsPath = path.join(vueDistPath, 'static');
+  if (fs.existsSync(staticAssetsPath)) {
+    app.use('/static', express.static(staticAssetsPath, {
+      etag: true,
+      immutable: true,
+      maxAge: '1y'
+    }));
+  }
+
+  app.use(express.static(vueDistPath, {
+    etag: true,
+    maxAge: '1h',
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return;
+      }
+      if (filePath.includes(`${path.sep}static${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
   console.log(`[Dashboard] Serving static files from ${vueDistPath}`);
 }
 

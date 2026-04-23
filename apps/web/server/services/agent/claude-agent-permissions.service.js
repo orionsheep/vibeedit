@@ -1,5 +1,62 @@
+const AUTOEDIT_TOOL_NAMES = new Set([
+  'get_project_context',
+  'get_timeline_detail',
+  'list_project_assets',
+  'list_project_slices',
+  'suggest_project_slices',
+  'get_project_slice_detail',
+  'create_project_slice',
+  'delete_project_slice',
+  'search_project_subtitles',
+  'get_asset_script_map',
+  'get_subtitle_blocks',
+  'get_script_blocks',
+  'get_deleted_subtitle_blocks',
+  'get_assemble_candidates',
+  'auto_assemble_script',
+  'get_pause_candidates',
+  'delete_subtitle_blocks',
+  'restore_subtitle_blocks',
+  'remove_project_asset',
+  'reorder_project_assets',
+  'delete_words_by_phrase',
+  'replace_subtitle_text',
+  'restore_words_by_phrase',
+  'remove_pauses',
+  'remove_all_pauses',
+  'clear_deleted',
+  'save_snapshot',
+  'export_video'
+]);
+
+function normalizeToolName(input = '') {
+  if (typeof input === 'string') return String(input || '').trim();
+  if (input && typeof input === 'object') {
+    return String(input.name || input.toolName || input.tool || '').trim();
+  }
+  return '';
+}
+
+function extractCandidateToolNames(toolName = '') {
+  const normalized = normalizeToolName(toolName);
+  if (!normalized) return [];
+  const candidates = new Set([normalized]);
+  if (normalized.startsWith('mcp__autoedit__')) {
+    candidates.add(normalized.slice('mcp__autoedit__'.length));
+  }
+  if (normalized.includes('.')) {
+    candidates.add(normalized.split('.').pop());
+  }
+  if (normalized.includes(':')) {
+    candidates.add(normalized.split(':').pop());
+  }
+  return [...candidates].filter(Boolean);
+}
+
 function isAutoeditMcpToolName(toolName = '') {
-  return String(toolName || '').trim().startsWith('mcp__autoedit__');
+  return extractCandidateToolNames(toolName).some((candidate) => (
+    candidate.startsWith('mcp__autoedit__') || AUTOEDIT_TOOL_NAMES.has(candidate)
+  ));
 }
 
 export function createAutoeditToolApprovalCallback() {

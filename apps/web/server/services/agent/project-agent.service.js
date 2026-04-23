@@ -25,6 +25,7 @@ import {
 import { buildClaudeSdkPermissionOptions } from './claude-agent-permissions.service.js';
 import { executeProjectAgentToolDirect } from './claude-agent-mcp.service.js';
 import { getProjectRoot } from '../editor/config.js';
+import { getAgentLlmSettings } from '../editor/llm.service.js';
 import { getProjectTimeline } from '../projects/timeline.service.js';
 import { getProjectEditState } from '../projects/project-edit-state.service.js';
 import { getProjectById } from '../projects/project.service.js';
@@ -467,6 +468,68 @@ function parseStructuredAssemblePlan(text = '') {
   }
 }
 
+function buildDeterministicStructuredAssemblePlan({
+  assembleCandidates = {},
+  scriptBlocks = {},
+  round = 1,
+  currentDuration = 0,
+  totalAssetDuration = 0
+} = {}) {
+  const orders = [];
+  const seen = new Set();
+  const addOrder = (value) => {
+    const order = Number(value);
+    if (!Number.isFinite(order) || order <= 0 || seen.has(order)) return;
+    seen.add(order);
+    orders.push(order);
+  };
+
+  for (const candidate of (assembleCandidates.restart_candidates || [])) {
+    addOrder(candidate?.order);
+    if (orders.length >= 12) break;
+  }
+
+  for (const group of (assembleCandidates.block_groups || [])) {
+    const versions = (group?.versions || [])
+      .map((version) => ({
+        order: Number(version?.order || 0),
+        text: String(version?.text || '').trim()
+      }))
+      .filter((version) => Number.isFinite(version.order) && version.order > 0)
+      .sort((left, right) => left.order - right.order);
+    for (const version of versions.slice(1)) {
+      addOrder(version.order);
+      if (orders.length >= 12) break;
+    }
+    if (orders.length >= 12) break;
+  }
+
+  const durationRatio = totalAssetDuration > 0 ? currentDuration / totalAssetDuration : 1;
+  if (round >= 2 && durationRatio > 0.58 && orders.length < 10) {
+    const weakPrefixPattern = /^(那(么)?|然后|所以|好(了|那)?|ok|嗯|呃|额|就是|其实|如果说|那我们|那么我们|然后我们|那这个|那么这个|然后这个)/i;
+    const importantPattern = /(产品|模型|方案|流程|步骤|场景|功能|效果|价格|订阅|使用|网站|平台|agent|claude|openai|gemini|google|anthropic)/i;
+    for (const block of (scriptBlocks.blocks || [])) {
+      const text = String(block?.text || '').trim();
+      const duration = Number(block?.duration || 0);
+      if (!text || importantPattern.test(text)) continue;
+      if (duration <= 0 || duration > 4.2) continue;
+      if (!weakPrefixPattern.test(text)) continue;
+      addOrder(block?.order);
+      if (orders.length >= 12) break;
+    }
+  }
+
+  if (!orders.length) return null;
+  return {
+    reorder_asset_titles: [],
+    delete_block_orders: orders.slice(0, 12),
+    reason: round === 1
+      ? '根据确定性候选自动删除起手重说和重复段落。'
+      : '根据确定性候选继续删除起手重说、重复段落和弱过渡短块。',
+    confidence: 'medium'
+  };
+}
+
 async function runAssemblePlannerQuery({
   prompt = '',
   preferredProvider = '',
@@ -474,10 +537,17 @@ async function runAssemblePlannerQuery({
   signal = null
 }) {
   const candidate = getHealthyGlmCandidate(preferredModel, preferredProvider);
+  const settings = getAgentLlmSettings();
+  const plannerTimeoutMs = Math.min(30000, Math.max(12000, Number(settings.timeoutMs || 90000) - 20000));
   const runtimeDir = path.join(candidate.runtimeDir, 'planning');
   fs.mkdirSync(runtimeDir, { recursive: true });
   const abortController = new AbortController();
+  let timedOut = false;
   const onAbort = () => abortController.abort(signal?.reason || new Error('Planning query aborted'));
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    abortController.abort(new Error(`Assemble planner timed out after ${plannerTimeoutMs}ms`));
+  }, plannerTimeoutMs);
   if (signal) {
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
@@ -529,8 +599,12 @@ async function runAssemblePlannerQuery({
     };
   } catch (error) {
     markGlmCandidateFailure(candidate, error);
+    if (timedOut) {
+      throw new Error(`Assemble planner timed out after ${plannerTimeoutMs}ms`);
+    }
     throw error;
   } finally {
+    clearTimeout(timeoutHandle);
     if (signal) {
       signal.removeEventListener('abort', onAbort);
     }
@@ -812,6 +886,13 @@ async function runStructuredAssembleDeepeningFallback({
       planningText = String(planningMeta?.text || '').trim();
       lastPlanningMeta = planningMeta;
     } catch (error) {
+      const deterministicPlan = buildDeterministicStructuredAssemblePlan({
+        assembleCandidates,
+        scriptBlocks,
+        round,
+        currentDuration,
+        totalAssetDuration
+      });
       await appendAgentEvent({
         sessionId,
         runId,
@@ -820,10 +901,52 @@ async function runStructuredAssembleDeepeningFallback({
         message: `第 ${round} 轮结构精修计划生成失败：${String(error?.message || 'unknown error')}`,
         payload: { round }
       });
-      break;
+      if (!deterministicPlan) break;
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'stage',
+        step: 'assemble_planner_fallback',
+        message: `第 ${round} 轮结构精修改用确定性兜底计划：${deterministicPlan.reason}`,
+        payload: {
+          round,
+          delete_block_orders: deterministicPlan.delete_block_orders
+        }
+      });
+      lastPlan = deterministicPlan;
+      planningMeta = {
+        provider: 'deterministic_fallback',
+        model: 'rule-based',
+        text: JSON.stringify(deterministicPlan)
+      };
+      lastPlanningMeta = planningMeta;
+      planningText = planningMeta.text;
     }
 
-    const plan = parseStructuredAssemblePlan(planningText);
+    let plan = parseStructuredAssemblePlan(planningText);
+    if (!plan || (!plan.delete_block_orders.length && !plan.reorder_asset_titles.length)) {
+      const deterministicPlan = buildDeterministicStructuredAssemblePlan({
+        assembleCandidates,
+        scriptBlocks,
+        round,
+        currentDuration,
+        totalAssetDuration
+      });
+      if (deterministicPlan) {
+        await appendAgentEvent({
+          sessionId,
+          runId,
+          type: 'stage',
+          step: 'assemble_planner_fallback',
+          message: `第 ${round} 轮结构精修改用确定性兜底计划：${deterministicPlan.reason}`,
+          payload: {
+            round,
+            delete_block_orders: deterministicPlan.delete_block_orders
+          }
+        });
+        plan = deterministicPlan;
+      }
+    }
     lastPlan = plan;
     if (!plan || (!plan.delete_block_orders.length && !plan.reorder_asset_titles.length)) {
       await appendAgentEvent({

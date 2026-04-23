@@ -30,10 +30,16 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const authStore = useAuthStore();
-  await authStore.hydrateSession();
-
   const isPublic = Boolean(to.meta?.public);
   const authOnly = Boolean(to.meta?.authOnly);
+  const needsBlockingSessionCheck = !isPublic || authOnly;
+
+  if (needsBlockingSessionCheck) {
+    await authStore.hydrateSession();
+  } else if (!authStore.sessionChecked && !authStore.sessionPromise) {
+    Promise.resolve().then(() => authStore.hydrateSession()).catch(() => {});
+  }
+
 
   if (!isPublic && !authStore.isAuthenticated) {
     return {
