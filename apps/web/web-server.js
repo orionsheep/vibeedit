@@ -128,7 +128,7 @@ app.get('*', (req, res) => {
 
 // ============ 启动服务器 ============
 
-app.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
+const server = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
   const displayHost = DASHBOARD_HOST === '0.0.0.0' ? '0.0.0.0 (所有接口)' : DASHBOARD_HOST;
   console.log(`\n[AutoEdit Dashboard] Server running at http://${displayHost}:${DASHBOARD_PORT}`);
   console.log(`[AutoEdit Dashboard] API: http://${displayHost}:${DASHBOARD_PORT}/api/skills`);
@@ -158,3 +158,7 @@ app.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
       console.log(`\n`);
     });
 });
+
+// Large video uploads can legitimately take many minutes on slow client networks.
+server.requestTimeout = 0;
+server.headersTimeout = 0;
