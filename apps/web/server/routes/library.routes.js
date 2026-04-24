@@ -32,7 +32,6 @@ router.get('/assets/:assetId/source', allowSignedAssetSourceOrOwner, async (req,
 });
 
 router.use(requireAuth);
-router.use('/assets/:assetId', requireOwnedAsset);
 
 router.get('/assets', async (req, res) => {
   try {
@@ -104,6 +103,8 @@ router.post('/assets/retranscribe', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+router.use('/assets/:assetId', requireOwnedAsset);
 
 router.post('/assets/:assetId/retranscribe', async (req, res) => {
   try {
