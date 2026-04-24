@@ -10,6 +10,15 @@ import { createSignedAssetSourceToken } from '../auth/auth.service.js';
 
 const RECOVERABLE_ASSET_JOB_TYPES = new Set(['asset.ingest', 'asset.retranscribe']);
 const ACTIVE_ASSET_JOB_IDS = new Set();
+const DEFAULT_FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
+const DEFAULT_FFPROBE_PATH = process.env.FFPROBE_PATH || '/usr/bin/ffprobe';
+
+if (fs.existsSync(DEFAULT_FFMPEG_PATH)) {
+  ffmpeg.setFfmpegPath(DEFAULT_FFMPEG_PATH);
+}
+if (fs.existsSync(DEFAULT_FFPROBE_PATH)) {
+  ffmpeg.setFfprobePath(DEFAULT_FFPROBE_PATH);
+}
 
 function flattenWords(asrResult = {}) {
   if (Array.isArray(asrResult.words)) return asrResult.words;
@@ -423,10 +432,11 @@ export async function retranscribeAsset(assetId, { language = 'Chinese', ownerId
   }));
 
   const inferredLanguage = language || asset.captions?.[0]?.language || 'Chinese';
-  return runAssetAsr(assetId, originalFile.uri, {
+  await enqueueAssetAsr(assetId, originalFile.uri, {
     language: inferredLanguage,
     jobType: 'asset.retranscribe'
   });
+  return getAssetById(assetId, ownerId);
 }
 
 export async function retranscribeAllAssets({ language = 'Chinese', ownerId = '' } = {}) {
