@@ -4,12 +4,14 @@ import ffmpeg from 'fluent-ffmpeg';
 import { withDatabase } from '../core/database.service.js';
 import { createJob, markJobRunning, updateJobProgress, completeJob, failJob } from '../core/job.service.js';
 import { copyExternalAssetFile, moveUploadedAssetFile } from '../core/storage.service.js';
-import { loadConfig } from '../editor/config.js';
+import { ensureStorageDirs, loadConfig } from '../editor/config.js';
 import { runAsrPipeline } from '../editor/asr.service.js';
 import { createSignedAssetSourceToken } from '../auth/auth.service.js';
 
 const RECOVERABLE_ASSET_JOB_TYPES = new Set(['asset.ingest', 'asset.retranscribe']);
 const ACTIVE_ASSET_JOB_IDS = new Set();
+const QWEN_FILETRANS_PROVIDER = 'qwen_filetrans';
+const ASR_AUDIO_PROXY_ROLE = 'asr_audio';
 const DEFAULT_FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const DEFAULT_FFPROBE_PATH = process.env.FFPROBE_PATH || '/usr/bin/ffprobe';
 
@@ -109,6 +111,61 @@ function inferMimeTypeFromFilename(filename = '') {
     default:
       return 'video/mp4';
   }
+}
+
+function isQwenFiletransEnabled() {
+  const config = loadConfig();
+  return String(config.asr_provider || '').trim().toLowerCase() === QWEN_FILETRANS_PROVIDER;
+}
+
+function extractAudioProxy(sourcePath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(sourcePath)
+      .noVideo()
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .audioCodec('libmp3lame')
+      .audioBitrate('64k')
+      .format('mp3')
+      .on('end', resolve)
+      .on('error', reject)
+      .save(outputPath);
+  });
+}
+
+async function prepareAsrAudioProxy(assetId, sourcePath) {
+  const { assetsProxiesDir } = ensureStorageDirs();
+  const proxyFilename = `${assetId}-asr.mp3`;
+  const proxyPath = path.join(assetsProxiesDir, proxyFilename);
+  const storageKey = path.join('assets', 'proxies', proxyFilename);
+
+  await extractAudioProxy(sourcePath, proxyPath);
+  const stats = await fs.promises.stat(proxyPath);
+
+  await withDatabase(async (db) => {
+    await db.assetFile.deleteMany({
+      where: {
+        assetId,
+        role: ASR_AUDIO_PROXY_ROLE
+      }
+    });
+    await db.assetFile.create({
+      data: {
+        assetId,
+        role: ASR_AUDIO_PROXY_ROLE,
+        storageKey,
+        uri: proxyPath,
+        mimeType: 'audio/mpeg',
+        sizeBytes: BigInt(stats.size || 0)
+      }
+    });
+  });
+
+  return {
+    role: ASR_AUDIO_PROXY_ROLE,
+    storageKey,
+    uri: proxyPath
+  };
 }
 
 async function parseUploadedJson(jsonFile) {
@@ -234,9 +291,16 @@ async function processAssetJob(jobId) {
     await markJobRunning(job.id, 'Probing media');
     await fs.promises.access(sourcePath, fs.constants.R_OK);
     const mediaInfo = await probeMediaInfo(sourcePath);
+    let asrInput = sourcePath;
+    if (!uploadedJson && isQwenFiletransEnabled()) {
+      await updateJobProgress(job.id, 20, 'Preparing ASR audio');
+      const proxy = await prepareAsrAudioProxy(assetId, sourcePath);
+      asrInput = resolveAsrInput(assetId, proxy.uri, { role: proxy.role });
+    } else if (!uploadedJson) {
+      asrInput = resolveAsrInput(assetId, sourcePath);
+    }
     await updateJobProgress(job.id, 25, 'Running ASR');
 
-    const asrInput = uploadedJson ? sourcePath : resolveAsrInput(assetId, sourcePath);
     const asrResult = uploadedJson || await runAsrPipeline(asrInput, language);
 
     await updateJobProgress(job.id, 80, 'Persisting captions');
@@ -263,7 +327,7 @@ async function runAssetAsr(assetId, sourcePath, { language = 'Chinese', uploaded
   return processAssetJob(job.id);
 }
 
-function resolveAsrInput(assetId, sourcePath) {
+function resolveAsrInput(assetId, sourcePath, { role = 'source' } = {}) {
   const config = loadConfig();
   if (String(config.asr_provider || '').trim().toLowerCase() !== 'qwen_filetrans') {
     return sourcePath;
@@ -275,6 +339,9 @@ function resolveAsrInput(assetId, sourcePath) {
   }
 
   const token = createSignedAssetSourceToken(assetId);
+  if (role && role !== 'source') {
+    return `${publicBaseUrl}/api/library/assets/${encodeURIComponent(assetId)}/files/${encodeURIComponent(role)}?token=${encodeURIComponent(token)}`;
+  }
   return `${publicBaseUrl}/api/library/assets/${encodeURIComponent(assetId)}/source?token=${encodeURIComponent(token)}`;
 }
 
@@ -574,6 +641,33 @@ export async function getAssetSourcePath(assetId, ownerId = '', { allowAny = fal
       where: {
         assetId,
         role: 'original'
+      }
+    });
+
+    return file?.uri || null;
+  });
+}
+
+export async function getAssetFilePath(assetId, role, ownerId = '', { allowAny = false } = {}) {
+  const normalizedRole = String(role || '').trim();
+  if (!normalizedRole) return null;
+
+  return withDatabase(async (db) => {
+    if (!allowAny && ownerId) {
+      const asset = await db.asset.findFirst({
+        where: {
+          id: assetId,
+          ownerId: String(ownerId || '').trim()
+        },
+        select: { id: true }
+      });
+      if (!asset) return null;
+    }
+
+    const file = await db.assetFile.findFirst({
+      where: {
+        assetId,
+        role: normalizedRole
       }
     });
 

@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import { ensureWorkspaceDirs } from '../services/editor/config.js';
-import { createAssetFromUpload, getAssetById, getAssetSourcePath, listAssets, retranscribeAllAssets, retranscribeAsset } from '../services/library/asset-library.service.js';
+import { createAssetFromUpload, getAssetById, getAssetFilePath, getAssetSourcePath, listAssets, retranscribeAllAssets, retranscribeAsset } from '../services/library/asset-library.service.js';
 import { addAssetToProject } from '../services/projects/project.service.js';
 import { listAssetSegments, listAssetWords } from '../services/projects/timeline.service.js';
 import { allowSignedAssetSourceOrOwner, attachAuthContext, requireAuth, requireOwnedAsset } from '../services/auth/auth.middleware.js';
@@ -26,6 +26,20 @@ router.get('/assets/:assetId/source', allowSignedAssetSourceOrOwner, async (req,
       return res.status(404).json({ error: 'Source file not found' });
     }
     res.sendFile(sourcePath);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/assets/:assetId/files/:role', allowSignedAssetSourceOrOwner, async (req, res) => {
+  try {
+    const filePath = await getAssetFilePath(req.params.assetId, req.params.role, req.auth?.userId || '', {
+      allowAny: Boolean(String(req.query?.token || '').trim())
+    });
+    if (!filePath) {
+      return res.status(404).json({ error: 'Asset file not found' });
+    }
+    res.sendFile(filePath);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
