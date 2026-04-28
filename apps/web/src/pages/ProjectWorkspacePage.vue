@@ -240,11 +240,11 @@
                   <ProjectCompositionPreview
                     ref="previewPlayerRef"
                     compact
-                    :clips="activePreviewClips"
-                    :project-time="currentPreviewTime"
-                    :duration="currentPreviewDuration"
-                    :display-time="currentPreviewTime"
-                    :display-duration="currentPreviewDuration"
+                    :clips="compositionPreviewClips"
+                    :project-time="compositionPreviewDisplayTime"
+                    :duration="compositionPreviewDuration"
+                    :display-time="compositionPreviewDisplayTime"
+                    :display-duration="compositionPreviewDuration"
                     :empty-label="isLiveSlicingMode ? '先让右侧 Agent 生成切片，或在字幕里手动框选后新建切片。' : '当前项目时间线上还没有可预览的成片片段。'"
                     @project-time-update="handlePreviewProjectTimeUpdate"
                     @clip-change="handlePreviewClipChange"
@@ -284,7 +284,16 @@
               @select-slice="handleSliceChipSelect"
               @seek-to="handleProjectSeek"
             />
-            <TimelineStrip class="project-timeline-strip" />
+            <TimelineStrip
+              class="project-timeline-strip"
+              :words="overviewTimelineWords"
+              :gaps="overviewTimelineGaps"
+              :deleted-words="overviewTimelineDeletedWords"
+              :deleted-gaps="overviewTimelineDeletedGaps"
+              :current-time="overviewTimelineCurrentTime"
+              :duration="overviewTimelineDuration"
+              @seek-to="handleOverviewTimelineSeek"
+            />
             <div class="editor-status-bar">
               <div class="status-left">
                 <div class="status-item">
@@ -299,7 +308,7 @@
                   <span>已删: {{ deletedWordCount }}字 + {{ formatDuration(deletedGapDuration) }}停顿</span>
                 </div>
                 <div class="status-item">
-                  <span>预览时间: {{ formatDuration(currentPreviewTime || 0) }} / {{ formatDuration(currentPreviewDuration || 0) }}</span>
+                  <span>预览时间: {{ formatDuration(compositionPreviewDisplayTime || 0) }} / {{ formatDuration(compositionPreviewDuration || 0) }}</span>
                 </div>
               </div>
             </div>
@@ -498,6 +507,7 @@ const savingSnapshot = ref(false);
 const exportMenuOpen = ref(false);
 const autosaveTimer = ref(null);
 const previewPlayerRef = ref(null);
+const compositionPreviewTime = ref(0);
 const subtitlePanelRef = ref(null);
 const projectUploadInputRef = ref(null);
 const uploadingProjectAssets = ref(false);
@@ -763,10 +773,31 @@ const selectedSliceDisplayRanges = computed(() => (
     : []
 ));
 const isSliceTimelineDisplay = computed(() => selectedSliceDisplayRanges.value.length > 0);
+const allCurrentSliceRanges = computed(() => (
+  projectSlices.value.flatMap((slice, sliceIndex) => (
+    sliceRangesFromTimelineItem(getHydratedSliceTimeline(slice)).map((range, rangeIndex) => ({
+      ...range,
+      slice_id: slice.id,
+      slice_index: sliceIndex,
+      slice_range_index: rangeIndex
+    }))
+  ))
+));
+const allCurrentSliceDisplayRanges = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceRanges.value.length
+    ? normalizeSliceDisplayRanges(allCurrentSliceRanges.value, { merge: false })
+    : []
+));
 const selectedSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(selectedSliceRanges.value));
+const allCurrentSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(allCurrentSliceRanges.value));
 const activePreviewClips = computed(() => (
   isLiveSlicingMode.value && selectedSlicePreviewClips.value.length
     ? selectedSlicePreviewClips.value
+    : projectPreviewClips.value
+));
+const compositionPreviewClips = computed(() => (
+  isLiveSlicingMode.value && allCurrentSlicePreviewClips.value.length
+    ? allCurrentSlicePreviewClips.value
     : projectPreviewClips.value
 ));
 const currentPreviewDuration = computed(() => Number(activePreviewClips.value[activePreviewClips.value.length - 1]?.project_end || 0));
@@ -774,6 +805,43 @@ const currentPreviewTime = computed(() => (
   isSliceTimelineDisplay.value
     ? Number(editorStore.currentTime || 0)
     : originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value)
+));
+const compositionPreviewDuration = computed(() => Number(compositionPreviewClips.value[compositionPreviewClips.value.length - 1]?.project_end || 0));
+const compositionPreviewDisplayTime = computed(() => (
+  isLiveSlicingMode.value ? Number(compositionPreviewTime.value || 0) : currentPreviewTime.value
+));
+const allCurrentSliceWordStream = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? remapWordsToSliceDisplayTimeline(buildMergedProjectWords(), allCurrentSliceDisplayRanges.value)
+    : { words: [], duration: 0 }
+));
+const overviewTimelineWords = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? allCurrentSliceWordStream.value.words
+    : null
+));
+const overviewTimelineGaps = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? computeTimelineGaps(allCurrentSliceWordStream.value.words)
+    : null
+));
+const overviewTimelineDeletedWords = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? new Set(buildDeletedWordIndicesFromEditState(allCurrentSliceWordStream.value.words))
+    : null
+));
+const overviewTimelineDeletedGaps = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? new Set(buildDeletedGapIndicesFromEditState(allCurrentSliceWordStream.value.words))
+    : null
+));
+const overviewTimelineCurrentTime = computed(() => (
+  isLiveSlicingMode.value ? compositionPreviewDisplayTime.value : null
+));
+const overviewTimelineDuration = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? allCurrentSliceWordStream.value.duration
+    : null
 ));
 const activeExportTimelineId = computed(() => (isLiveSlicingMode.value ? String(selectedSliceId.value || '').trim() : ''));
 const activeExportTargetLabel = computed(() => {
@@ -789,7 +857,7 @@ const documentTriggerLabel = computed(() => (
 
 const previewLabel = computed(() => {
   const clip = activePreviewClip.value
-    || activePreviewClips.value[findPreviewClipIndexForProjectTime(Number(currentPreviewTime.value || 0), activePreviewClips.value)]
+    || compositionPreviewClips.value[findPreviewClipIndexForProjectTime(Number(compositionPreviewDisplayTime.value || 0), compositionPreviewClips.value)]
     || null;
   if (!clip) return '当前项目没有可预览的成片片段';
   return `${clip.asset_title} · ${formatDuration(clip.source_start)} - ${formatDuration(clip.source_end)}`;
@@ -1259,19 +1327,50 @@ function previewTimeToOriginalProjectTime(previewTime, clips = activePreviewClip
   return roundTime(Number(clips[clips.length - 1]?.original_project_end || 0));
 }
 
+function mapSelectedSliceDisplayToCompositionPreviewTime(displayTime) {
+  const originalTime = mapSliceDisplayTimeToOriginal(displayTime, selectedSliceDisplayRanges.value);
+  if (!allCurrentSliceDisplayRanges.value.length) {
+    return roundTime(originalTime);
+  }
+
+  const selectedId = String(selectedSliceId.value || '');
+  const selectedRanges = allCurrentSliceDisplayRanges.value.filter((range) => String(range.slice_id || '') === selectedId);
+  for (const range of selectedRanges) {
+    const start = Number(range.start || 0);
+    const end = Number(range.end || start);
+    if (originalTime >= start && originalTime <= end) {
+      return roundTime(Number(range.display_start || 0) + Math.max(0, originalTime - start));
+    }
+  }
+
+  return mapOriginalTimeToSliceDisplay(originalTime, allCurrentSliceDisplayRanges.value);
+}
+
 function isPreviewPlaybackActive() {
   return Boolean(previewPlaying.value || previewPlayerRef.value?.isPlaybackActive?.());
 }
 
 function syncPreviewToCurrentTime({ preservePlayback = isPreviewPlaybackActive() } = {}) {
-  if (!activePreviewClips.value.length) {
+  if (!compositionPreviewClips.value.length) {
     activePreviewClip.value = null;
+    compositionPreviewTime.value = 0;
     previewPlayerRef.value?.pausePlayback?.();
+    return;
+  }
+  if (isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length) {
+    const nextTime = clamp(
+      mapSelectedSliceDisplayToCompositionPreviewTime(Number(editorStore.currentTime || 0)),
+      0,
+      Number(compositionPreviewDuration.value || 0)
+    );
+    compositionPreviewTime.value = nextTime;
+    seekPreviewToProjectTime(nextTime, preservePlayback);
     return;
   }
   const currentTime = isSliceTimelineDisplay.value
     ? Number(editorStore.currentTime || 0)
     : originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value);
+  compositionPreviewTime.value = currentTime;
   seekPreviewToProjectTime(currentTime, preservePlayback);
 }
 
@@ -1298,6 +1397,15 @@ function sliceRangesFromTimelineItem(timelineItem) {
       end: Number(clip.original_project_end || clip.timeline_end || 0)
     }))
     .filter((range) => Number(range.end || 0) - Number(range.start || 0) > 0.05);
+}
+
+function getHydratedSliceTimeline(slice) {
+  const sliceId = String(slice?.id || '').trim();
+  if (!sliceId) return slice;
+  if (selectedSliceDetail.value?.id === sliceId) {
+    return selectedSliceDetail.value;
+  }
+  return sliceDocumentCache.value[sliceId] || slice;
 }
 
 function getCachedSliceDetail(sliceId) {
@@ -1329,13 +1437,13 @@ async function ensureProjectAssetWordsLoaded(assetIds = [], { force = false } = 
   assetWordsMap.value = next;
 }
 
-function buildProjectWordStream() {
+function buildMergedProjectWords() {
   const merged = [];
   const sliceDescriptors = projectSlices.value.map((slice) => ({
     id: slice.id,
     title: slice.title || slice.name || '未命名切片',
     color: slice.color || '#4cc2ff',
-    ranges: sliceRangesFromTimelineItem(slice)
+    ranges: sliceRangesFromTimelineItem(getHydratedSliceTimeline(slice))
   }));
 
   for (const range of baselineAssetRanges.value) {
@@ -1402,6 +1510,12 @@ function buildProjectWordStream() {
     }
   }
 
+  return merged;
+}
+
+function buildProjectWordStream() {
+  const merged = buildMergedProjectWords();
+
   if (isSliceTimelineDisplay.value) {
     return remapWordsToSliceDisplayTimeline(merged, selectedSliceDisplayRanges.value);
   }
@@ -1462,6 +1576,30 @@ function buildPreviewClipsFromRanges(ranges = []) {
   }
 
   return merged;
+}
+
+function computeTimelineGaps(words = []) {
+  const detected = [];
+  const threshold = Number(editorStore.config?.gapThreshold || 0.5);
+  const streamWords = Array.isArray(words) ? words : [];
+  for (let index = 0; index < streamWords.length - 1; index += 1) {
+    const current = streamWords[index];
+    const next = streamWords[index + 1];
+    const start = Number(current?.end_time || 0);
+    const end = Number(next?.start_time || start);
+    const duration = end - start;
+    if (duration >= threshold) {
+      detected.push({
+        index,
+        start,
+        end,
+        duration,
+        afterWord: index,
+        beforeWord: index + 1
+      });
+    }
+  }
+  return detected;
 }
 
 function buildDeletedWordIndicesFromEditState(streamWords = []) {
@@ -2523,13 +2661,24 @@ async function reloadTimeline() {
 
 function handleProjectSeek(projectTime) {
   editorStore.setCurrentTime(projectTime);
-  seekPreviewToProjectTime(
-    isSliceTimelineDisplay.value ? Number(projectTime || 0) : originalProjectTimeToPreviewTime(projectTime, activePreviewClips.value),
-    false
-  );
+  syncPreviewToCurrentTime({ preservePlayback: false });
+}
+
+function handleOverviewTimelineSeek(projectTime) {
+  if (!isLiveSlicingMode.value) {
+    handleProjectSeek(projectTime);
+    return;
+  }
+  const nextTime = clamp(Number(projectTime || 0), 0, Number(compositionPreviewDuration.value || 0));
+  compositionPreviewTime.value = nextTime;
+  seekPreviewToProjectTime(nextTime, false);
 }
 
 function handlePreviewProjectTimeUpdate(projectTime) {
+  if (isLiveSlicingMode.value) {
+    compositionPreviewTime.value = clamp(Number(projectTime || 0), 0, Number(compositionPreviewDuration.value || 0));
+    return;
+  }
   editorStore.setCurrentTime(isSliceTimelineDisplay.value
     ? Number(projectTime || 0)
     : previewTimeToOriginalProjectTime(projectTime, activePreviewClips.value)
@@ -3235,10 +3384,18 @@ watch(latestCompletedVideoExportJob, (job) => {
   syncLatestCompletedVideoExport(job);
 }, { immediate: true });
 
-watch(activePreviewClips, (clips) => {
+watch(compositionPreviewClips, (clips) => {
   if (!clips.length) {
     activePreviewClip.value = null;
+    compositionPreviewTime.value = 0;
     return;
+  }
+  if (isLiveSlicingMode.value) {
+    compositionPreviewTime.value = clamp(
+      Number(compositionPreviewTime.value || 0),
+      0,
+      Number(compositionPreviewDuration.value || 0)
+    );
   }
   nextTick(() => {
     syncPreviewToCurrentTime();
@@ -3249,6 +3406,9 @@ watch(workspaceMode, async (mode) => {
   if (mode === 'live_slicing' && !selectedSliceId.value && projectSlices.value.length) {
     await selectSlice(projectSlices.value[0].id, { jumpToSliceStart: false });
     return;
+  }
+  if (mode === 'live_slicing' && projectSlices.value.length) {
+    preloadSliceDetails(projectSlices.value.map((slice) => slice.id));
   }
   syncEditorWithProjectTimeline({
     currentTime: mode === 'live_slicing' && selectedSliceId.value ? 0 : undefined
@@ -3265,6 +3425,7 @@ watch(projectSlices, (slices) => {
   }
   if (selectedSliceId.value && slices.some((slice) => slice.id === selectedSliceId.value)) {
     if (isLiveSlicingMode.value) {
+      preloadSliceDetails(slices.map((slice) => slice.id));
       syncEditorWithProjectTimeline();
     }
     return;

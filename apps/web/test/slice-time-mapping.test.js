@@ -39,3 +39,25 @@ test('slice word stream only keeps words inside selected slice ranges', () => {
   ]);
   assert.equal(result.words.every((word) => word.slice_display), true);
 });
+
+test('all-slice display ranges preserve separate slice order and metadata', () => {
+  const ranges = normalizeSliceDisplayRanges([
+    { slice_id: 'slice-1', start: 10, end: 20 },
+    { slice_id: 'slice-2', start: 15, end: 25 },
+    { slice_id: 'slice-3', start: 40, end: 45 },
+    { slice_id: 'slice-4', start: 30, end: 35 }
+  ], { merge: false });
+
+  assert.deepEqual(ranges.map((range) => [
+    range.slice_id,
+    range.start,
+    range.end,
+    range.display_start,
+    range.display_end
+  ]), [
+    ['slice-1', 10, 20, 0, 10],
+    ['slice-2', 15, 25, 10, 20],
+    ['slice-3', 40, 45, 20, 25],
+    ['slice-4', 30, 35, 25, 30]
+  ]);
+});

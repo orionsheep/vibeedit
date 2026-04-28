@@ -1,12 +1,14 @@
 import { mergeRanges, roundTime } from './rangeMath.js';
 
-export function normalizeSliceDisplayRanges(ranges = []) {
+export function normalizeSliceDisplayRanges(ranges = [], { merge = true } = {}) {
   let cursor = 0;
-  return mergeRanges(ranges).map((range) => {
+  const sourceRanges = merge ? mergeRanges(ranges) : (Array.isArray(ranges) ? ranges : []);
+  return sourceRanges.map((range) => {
     const start = roundTime(Number(range.start || 0));
     const end = roundTime(Number(range.end || start));
     const duration = Math.max(0, end - start);
     const mapped = {
+      ...range,
       start,
       end,
       display_start: roundTime(cursor),

@@ -24,26 +24,26 @@
         <canvas ref="waveformCanvas" class="waveform-canvas"></canvas>
         <!-- Render gaps -->
         <div
-          v-for="gap in gaps"
+          v-for="gap in renderGaps"
           :key="'gap-' + gap.index"
           class="timeline-gap"
-          :class="{ deleted: deletedGaps.has(gap.index) }"
+          :class="{ deleted: renderDeletedGaps.has(gap.index) }"
           :style="{
-            left: (gap.start / duration * 100) + '%',
-            width: Math.max(0.3, ((gap.end - gap.start) / duration * 100)) + '%'
+            left: (gap.start / safeDuration * 100) + '%',
+            width: Math.max(0.3, ((gap.end - gap.start) / safeDuration * 100)) + '%'
           }"
           :title="`间隙 ${formatTime(gap.duration)}`"
           @click.stop="handleGapClick(gap)"
         ></div>
         <!-- Render words -->
         <div
-          v-for="(word, index) in words"
+          v-for="(word, index) in renderWords"
           :key="'word-' + index"
           class="timeline-word"
-          :class="{ deleted: deletedWords.has(index) }"
+          :class="{ deleted: renderDeletedWords.has(index) }"
           :style="{
-            left: (word.start_time / duration * 100) + '%',
-            width: Math.max(0.5, ((word.end_time - word.start_time) / duration * 100)) + '%'
+            left: (word.start_time / safeDuration * 100) + '%',
+            width: Math.max(0.5, ((word.end_time - word.start_time) / safeDuration * 100)) + '%'
           }"
           :title="word.text"
           @click.stop="handleWordClick(word)"
@@ -51,7 +51,7 @@
         <!-- Timeline cursor -->
         <div
           class="timeline-cursor"
-          :style="{ left: (currentTime / duration * 100) + '%' }"
+          :style="{ left: (renderCurrentTime / safeDuration * 100) + '%' }"
         ></div>
       </div>
     </div>
@@ -63,6 +63,35 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useEditorStore } from '../stores/editorStore';
 
+const props = defineProps({
+  words: {
+    type: Array,
+    default: null
+  },
+  gaps: {
+    type: Array,
+    default: null
+  },
+  deletedWords: {
+    type: [Object, Set],
+    default: null
+  },
+  deletedGaps: {
+    type: [Object, Set],
+    default: null
+  },
+  currentTime: {
+    type: Number,
+    default: null
+  },
+  duration: {
+    type: Number,
+    default: null
+  }
+});
+
+const emit = defineEmits(['seekTo']);
+
 const editorStore = useEditorStore();
 const { words, gaps, deletedWords, deletedGaps, currentTime, duration, editedCurrentTime, editedDuration } = storeToRefs(editorStore);
 
@@ -71,7 +100,28 @@ const waveformCanvas = ref(null);
 const zoomLevel = ref(1);
 
 // Computed
+const isControlled = computed(() => Array.isArray(props.words));
+const renderWords = computed(() => (Array.isArray(props.words) ? props.words : words.value));
+const renderGaps = computed(() => (Array.isArray(props.gaps) ? props.gaps : gaps.value));
+const renderDeletedWords = computed(() => (props.deletedWords instanceof Set ? props.deletedWords : deletedWords.value));
+const renderDeletedGaps = computed(() => (props.deletedGaps instanceof Set ? props.deletedGaps : deletedGaps.value));
+const renderDuration = computed(() => {
+  if (props.duration !== null && Number.isFinite(Number(props.duration))) {
+    return Math.max(0, Number(props.duration));
+  }
+  return Number(duration.value || 0);
+});
+const safeDuration = computed(() => Math.max(0.001, renderDuration.value));
+const renderCurrentTime = computed(() => {
+  if (props.currentTime !== null && Number.isFinite(Number(props.currentTime))) {
+    return Math.max(0, Math.min(Number(props.currentTime), renderDuration.value || 0));
+  }
+  return Number(currentTime.value || 0);
+});
 const timeDisplay = computed(() => {
+  if (isControlled.value) {
+    return `${formatTime(renderCurrentTime.value)} / ${formatTime(renderDuration.value)}`;
+  }
   return `${formatTime(editedCurrentTime.value)} / ${formatTime(editedDuration.value)}`;
 });
 
@@ -90,21 +140,33 @@ function handleZoomChange(event) {
 function handleTrackClick(event) {
   const rect = trackRef.value.getBoundingClientRect();
   const percent = (event.clientX - rect.left) / rect.width;
-  const time = percent * duration.value;
+  const time = percent * renderDuration.value;
+  if (isControlled.value) {
+    emit('seekTo', time);
+    return;
+  }
   editorStore.setCurrentTime(time);
 }
 
 function handleGapClick(gap) {
+  if (isControlled.value) {
+    emit('seekTo', gap.start);
+    return;
+  }
   editorStore.setCurrentTime(gap.start);
 }
 
 function handleWordClick(word) {
+  if (isControlled.value) {
+    emit('seekTo', word.start_time);
+    return;
+  }
   editorStore.setCurrentTime(word.start_time);
 }
 
 // Render waveform
 function renderWaveform() {
-  if (!waveformCanvas.value || !duration.value || words.value.length === 0) return;
+  if (!waveformCanvas.value || !renderDuration.value || renderWords.value.length === 0) return;
 
   const canvas = waveformCanvas.value;
   const ctx = canvas.getContext('2d');
@@ -139,13 +201,13 @@ function renderWaveform() {
   const bars = Math.floor(width / barWidth);
 
   for (let i = 0; i < bars; i++) {
-    const t = (i / bars) * duration.value;
+    const t = (i / bars) * renderDuration.value;
     // Simulate amplitude based on word density
     let amplitude = 0.2 + Math.random() * 0.3;
 
     // Find if there's a word at this time
-    const word = words.value.find(w => Math.abs((w.start_time + w.end_time) / 2 - t) < 0.5);
-    if (word && !deletedWords.value.has(words.value.indexOf(word))) {
+    const word = renderWords.value.find(w => Math.abs((w.start_time + w.end_time) / 2 - t) < 0.5);
+    if (word && !renderDeletedWords.value.has(renderWords.value.indexOf(word))) {
       amplitude = 0.6 + Math.random() * 0.3;
     }
 
@@ -160,7 +222,7 @@ function renderWaveform() {
 }
 
 // Watch for changes and re-render
-watch([duration, words, deletedWords], () => {
+watch([renderDuration, renderWords, renderDeletedWords], () => {
   nextTick(() => {
     renderWaveform();
   });
