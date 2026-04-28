@@ -32,3 +32,39 @@ test('read-only transcript request does not require mutation', () => {
   assert.equal(result.explicitReadOnlyProjectQuery, true);
   assert.equal(result.requiresMutation, false);
 });
+
+test('generic recut feedback stays in assemble mode', () => {
+  const result = classifyProjectAgentRequest({
+    mode: 'assemble_script',
+    prompt: '我觉得这个切的不够好，重新切一下'
+  });
+
+  assert.equal(result.effectiveMode, 'assemble_script');
+  assert.equal(result.requiresToolUse, true);
+  assert.equal(result.requiresMutation, true);
+});
+
+test('generic recut feedback in live slicing mode routes to assemble timeline recut', () => {
+  const result = classifyProjectAgentRequest({
+    mode: 'live_slicing',
+    prompt: '我觉得这个切的不够好，重新切一下',
+    targetMinutes: 1.5
+  });
+
+  assert.equal(result.effectiveMode, 'assemble_script');
+  assert.equal(result.routingReason, 'generic_recut_current_timeline');
+  assert.equal(result.genericRecutFeedback, true);
+  assert.equal(result.requiresMutation, true);
+});
+
+test('explicit live slicing request remains in live slicing mode', () => {
+  const result = classifyProjectAgentRequest({
+    mode: 'live_slicing',
+    prompt: '先分析全文，给我 4 个候选切片，每条控制在 30-50 秒。',
+    targetMinutes: 1.5
+  });
+
+  assert.equal(result.effectiveMode, 'live_slicing');
+  assert.equal(result.liveSlicingIntent, true);
+  assert.equal(result.requiresToolUse, true);
+});

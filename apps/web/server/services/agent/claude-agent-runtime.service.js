@@ -367,6 +367,21 @@ function buildAssembleRecoveryReply(appliedChanges = [], recoveryReason = '') {
   ].join('\n');
 }
 
+function isContradictoryAssembleReply(text = '', appliedChanges = []) {
+  if (!appliedChanges.some(isTimelineEditingChange)) return false;
+  const content = String(text || '').trim();
+  if (!content) return false;
+  const normalized = content.toLowerCase();
+  return (
+    /(mcp|工具).{0,12}(不可用|无法使用|无法调用|持续不可用|失败)/i.test(content) ||
+    /(不可用|无法使用|无法调用|持续不可用|失败).{0,12}(mcp|工具)/i.test(content) ||
+    normalized.includes('tool unavailable') ||
+    content.includes('待MCP恢复') ||
+    content.includes('待 MCP 恢复') ||
+    content.includes('待工具恢复')
+  );
+}
+
 function didChangeApply(change = {}) {
   return change?.success !== false && change?.changed !== false;
 }
@@ -654,7 +669,8 @@ async function runAutomaticAssembleMutationFallback({
     sentence_limit: 14,
     pause_limit: 12,
     min_pause_seconds: 0.35,
-    max_passes: 2
+    max_passes: 1,
+    take_window_limit: 360
   };
   await emitDirectToolLifecycle(emit, 'auto_assemble_script', assembleArgs);
   const assembleResult = await executeProjectAgentToolDirect(projectId, 'auto_assemble_script', assembleArgs, toolContext);
@@ -787,8 +803,8 @@ export async function runClaudeAgentSession({
     const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
     const configuredInactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 0);
     const inactivityTimeoutMs = normalizedMode === 'assemble_script'
-      ? Math.max(configuredInactivityTimeoutMs || 45000, 90000)
-      : Number(configuredInactivityTimeoutMs || 20000);
+      ? Math.max(configuredInactivityTimeoutMs || 90000, 90000)
+      : Number(configuredInactivityTimeoutMs || 90000);
     const assembleReviewReserveMs = normalizedMode === 'assemble_script'
       ? getAssembleReviewReserveMs(timeoutMs, config)
       : 0;
@@ -1243,6 +1259,12 @@ export async function runClaudeAgentSession({
             reviewResult = buildAssembleReviewResult(finalResultText, {
               synthesized: true,
               recoveryReason: 'incomplete-final-review'
+            });
+          } else if (isContradictoryAssembleReply(finalResultText, appliedChanges)) {
+            finalResultText = buildAssembleRecoveryReply(appliedChanges, '模型最终回复与工具执行记录矛盾');
+            reviewResult = buildAssembleReviewResult(finalResultText, {
+              synthesized: true,
+              recoveryReason: 'contradictory-tool-availability-review'
             });
           }
         }

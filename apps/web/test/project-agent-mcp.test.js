@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TOOL_DEFINITIONS } from '../server/services/agent/claude-agent-mcp.service.js';
+import { resolveGlmClaudeKeys } from '../server/services/agent/glm-claude-rotation.service.js';
 
 test('project agent exposes deterministic all-pause cleanup tool', () => {
   assert.ok(TOOL_DEFINITIONS.remove_all_pauses);
@@ -26,5 +27,22 @@ test('project agent exposes multi-asset script map reader', () => {
   assert.match(
     String(TOOL_DEFINITIONS.get_asset_script_map.description || ''),
     /多素材口播拼稿/
+  );
+});
+
+test('project agent prefers dedicated SiliconFlow keys over shared ASR key', () => {
+  assert.deepEqual(
+    resolveGlmClaudeKeys({
+      agent_llm_siliconflow_keys: ['agent-key'],
+      siliconflow_api_key: 'shared-asr-key'
+    }, 'env-key'),
+    ['agent-key']
+  );
+  assert.deepEqual(
+    resolveGlmClaudeKeys({
+      agent_llm_siliconflow_keys: [],
+      siliconflow_api_key: 'shared-asr-key'
+    }, 'env-key'),
+    ['shared-asr-key', 'env-key']
   );
 });

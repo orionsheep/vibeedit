@@ -538,9 +538,12 @@ function buildProjectTakeWindows(sentences = [], options = {}) {
   const minLength = Number(options.minLength || 3);
   const maxLength = Number(options.maxLength || 12);
   const maxDuration = Number(options.maxDuration || 75);
+  const maxWindows = Math.max(50, Math.min(1000, Number(options.maxWindows || 360)));
+  const estimatedWindows = sentences.length * Math.max(1, maxLength - minLength + 1);
+  const startStride = Math.max(1, Math.ceil(estimatedWindows / maxWindows));
   const windows = [];
 
-  for (let start = 0; start < sentences.length; start += 1) {
+  for (let start = 0; start < sentences.length && windows.length < maxWindows; start += startStride) {
     const baseAssetId = sentences[start]?.asset_id || '';
     let text = '';
 
@@ -591,6 +594,7 @@ function buildProjectTakeWindows(sentences = [], options = {}) {
         }, 0),
         filler_hits: countFillerPhraseHits(text)
       });
+      if (windows.length >= maxWindows) break;
     }
   }
 
@@ -671,8 +675,10 @@ function collapseDuplicateTakeCluster(cluster = [], sentences = []) {
     .filter(Boolean);
 }
 
-function buildDuplicateTakeClustersFromSentences(sentences = []) {
-  const windows = buildProjectTakeWindows(sentences);
+function buildDuplicateTakeClustersFromSentences(sentences = [], options = {}) {
+  const windows = buildProjectTakeWindows(sentences, {
+    maxWindows: options.maxWindows
+  });
   const rawClusters = buildDuplicateClusters(windows, (left, right) => areLikelyDuplicateTakeBlocks(left, right));
   const seen = new Set();
   const clusters = [];
@@ -2046,6 +2052,7 @@ export async function toolGetAssembleCandidates(
   const activeWords = buildActiveWordsWithOriginalIndices(state);
   const activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
   const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+  const useLongProjectFastScan = activeWords.length > 12000 || activeSentences.length > 800 || scriptBlocks.length > 260;
   const sentenceOrderMap = new Map(activeSentences.map((sentence, index) => [String(sentence.id || '').trim(), index + 1]));
   const blockOrderMap = new Map(scriptBlocks.map((block, index) => [String(block.id || '').trim(), index + 1]));
   const pauseCandidates = buildPauseCandidates(state, {
@@ -2053,7 +2060,7 @@ export async function toolGetAssembleCandidates(
     limit: Math.max(1, Number(pauseLimit || 12))
   });
 
-  const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
+  const rawTakeGroups = (useLongProjectFastScan ? [] : buildDuplicateTakeClustersFromSentences(activeSentences))
     .map((cluster, index) => ({
       id: `take_group_${index + 1}`,
       versions: cluster.map((version) => mapAssembleCandidateVersion(version, {
@@ -2065,7 +2072,7 @@ export async function toolGetAssembleCandidates(
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(takeLimit || 12)));
 
-  const rawBlockGroups = buildDuplicateBlockClusters(scriptBlocks)
+  const rawBlockGroups = (useLongProjectFastScan ? [] : buildDuplicateBlockClusters(scriptBlocks))
     .map((cluster, index) => ({
       id: `block_group_${index + 1}`,
       versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version, {
@@ -2077,7 +2084,7 @@ export async function toolGetAssembleCandidates(
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(blockLimit || 10)));
 
-  const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
+  const rawSentenceGroups = (useLongProjectFastScan ? [] : buildDuplicateSentenceClusters(activeSentences))
     .map((cluster, index) => ({
       id: `sentence_group_${index + 1}`,
       versions: cluster.map((version) => mapAssembleCandidateVersion(version, {
@@ -2099,6 +2106,7 @@ export async function toolGetAssembleCandidates(
     success: true,
     change: 'get_assemble_candidates',
     summary: `识别到 ${rawTakeGroups.length} 组重复 take 候选、${rawBlockGroups.length} 组重复段落候选、${rawSentenceGroups.length} 组重复句候选、${restartCandidates.length} 个起手重说碎片候选、${pauseCandidates.length} 个明显停顿候选（其中 ${pauseCandidates.filter((candidate) => candidate.recommended).length} 个推荐优先处理）。`,
+    long_project_fast_scan: useLongProjectFastScan,
     script_block_count: scriptBlocks.length,
     take_group_count: rawTakeGroups.length,
     block_group_count: rawBlockGroups.length,
@@ -2143,7 +2151,8 @@ export async function toolAutoAssembleScript(
     sentence_limit: sentenceLimit = 14,
     pause_limit: pauseLimit = 12,
     min_pause_seconds: minPauseSeconds = 0.35,
-    max_passes: maxPasses = 2
+    max_passes: maxPasses = 2,
+    take_window_limit: takeWindowLimit = 360
   } = {},
   context = {}
 ) {
@@ -2240,8 +2249,11 @@ export async function toolAutoAssembleScript(
     activeWords = buildActiveWordsWithOriginalIndices(state);
     activeSentences = buildProjectSentenceUnits(activeWords, 0.65);
     const scriptBlocks = buildProjectScriptBlocks(activeSentences);
+    const useLongProjectFastScan = activeWords.length > 12000 || activeSentences.length > 800 || scriptBlocks.length > 260;
     await yieldToEventLoop();
-    const rawTakeGroups = buildDuplicateTakeClustersFromSentences(activeSentences)
+    const rawTakeGroups = (useLongProjectFastScan ? [] : buildDuplicateTakeClustersFromSentences(activeSentences, {
+      maxWindows: takeWindowLimit
+    }))
       .map((cluster, index) => ({
         id: `take_group_${index + 1}`,
         versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
@@ -2250,7 +2262,7 @@ export async function toolAutoAssembleScript(
       .filter((group) => group.versions.length > 1)
       .sort((left, right) => right.score - left.score)
       .slice(0, Math.max(1, Number(takeLimit || 12)));
-    const rawBlockGroups = buildDuplicateBlockClusters(scriptBlocks)
+    const rawBlockGroups = (useLongProjectFastScan ? [] : buildDuplicateBlockClusters(scriptBlocks))
       .map((cluster, index) => ({
         id: `block_group_${index + 1}`,
         versions: cluster.map((version) => mapAssembleCandidateBlockVersion(version)),
@@ -2259,7 +2271,7 @@ export async function toolAutoAssembleScript(
       .filter((group) => group.versions.length > 1)
       .sort((left, right) => right.score - left.score)
       .slice(0, Math.max(1, Number(blockLimit || 10)));
-    const rawSentenceGroups = buildDuplicateSentenceClusters(activeSentences)
+    const rawSentenceGroups = (useLongProjectFastScan ? [] : buildDuplicateSentenceClusters(activeSentences))
       .map((cluster, index) => ({
         id: `sentence_group_${index + 1}`,
         versions: cluster.map((version) => mapAssembleCandidateVersion(version)),
@@ -2283,7 +2295,8 @@ export async function toolAutoAssembleScript(
         block_group_count: rawBlockGroups.length,
         sentence_group_count: rawSentenceGroups.length,
         restart_fragment_count: restartCandidates.length,
-        pause_candidate_count: pauseCandidates.length
+        pause_candidate_count: pauseCandidates.length,
+        long_project_fast_scan: useLongProjectFastScan
       }
     );
     const plan = planConservativeAssemblePass({
@@ -2395,6 +2408,7 @@ export async function toolAutoAssembleScript(
         pause_limit: pauseLimit,
         min_pause_seconds: minPauseSeconds,
         max_passes: maxPasses,
+        take_window_limit: takeWindowLimit,
         removed_leading_filler_words: removedLeadingFillerWords,
         removed_standalone_filler_words: removedStandaloneFillerWords,
         removed_restart_prefix_words: removedRestartPrefixWords,

@@ -749,6 +749,8 @@ const processingAssetIds = computed(() => orderedProjectAssets.value
 
 const ASSET_JOB_POLL_MIN_MS = 1800;
 const ASSET_JOB_POLL_MAX_MS = 7200;
+const GENERIC_RECUT_FEEDBACK_PATTERN = /(重剪|重切|重新剪|重新切|再剪一版|再切一版|切(?:得|的)?不够好|剪(?:得|的)?不够好|切一下|剪一下)/i;
+const EXPLICIT_LIVE_SLICING_PATTERN = /(直播切片|切片|切几条|拆条|短视频|短片|片段|高光|高能|选段|截取几段|拆成.*视频|多个视频|多条视频|候选切片)/i;
 
 const timelineDirty = computed(() => captureEditorSignature() !== editorBaselineSignature.value);
 const totalWords = computed(() => editorStore.totalWords);
@@ -922,6 +924,18 @@ const agentPlaceholder = computed(() => {
   if (agentMode.value === 'live_slicing') return '例如：先分析全文，给我 4 个适合发短视频的平台切片候选，每条控制在 30-50 秒。';
   return '输入你对整个项目时间线的要求。';
 });
+
+function resolveAgentModeForPrompt(message = '') {
+  const text = `${String(message || '').trim()} ${String(topic.value || '').trim()}`.trim();
+  if (
+    agentMode.value === 'live_slicing' &&
+    GENERIC_RECUT_FEEDBACK_PATTERN.test(text) &&
+    !EXPLICIT_LIVE_SLICING_PATTERN.test(text)
+  ) {
+    return 'assemble_script';
+  }
+  return agentMode.value;
+}
 
 function formatDateTime(value) {
   if (!value) return '刚刚';
@@ -2465,6 +2479,11 @@ async function runAgent() {
     return;
   }
   const userMessage = agentPrompt.value.trim() || `执行 ${agentActionLabel.value}`;
+  const submittedAgentMode = resolveAgentModeForPrompt(userMessage);
+  if (submittedAgentMode !== agentMode.value) {
+    agentMode.value = submittedAgentMode;
+    workspaceMode.value = submittedAgentMode;
+  }
   liveRunEvents.value = [];
   activeRunId.value = '';
   activeRunStatus.value = '准备执行';
@@ -2472,7 +2491,7 @@ async function runAgent() {
 
   try {
     const result = await runProjectAgentWithProgress(projectId.value, agentSession.value.id, {
-      mode: agentMode.value,
+      mode: submittedAgentMode,
       prompt: userMessage,
       topic: topic.value.trim(),
       target_minutes: Number(targetMinutes.value || 1.5)

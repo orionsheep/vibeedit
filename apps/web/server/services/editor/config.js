@@ -55,7 +55,7 @@ const DEFAULT_CONFIG = {
   agent_llm_siliconflow_base_url: 'https://api.siliconflow.cn/',
   agent_llm_key_health_ttl_ms: 300000,
   agent_llm_timeout_ms: 300000,
-  agent_llm_inactivity_timeout_ms: 45000,
+  agent_llm_inactivity_timeout_ms: 90000,
   ai_gap_threshold: 0.8,
   ai_highlight_target_ratio: 0.35,
   ai_highlight_min_seconds: 45,

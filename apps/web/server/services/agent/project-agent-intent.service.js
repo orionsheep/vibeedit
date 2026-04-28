@@ -1,6 +1,7 @@
 const SUPPORTED_PROJECT_AGENT_MODES = new Set(['custom', 'assemble_script', 'live_slicing']);
 
-const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏)/i;
+const ASSEMBLE_SCRIPT_INTENT_PATTERN = /(口播|拼稿|讲稿|录了几遍|重复\s*take|重复录|重复版本|整理口播|剪(?:辑)?一下口播|剪口播|精简口播|去重|口头禅|停顿|间隙|空白|压紧节奏|重剪|重切|重新剪|重新切|再剪一版|再切一版|切(?:得|的)?不够好|剪(?:得|的)?不够好|切一下|剪一下)/i;
+const GENERIC_RECUT_FEEDBACK_PATTERN = /(重剪|重切|重新剪|重新切|再剪一版|再切一版|切(?:得|的)?不够好|剪(?:得|的)?不够好|切一下|剪一下)/i;
 const LIVE_SLICING_INTENT_PATTERN = /(直播切片|切片|切几条|拆条|短视频|短片|片段|高光|高能|选段|截取几段|拆成.*视频|多个视频|多条视频|候选切片)/i;
 const PROJECT_REFERENCE_PATTERN = /(这个视频|这个项目|当前视频|当前项目|当前结果|当前版本|当前时间线|当前字幕|当前脚本|当前逐字稿|剪辑后|最终版本|最后版本|项目里|项目中|视频里|视频中|素材|时间线|字幕|脚本|逐字稿|文稿|台词|成片|片子|保留内容|删了什么|剩下什么)/i;
 const RESULT_REFERENCE_PATTERN = /(这个视频|这个项目|当前|最后|最终|剪辑后|成片|现在|保留|删了|剩下)/i;
@@ -39,6 +40,7 @@ export function classifyProjectAgentRequest({
     (hasProjectReference && PROJECT_READ_VERB_PATTERN.test(text) && !MUTATION_INTENT_PATTERN.test(text))
   );
   const assembleScriptIntent = ASSEMBLE_SCRIPT_INTENT_PATTERN.test(text);
+  const genericRecutFeedback = GENERIC_RECUT_FEEDBACK_PATTERN.test(text);
   const liveSlicingIntent = LIVE_SLICING_INTENT_PATTERN.test(text);
   const explicitMutationIntent = (
     Number(targetMinutes || 0) > 0 ||
@@ -48,7 +50,10 @@ export function classifyProjectAgentRequest({
   let effectiveMode = requestedMode;
   let routingReason = '';
 
-  if (requestedMode === 'assemble_script' && !assembleScriptIntent) {
+  if (requestedMode === 'live_slicing' && genericRecutFeedback && !liveSlicingIntent && !explicitReadOnlyProjectQuery) {
+    effectiveMode = 'assemble_script';
+    routingReason = 'generic_recut_current_timeline';
+  } else if (requestedMode === 'assemble_script' && !assembleScriptIntent) {
     effectiveMode = 'custom';
     routingReason = explicitReadOnlyProjectQuery
       ? 'read_only_project_query'
@@ -94,6 +99,7 @@ export function classifyProjectAgentRequest({
     text,
     hasProjectReference,
     assembleScriptIntent,
+    genericRecutFeedback,
     liveSlicingIntent,
     explicitReadOnlyProjectQuery,
     explicitMutationIntent,

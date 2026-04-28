@@ -418,10 +418,11 @@ export const TOOL_DEFINITIONS = {
       sentence_limit: z.number().optional(),
       pause_limit: z.number().optional(),
       min_pause_seconds: z.number().optional(),
-      max_passes: z.number().optional()
+      max_passes: z.number().optional(),
+      take_window_limit: z.number().optional()
     },
     mutatesProject: true,
-    execute: (projectId, args) => toolAutoAssembleScript(projectId, args)
+    execute: (projectId, args, context) => toolAutoAssembleScript(projectId, args, context)
   },
   get_pause_candidates: {
     description: '读取当前项目中仍然保留的明显停顿候选，适合在“删除停顿 / 压紧节奏 / 去掉间隙”前先定位具体 gap，再定点调用 remove_pauses。优先看带“推荐”标签的候选；如果用户明确要“一键去掉全部停顿”，改用 remove_all_pauses。',

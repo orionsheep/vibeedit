@@ -21,5 +21,7 @@
     "sk-..."
   ],
   "agent_llm_siliconflow_base_url": "https://api.siliconflow.cn/",
+  "agent_llm_timeout_ms": 300000,
+  "agent_llm_inactivity_timeout_ms": 90000,
   "claude_runtime_dir": "/absolute/path/to/project/.autoedit/claude-runtime"
 }

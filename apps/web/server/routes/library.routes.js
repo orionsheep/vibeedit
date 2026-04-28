@@ -10,9 +10,10 @@ import { getOwnedProjectById } from '../services/auth/auth.service.js';
 
 const router = express.Router();
 const { uploadsDir } = ensureWorkspaceDirs();
+const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024 * 1024;
 const upload = multer({
   dest: uploadsDir,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }
+  limits: { fileSize: MAX_UPLOAD_FILE_BYTES }
 });
 
 router.use(attachAuthContext);

@@ -296,6 +296,310 @@ async function finalizeDirectDocumentOpenRun({
   };
 }
 
+async function appendAndEmitAgentEvent(onEvent, event) {
+  const appended = await appendAgentEvent(event);
+  if (typeof onEvent === 'function') {
+    onEvent(appended);
+  }
+  return appended;
+}
+
+function buildRoutingMessage(requestProfile = {}) {
+  if (requestProfile.routingReason === 'assemble_script_intent') {
+    return '检测到口播剪辑意图，已自动切换到口播拼稿主链。';
+  }
+  if (requestProfile.routingReason === 'generic_recut_current_timeline') {
+    return '检测到这是对当前成片的重切反馈，已从切片模式切回口播拼稿主链。';
+  }
+  if (requestProfile.routingReason === 'live_slicing_intent') {
+    return '检测到直播切片意图，已自动切换到直播切片模式。';
+  }
+  if (requestProfile.routingReason === 'read_only_project_query') {
+    return '检测到当前请求是读取/分析型项目问题，已切换到自由指令只读模式，不会强行改时间线。';
+  }
+  if (requestProfile.routingReason === 'non_assemble_project_task') {
+    return '检测到当前请求不是口播拼稿，而是通用项目任务，已切换到自由指令模式处理。';
+  }
+  return '检测到当前请求不是剪辑改动任务，已切换到自由指令模式处理。';
+}
+
+function buildConservativeAssembleArgs() {
+  return {
+    take_limit: 12,
+    block_limit: 10,
+    sentence_limit: 14,
+    pause_limit: 12,
+    min_pause_seconds: 0.35,
+    max_passes: 1,
+    take_window_limit: 360
+  };
+}
+
+function isLongAssembleProjectContext(context = {}) {
+  const keptWordCount = Number(context.kept_word_count || context.total_word_count || 0);
+  const clipCount = Number(context.clip_count || 0);
+  const durationSeconds = Number(context.current_cut_duration_seconds || 0);
+  return keptWordCount >= 12000 || clipCount >= 300 || durationSeconds >= 1800;
+}
+
+function summarizeAssemblePlanInputs({ context = {}, assembleCandidates = null, pauseCandidates = null } = {}) {
+  const pauseList = Array.isArray(pauseCandidates?.candidates)
+    ? pauseCandidates.candidates
+    : Array.isArray(assembleCandidates?.pause_candidates)
+      ? assembleCandidates.pause_candidates
+      : [];
+  return {
+    project_name: String(context.project_name || '').trim(),
+    asset_count: Number(context.asset_count || 0),
+    clip_count: Number(context.clip_count || 0),
+    kept_word_count: Number(context.kept_word_count || 0),
+    total_word_count: Number(context.total_word_count || 0),
+    current_cut_duration_seconds: Number(context.current_cut_duration_seconds || 0),
+    take_group_count: Number(assembleCandidates?.take_group_count || 0),
+    block_group_count: Number(assembleCandidates?.block_group_count || 0),
+    sentence_group_count: Number(assembleCandidates?.sentence_group_count || 0),
+    restart_fragment_count: Number(assembleCandidates?.restart_fragment_count || 0),
+    pause_candidate_count: Number(pauseCandidates?.total || assembleCandidates?.pause_candidate_count || pauseList.length || 0),
+    recommended_pause_candidate_count: Number(
+      pauseCandidates?.recommended_count ||
+      assembleCandidates?.recommended_pause_candidate_count ||
+      pauseList.filter((candidate) => candidate?.recommended).length ||
+      0
+    )
+  };
+}
+
+function buildAssemblePlanConfirmationPrompt({
+  context = {},
+  assembleCandidates = null,
+  pauseCandidates = null,
+  longProject = false,
+  genericRecutFeedback = false
+} = {}) {
+  const summary = summarizeAssemblePlanInputs({ context, assembleCandidates, pauseCandidates });
+  const durationText = summary.current_cut_duration_seconds
+    ? `${formatPlannerTime(summary.current_cut_duration_seconds)}s`
+    : String(context.current_cut_duration || context.total_duration || '未知');
+  const candidateLine = assembleCandidates
+    ? `候选扫描：重复 take ${summary.take_group_count} 组、重复段落 ${summary.block_group_count} 组、重复句 ${summary.sentence_group_count} 组、起手重说 ${summary.restart_fragment_count} 个、明显停顿 ${summary.pause_candidate_count} 个。`
+    : `停顿快扫：明显停顿 ${summary.pause_candidate_count} 个，其中推荐优先处理 ${summary.recommended_pause_candidate_count} 个。`;
+  const reason = longProject
+    ? '这个项目属于长视频/长时间线，直接让模型长上下文重试容易不稳定。'
+    : genericRecutFeedback
+      ? '你这次是在反馈当前成片“切得不够好”，更适合先给出可确认的保守重切计划。'
+      : '这次会改动当前时间线，需要先确认执行。';
+
+  return [
+    `${reason}我已先做只读预检查，暂时没有修改项目。`,
+    '',
+    `当前概况：${summary.asset_count} 个素材，${summary.clip_count} 个时间线片段，当前成片约 ${durationText}，保留 ${summary.kept_word_count}/${summary.total_word_count} 个字。`,
+    candidateLine,
+    '',
+    '确认后我会先保存快照，然后执行一轮保守重切：清理明显重复 take、重复句、起手重说碎片和推荐停顿；本轮不改写原文、不做直播切片、不主动重排素材顺序。',
+    '执行完成后会重新输出顺序、通顺、逻辑、断句、重复、停顿、误删和改进点这 8 项自审。'
+  ].join('\n');
+}
+
+async function maybeCreateAssemblePlanConfirmation({
+  projectId,
+  session,
+  sessionId,
+  run,
+  userPrompt,
+  requestedMode = 'custom',
+  requestedProvider = '',
+  requestedModel = '',
+  requestProfile = {},
+  onEvent = () => {}
+}) {
+  if (requestProfile.effectiveMode !== 'assemble_script' || !requestProfile.requiresMutation) {
+    return null;
+  }
+
+  const toolContext = {
+    llmProvider: requestedProvider,
+    llmModel: requestedModel,
+    requestContext: {
+      mode: 'assemble_script',
+      prompt: userPrompt,
+      sessionId,
+      runId: run.id
+    }
+  };
+
+  let context = null;
+  try {
+    await appendAndEmitAgentEvent(onEvent, {
+      sessionId,
+      runId: run.id,
+      type: 'stage',
+      step: 'assemble_confirmation_context',
+      message: '正在读取当前项目概况，判断是否需要先确认再重切。',
+      payload: {}
+    });
+    context = await withTimeout(
+      () => executeProjectAgentToolDirect(projectId, 'get_project_context', {}, toolContext),
+      8000,
+      'Assemble confirmation context timed out'
+    );
+  } catch (error) {
+    await appendAndEmitAgentEvent(onEvent, {
+      sessionId,
+      runId: run.id,
+      type: 'stage',
+      step: 'assemble_confirmation_context_failed',
+      message: `确认计划预检查失败，改用常规 Agent 流程：${String(error?.message || 'unknown error')}`,
+      payload: {}
+    });
+    return null;
+  }
+
+  const longProject = isLongAssembleProjectContext(context);
+  const genericRecutFeedback = Boolean(requestProfile.genericRecutFeedback);
+  if (!longProject && !genericRecutFeedback) {
+    return null;
+  }
+
+  if (requestedMode !== requestProfile.effectiveMode) {
+    await appendAndEmitAgentEvent(onEvent, {
+      sessionId,
+      runId: run.id,
+      type: 'stage',
+      step: 'mode_routed',
+      message: buildRoutingMessage(requestProfile),
+      payload: {
+        requested_mode: requestedMode,
+        effective_mode: requestProfile.effectiveMode,
+        routing_reason: requestProfile.routingReason || ''
+      }
+    });
+  }
+
+  await appendAndEmitAgentEvent(onEvent, {
+    sessionId,
+    runId: run.id,
+    type: 'stage',
+    step: 'assemble_confirmation_scan',
+    message: longProject
+      ? '项目较长，正在做轻量停顿快扫，避免长上下文模型重试。'
+      : '正在扫描当前成片的重复和停顿候选，用于生成确认计划。',
+    payload: {
+      long_project: longProject,
+      generic_recut_feedback: genericRecutFeedback
+    }
+  });
+
+  let assembleCandidates = null;
+  let pauseCandidates = null;
+  try {
+    if (longProject) {
+      pauseCandidates = await withTimeout(
+        () => executeProjectAgentToolDirect(projectId, 'get_pause_candidates', {
+          min_gap_seconds: 0.35,
+          limit: 24
+        }, toolContext),
+        10000,
+        'Pause candidate scan timed out'
+      );
+    } else {
+      assembleCandidates = await withTimeout(
+        () => executeProjectAgentToolDirect(projectId, 'get_assemble_candidates', buildConservativeAssembleArgs(), toolContext),
+        14000,
+        'Assemble candidate scan timed out'
+      );
+    }
+  } catch (error) {
+    await appendAndEmitAgentEvent(onEvent, {
+      sessionId,
+      runId: run.id,
+      type: 'stage',
+      step: 'assemble_confirmation_scan_partial',
+      message: `候选扫描未完整返回，仍会使用保守确认计划：${String(error?.message || 'unknown error')}`,
+      payload: {
+        long_project: longProject
+      }
+    });
+  }
+
+  const planSummary = summarizeAssemblePlanInputs({ context, assembleCandidates, pauseCandidates });
+  const confirmationPrompt = buildAssemblePlanConfirmationPrompt({
+    context,
+    assembleCandidates,
+    pauseCandidates,
+    longProject,
+    genericRecutFeedback
+  });
+  const pendingTool = {
+    tool: 'auto_assemble_script',
+    args: buildConservativeAssembleArgs(),
+    pre_tools: [
+      {
+        tool: 'save_snapshot',
+        args: {
+          note: '确认执行口播重切前快照'
+        }
+      }
+    ],
+    plan_kind: 'assemble_recut_confirmation',
+    plan_summary: planSummary
+  };
+  const result = {
+    reply: confirmationPrompt,
+    summary: '等待确认后执行保守口播重切。',
+    confirmation_prompt: confirmationPrompt,
+    pending_tool: pendingTool,
+    plan_summary: {
+      ...planSummary,
+      long_project: longProject,
+      generic_recut_feedback: genericRecutFeedback
+    },
+    applied_changes: []
+  };
+
+  await updateAgentRunRecord(run.id, {
+    status: 'waiting_confirmation',
+    result,
+    requiresConfirmation: true,
+    appliedChanges: []
+  });
+  await appendAndEmitAgentEvent(onEvent, {
+    sessionId,
+    runId: run.id,
+    type: 'waiting_confirmation',
+    step: 'assemble_recut_confirmation',
+    message: '已生成保守重切计划，等待你确认后再修改时间线。',
+    payload: {
+      pending_tool: pendingTool,
+      plan_summary: result.plan_summary
+    }
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId: run.id,
+    role: 'assistant',
+    content: confirmationPrompt,
+    metadata: {
+      status: 'waiting_confirmation',
+      pending_tool: pendingTool.tool,
+      plan_kind: pendingTool.plan_kind
+    }
+  });
+  await touchAgentSession(sessionId, {
+    summary: mergeSessionSummary(session.summary, userPrompt, confirmationPrompt, [])
+  });
+
+  return {
+    success: true,
+    session_id: sessionId,
+    run_id: run.id,
+    reply: confirmationPrompt,
+    status: 'waiting_confirmation',
+    requires_confirmation: true,
+    applied_changes: [],
+    result
+  };
+}
+
 function isHighLevelAssembleEdit(change = {}) {
   const tool = String(change?.tool || change?.change || change?.type || '').trim();
   return [
@@ -329,6 +633,80 @@ function buildAssembleDeepeningPrompt(prompt = '') {
     '这一轮不能只做停顿清理，也不能直接结束；要重点删除悬空碎片、失败起手、重复解释、录制准备语句和弱过渡句。',
     '必要时请直接使用 delete_subtitle_blocks 做块级删减，并在结束前重新读稿确认主线是否更完整、更像可直接发布的视频。'
   ].join('\n');
+}
+
+function parseChineseInteger(text = '') {
+  const value = String(text || '').trim();
+  if (!value) return 0;
+  const directMap = {
+    一: 1,
+    两: 2,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10
+  };
+  if (directMap[value]) return directMap[value];
+  if (/^十[一二三四五六七八九]$/.test(value)) {
+    return 10 + (directMap[value.slice(1)] || 0);
+  }
+  if (/^[一二三四五六七八九]十$/.test(value)) {
+    return (directMap[value[0]] || 0) * 10;
+  }
+  if (/^[一二三四五六七八九]十[一二三四五六七八九]$/.test(value)) {
+    return (directMap[value[0]] || 0) * 10 + (directMap[value[2]] || 0);
+  }
+  return 0;
+}
+
+function clampInteger(value, min, max) {
+  const number = Math.round(Number(value || 0));
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
+}
+
+export function isCandidateOnlyLiveSlicingRequest({ prompt = '', topic = '' } = {}) {
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
+  if (!text) return false;
+  const asksForCandidates = /(候选|建议|推荐|先分析|先看|先给|看看|列出|方案|选题)/i.test(text);
+  const asksToCreate = /(执行|生成|创建|直接|落地|新建|切成|切几条|拆条|出片|做成|就按)/i.test(text);
+  return asksForCandidates && !asksToCreate;
+}
+
+export function shouldUseDeterministicLiveSlicing({ mode = 'custom', prompt = '', topic = '', requestProfile = null } = {}) {
+  const normalizedMode = String(requestProfile?.effectiveMode || mode || '').trim();
+  if (normalizedMode !== 'live_slicing') return false;
+  if (isCandidateOnlyLiveSlicingRequest({ prompt, topic })) return false;
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.replace(/\s+/g, '');
+  if (!text) return false;
+  if (/^(执行|生成|创建|直接生成|直接创建)?直播切片$/.test(text)) return true;
+  return /(执行|生成|创建|直接|落地|新建|切成|切几条|拆条|出片|做成).{0,12}(直播切片|切片|短视频|片段|高光|候选切片)/i.test(text) ||
+    /(直播切片|切片|短视频|片段|高光).{0,12}(执行|生成|创建|直接|落地|新建|切成|切几条|拆条|出片|做成)/i.test(text);
+}
+
+export function buildDeterministicLiveSlicingArgs({ prompt = '', topic = '', targetMinutes = 0 } = {}) {
+  const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
+  const countMatch = text.match(/(?:给我|生成|创建|切成|切|拆成|出)\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支)?/) ||
+    text.match(/(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支)\s*(?:直播切片|切片|短视频|片段|高光)?/);
+  const requestedCount = countMatch
+    ? (/^\d+$/.test(countMatch[1]) ? Number(countMatch[1]) : parseChineseInteger(countMatch[1]))
+    : 0;
+  const count = clampInteger(requestedCount || 4, 1, 8);
+  const targetSeconds = Number(targetMinutes || 0) > 0 ? Number(targetMinutes || 0) * 60 : 0;
+  const maxDuration = clampInteger(targetSeconds || 75, 25, 120);
+  const minDuration = clampInteger(Math.min(25, Math.max(12, maxDuration * 0.35)), 8, Math.max(8, maxDuration - 5));
+  const query = String(topic || '').trim();
+  return {
+    query,
+    count,
+    min_duration: minDuration,
+    max_duration: maxDuration
+  };
 }
 
 function shouldBootstrapDeterministicAssemble({
@@ -1248,6 +1626,203 @@ async function runStructuredAssembleDeepeningFallback({
   };
 }
 
+function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult = {}) {
+  if (!createdSlices.length) {
+    return [
+      '我已经执行直播切片流程，但当前没有找到满足时长和文本条件的可落地切片候选。',
+      '',
+      String(suggestionResult?.summary || '').trim() || '建议确认素材已经完成转写，或放宽切片时长范围后再试。'
+    ].join('\n');
+  }
+  const lines = createdSlices.map((change, index) => {
+    const slice = change.slice || {};
+    const duration = Number(slice.total_duration || 0);
+    const durationText = duration > 0 ? `${formatPlannerTime(duration)}s` : '未知时长';
+    return `${index + 1}. ${change.slice_title || slice.title || `切片 ${index + 1}`} · ${durationText}`;
+  });
+  return [
+    `已按直播切片流程创建 ${createdSlices.length} 个切片：`,
+    ...lines,
+    '',
+    '这些切片已写入项目左侧切片列表，可逐条打开文稿、预览或导出。'
+  ].join('\n');
+}
+
+async function runDeterministicLiveSlicingFallback({
+  projectId,
+  session,
+  sessionId,
+  runId,
+  userPrompt,
+  topic = '',
+  targetMinutes = 0,
+  requestedProvider = '',
+  requestedModel = '',
+  existingRun = null,
+  existingResult = null
+}) {
+  const runRecord = existingRun || await getAgentRunRecord(projectId, runId);
+  const appliedChanges = seedAppliedChanges(runRecord, existingResult);
+  const toolContext = {
+    llmProvider: requestedProvider,
+    llmModel: requestedModel,
+    requestContext: {
+      mode: 'live_slicing',
+      prompt: userPrompt,
+      topic,
+      targetMinutes,
+      sessionId,
+      runId
+    }
+  };
+  const suggestionArgs = buildDeterministicLiveSlicingArgs({
+    prompt: userPrompt,
+    topic,
+    targetMinutes
+  });
+
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'stage',
+    step: 'deterministic_live_slicing_fallback',
+    message: '模型没有稳定调用直播切片工具，系统正在用确定性切片流程直接生成切片。',
+    payload: suggestionArgs
+  });
+
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_call',
+    step: 'suggest_project_slices',
+    message: '执行 suggest_project_slices',
+    payload: {
+      tool: 'suggest_project_slices',
+      args: suggestionArgs
+    }
+  });
+  const suggestionResult = await executeProjectAgentToolDirect(projectId, 'suggest_project_slices', suggestionArgs, toolContext);
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_result',
+    step: 'suggest_project_slices',
+    message: suggestionResult?.summary || '已生成切片候选。',
+    payload: {
+      tool: 'suggest_project_slices',
+      result: suggestionResult
+    }
+  });
+  appliedChanges.push({
+    tool: 'suggest_project_slices',
+    ...suggestionResult
+  });
+
+  const suggestions = Array.isArray(suggestionResult?.suggestions) ? suggestionResult.suggestions : [];
+  const createdSlices = [];
+  for (let index = 0; index < suggestions.length; index += 1) {
+    const suggestion = suggestions[index];
+    const createArgs = {
+      title: suggestion.title || `切片 ${index + 1}`,
+      summary: suggestion.summary || '',
+      query: suggestionArgs.query || '',
+      target_duration_seconds: Number(suggestion.duration_seconds || 0),
+      ranges: Array.isArray(suggestion.ranges) ? suggestion.ranges : []
+    };
+    if (!createArgs.ranges.length) continue;
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_call',
+      step: 'create_project_slice',
+      message: '执行 create_project_slice',
+      payload: {
+        tool: 'create_project_slice',
+        args: createArgs
+      }
+    });
+    const createResult = await executeProjectAgentToolDirect(projectId, 'create_project_slice', createArgs, toolContext);
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_result',
+      step: 'create_project_slice',
+      message: createResult?.summary || '已创建直播切片。',
+      payload: {
+        tool: 'create_project_slice',
+        result: createResult
+      }
+    });
+    if (didAppliedChangeSucceed(createResult)) {
+      const change = {
+        tool: 'create_project_slice',
+        ...createResult
+      };
+      createdSlices.push(change);
+      appliedChanges.push(change);
+    }
+  }
+
+  const reply = buildDeterministicLiveSlicingReply(createdSlices, suggestionResult);
+  const result = {
+    ...(runRecord?.result || existingResult || {}),
+    reply,
+    summary: createdSlices.length
+      ? `已创建 ${createdSlices.length} 个直播切片。`
+      : '直播切片流程未找到可落地候选。',
+    applied_changes: appliedChanges,
+    deterministic_live_slicing: true,
+    suggested_slice_count: suggestions.length,
+    created_slice_count: createdSlices.length
+  };
+
+  await updateAgentRunRecord(runId, {
+    status: 'completed',
+    result,
+    requiresConfirmation: false,
+    appliedChanges,
+    finished: true
+  });
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'complete',
+    step: 'deterministic_live_slicing_complete',
+    message: createdSlices.length
+      ? `确定性直播切片已完成，创建 ${createdSlices.length} 个切片。`
+      : '确定性直播切片已完成，但没有找到可创建的候选。',
+    payload: {
+      suggested_slice_count: suggestions.length,
+      created_slice_count: createdSlices.length
+    }
+  });
+  await appendAgentMessage({
+    sessionId,
+    runId,
+    role: 'assistant',
+    content: reply,
+    metadata: {
+      status: 'completed',
+      deterministic_live_slicing: true,
+      created_slice_count: createdSlices.length
+    }
+  });
+  await touchAgentSession(sessionId, {
+    summary: mergeSessionSummary(session.summary, userPrompt, reply, appliedChanges)
+  });
+
+  return {
+    success: true,
+    session_id: sessionId,
+    run_id: runId,
+    reply,
+    status: 'completed',
+    requires_confirmation: false,
+    applied_changes: appliedChanges,
+    result
+  };
+}
+
 async function runDeterministicAssembleFallback({
   projectId,
   session,
@@ -1325,7 +1900,8 @@ async function runDeterministicAssembleFallback({
     sentence_limit: 14,
     pause_limit: 12,
     min_pause_seconds: 0.35,
-    max_passes: 2
+    max_passes: 1,
+    take_window_limit: 360
   };
   await appendAgentEvent({
     sessionId,
@@ -1500,12 +2076,51 @@ async function runProjectAgentInternal({
     });
   }
 
+  const assemblePlanConfirmationResult = await maybeCreateAssemblePlanConfirmation({
+    projectId,
+    session,
+    sessionId,
+    run,
+    userPrompt,
+    requestedMode,
+    requestedProvider,
+    requestedModel,
+    requestProfile,
+    onEvent
+  });
+  if (assemblePlanConfirmationResult) {
+    return assemblePlanConfirmationResult;
+  }
+
   const mutationSignatureBefore = await readProjectMutationSignature(projectId);
   const abortController = new AbortController();
   activeRunAbortControllers.set(run.id, abortController);
   cancellationRequestedRuns.delete(run.id);
 
   try {
+    if (
+      normalizedMode === 'live_slicing' &&
+      requestProfile.requiresMutation &&
+      shouldUseDeterministicLiveSlicing({
+        mode: normalizedMode,
+        prompt: userPrompt,
+        topic,
+        requestProfile
+      })
+    ) {
+      return await runDeterministicLiveSlicingFallback({
+        projectId,
+        session,
+        sessionId,
+        runId: run.id,
+        userPrompt,
+        topic: String(topic || '').trim(),
+        targetMinutes: Number(targetMinutes || 0),
+        requestedProvider,
+        requestedModel
+      });
+    }
+
     if (
       normalizedMode === 'assemble_script'
       && shouldBootstrapDeterministicAssemble({
@@ -1538,21 +2153,12 @@ async function runProjectAgentInternal({
     }
 
     if (requestedMode !== normalizedMode) {
-      const routingMessage = requestProfile.routingReason === 'assemble_script_intent'
-        ? '检测到口播剪辑意图，已自动切换到口播拼稿主链。'
-        : requestProfile.routingReason === 'live_slicing_intent'
-          ? '检测到直播切片意图，已自动切换到直播切片模式。'
-        : requestProfile.routingReason === 'read_only_project_query'
-          ? '检测到当前请求是读取/分析型项目问题，已切换到自由指令只读模式，不会强行改时间线。'
-        : requestProfile.routingReason === 'non_assemble_project_task'
-            ? '检测到当前请求不是口播拼稿，而是通用项目任务，已切换到自由指令模式处理。'
-          : '检测到当前请求不是剪辑改动任务，已切换到自由指令模式处理。';
       await appendAgentEvent({
         sessionId,
         runId: run.id,
         type: 'stage',
         step: 'mode_routed',
-        message: routingMessage,
+        message: buildRoutingMessage(requestProfile),
         payload: {
           requested_mode: requestedMode,
           effective_mode: normalizedMode,
@@ -1628,6 +2234,21 @@ async function runProjectAgentInternal({
             });
           }
           throw retryError;
+        }
+      } else if (normalizedMode === 'live_slicing' && isNoMutationError(error)) {
+        const deterministicFallbackResult = await runDeterministicLiveSlicingFallback({
+          projectId,
+          session,
+          sessionId,
+          runId: run.id,
+          userPrompt,
+          topic: String(topic || '').trim(),
+          targetMinutes: Number(targetMinutes || 0),
+          requestedProvider,
+          requestedModel
+        });
+        if (deterministicFallbackResult) {
+          return deterministicFallbackResult;
         }
       } else {
         throw error;
@@ -1727,6 +2348,21 @@ async function runProjectAgentInternal({
           sessionId,
           runId: run.id,
           userPrompt,
+          existingRun: latestRun,
+          existingResult: result
+        });
+      }
+      if (normalizedMode === 'live_slicing') {
+        return runDeterministicLiveSlicingFallback({
+          projectId,
+          session,
+          sessionId,
+          runId: run.id,
+          userPrompt,
+          topic: String(topic || '').trim(),
+          targetMinutes: Number(targetMinutes || 0),
+          requestedProvider,
+          requestedModel,
           existingRun: latestRun,
           existingResult: result
         });
@@ -1969,6 +2605,25 @@ export async function runProjectAgentSessionWorkflow({
   });
 }
 
+function buildConfirmedAssembleReply(primaryResult = {}) {
+  const primarySummary = String(primaryResult?.summary || '').trim();
+  const changed = primaryResult?.changed !== false;
+  return [
+    changed
+      ? `已按确认计划执行重切：${primarySummary || '保守口播拼稿已写回当前时间线。'}`
+      : `已按确认计划复查并执行重切流程：${primarySummary || '当前没有识别到可安全落地的新增删减项。'}`,
+    '',
+    '顺序：保持当前素材顺序不变，未主动重排。',
+    '通顺：本轮只做保守删除和停顿清理，不改写原文。',
+    '逻辑：优先保留主线信息，只清理重复 take、重复句和起手重说。',
+    '断句：使用确定性工具按字幕/停顿边界处理，避免句中硬切。',
+    '重复：已让 auto_assemble_script 重新检查并处理明确重复项。',
+    '停顿：已按 0.35 秒以上候选做一轮推荐停顿清理。',
+    '误删：执行前已保存快照；如某处不满意，可以用快照或后续指令恢复。',
+    '改进：如还觉得偏长，下一轮建议直接指定“继续删弱过渡/空转解释”或给目标时长。'
+  ].join('\n');
+}
+
 export async function confirmProjectAgentRun({ projectId, runId, approved = true }) {
   const run = await getAgentRunRecord(projectId, runId);
   if (!run) {
@@ -1998,39 +2653,103 @@ export async function confirmProjectAgentRun({ projectId, runId, approved = true
     return finalizeCancelledRun(projectId, run.session_id, runId, '你已取消本次高风险操作，项目保持在原状态。');
   }
 
-  const result = await executeProjectAgentToolDirect(projectId, pendingTool.tool, pendingTool.args || {}, {
+  const toolStageBridge = async (stage = {}) => {
+    await appendAgentEvent({
+      sessionId: run.session_id,
+      runId,
+      type: 'stage',
+      step: stage.step || 'tool_progress',
+      message: stage.message || '工具正在处理当前项目…',
+      payload: stage.payload || {}
+    });
+  };
+  const toolContext = {
     approvedHighRisk: true,
+    llmProvider: run.provider || '',
+    llmModel: run.model || '',
+    onStage: toolStageBridge,
     requestContext: {
       mode: run.mode,
       prompt: run.prompt,
       sessionId: run.session_id,
       runId
     }
-  });
-  const appliedChanges = [...(run.applied_changes || []), result];
-  const reply = String(result?.summary || '高风险操作已确认并执行。').trim();
+  };
+
+  const pendingExecutions = [
+    ...(Array.isArray(pendingTool.pre_tools) ? pendingTool.pre_tools : []),
+    {
+      tool: pendingTool.tool,
+      args: pendingTool.args || {}
+    }
+  ].filter((item) => item?.tool);
+  const appliedChanges = [...(run.applied_changes || [])];
+  const toolResults = [];
+
+  for (const toolCall of pendingExecutions) {
+    const toolName = String(toolCall.tool || '').trim();
+    const toolArgs = toolCall.args || {};
+    await appendAgentEvent({
+      sessionId: run.session_id,
+      runId,
+      type: 'tool_call',
+      step: toolName,
+      message: `执行 ${toolName}`,
+      payload: {
+        tool: toolName,
+        args: toolArgs,
+        confirmed: true
+      }
+    });
+    const toolResult = await executeProjectAgentToolDirect(projectId, toolName, toolArgs, toolContext);
+    toolResults.push({
+      tool: toolName,
+      result: toolResult
+    });
+    await appendAgentEvent({
+      sessionId: run.session_id,
+      runId,
+      type: 'tool_result',
+      step: toolName,
+      message: toolResult?.summary || `${toolName} 已执行。`,
+      payload: {
+        tool: toolName,
+        result: toolResult,
+        confirmed: true
+      }
+    });
+    if (didAppliedChangeSucceed(toolResult) && toolResult?.changed !== false) {
+      appliedChanges.push({
+        tool: toolName,
+        ...toolResult
+      });
+    }
+  }
+
+  const primaryResult = toolResults[toolResults.length - 1]?.result || {};
+  const isAssembleRecutConfirmation = String(pendingTool.plan_kind || '') === 'assemble_recut_confirmation'
+    && String(pendingTool.tool || '') === 'auto_assemble_script';
+  const reply = isAssembleRecutConfirmation
+    ? buildConfirmedAssembleReply(primaryResult)
+    : String(primaryResult?.summary || '高风险操作已确认并执行。').trim();
+  const previousResult = run.result || {};
+  const finalResult = {
+    ...previousResult,
+    reply,
+    summary: String(primaryResult?.summary || reply).trim(),
+    applied_changes: appliedChanges,
+    confirmed_tool_results: toolResults,
+    confirmation_executed: true
+  };
+  delete finalResult.pending_tool;
+  delete finalResult.confirmation_prompt;
 
   await updateAgentRunRecord(runId, {
     status: 'completed',
-    result: {
-      reply,
-      summary: reply,
-      applied_changes: appliedChanges
-    },
+    result: finalResult,
     requiresConfirmation: false,
     appliedChanges,
     finished: true
-  });
-  await appendAgentEvent({
-    sessionId: run.session_id,
-    runId,
-    type: 'tool_result',
-    step: pendingTool.tool,
-    message: reply,
-    payload: {
-      tool: pendingTool.tool,
-      result
-    }
   });
   await appendAgentEvent({
     sessionId: run.session_id,
@@ -2058,7 +2777,8 @@ export async function confirmProjectAgentRun({ projectId, runId, approved = true
     run_id: runId,
     status: 'completed',
     reply,
-    applied_changes: appliedChanges
+    applied_changes: appliedChanges,
+    result: finalResult
   };
 }
 

@@ -48,11 +48,7 @@ export function getGlmClaudeSettings() {
   const disabledKeyHashes = Array.isArray(config.agent_llm_disabled_key_hashes)
     ? config.agent_llm_disabled_key_hashes.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
-  const keys = uniqueValues([
-    ...(Array.isArray(config.agent_llm_siliconflow_keys) ? config.agent_llm_siliconflow_keys : []),
-    config.siliconflow_api_key,
-    process.env.SILICONFLOW_API_KEY
-  ]);
+  const keys = resolveGlmClaudeKeys(config);
 
   return {
     provider: getProjectAgentProvider(config),
@@ -63,6 +59,17 @@ export function getGlmClaudeSettings() {
     keyHealthTtlMs: Number(config.agent_llm_key_health_ttl_ms || 300000),
     runtimeDir: getRuntimeDir(config)
   };
+}
+
+export function resolveGlmClaudeKeys(config = loadConfig(), envSiliconFlowKey = process.env.SILICONFLOW_API_KEY) {
+  const agentKeys = uniqueValues(
+    Array.isArray(config.agent_llm_siliconflow_keys) ? config.agent_llm_siliconflow_keys : []
+  );
+  if (agentKeys.length) return agentKeys;
+  return uniqueValues([
+    config.siliconflow_api_key,
+    envSiliconFlowKey
+  ]);
 }
 
 function buildCandidates(settings) {
@@ -96,6 +103,11 @@ function shouldMarkUnhealthy(error) {
   const message = String(error?.message || '').toLowerCase();
   return (
     message.includes('429') ||
+    message.includes('403') ||
+    message.includes('failed to authenticate') ||
+    message.includes('authentication') ||
+    message.includes('balance is insufficient') ||
+    message.includes('insufficient balance') ||
     message.includes('too many requests') ||
     message.includes('rate limit') ||
     message.includes('fetch failed') ||

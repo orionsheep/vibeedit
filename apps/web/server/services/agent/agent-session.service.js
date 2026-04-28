@@ -66,7 +66,7 @@ function getAgentRunStaleTimeoutMs(config = loadConfig()) {
   const configured = Number(config.agent_run_stale_timeout_ms || 0);
   if (configured > 0) return configured;
   const timeoutMs = Number(config.agent_llm_timeout_ms || 90000);
-  const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 45000);
+  const inactivityTimeoutMs = Number(config.agent_llm_inactivity_timeout_ms || 90000);
   return Math.max(timeoutMs, inactivityTimeoutMs) + 60000;
 }
 
