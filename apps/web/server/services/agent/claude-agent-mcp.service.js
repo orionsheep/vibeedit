@@ -530,7 +530,9 @@ export const TOOL_DEFINITIONS = {
   save_snapshot: {
     description: '保存当前项目时间线快照。',
     schema: {
-      note: z.string().optional()
+      note: z.string().optional(),
+      metadata: z.record(z.any()).optional(),
+      archived_slices: z.array(z.any()).optional()
     },
     mutatesProject: true,
     execute: (projectId, args) => toolSaveSnapshot(projectId, args)

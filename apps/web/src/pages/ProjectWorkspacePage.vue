@@ -196,6 +196,32 @@
                     <div class="list-row-note">{{ snapshot.note || '无说明' }}</div>
                     <div class="list-row-meta">
                       <span>{{ formatDateTime(snapshot.createdAt || snapshot.created_at) }}</span>
+                      <span v-if="snapshot.archived_slice_count">{{ snapshot.archived_slice_count }} 个归档切片</span>
+                      <button class="text-link" :disabled="loadingSnapshotId === snapshot.id" @click="openSnapshotDetail(snapshot)">
+                        {{ loadingSnapshotId === snapshot.id ? '读取中...' : '查看' }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="selectedSnapshotDetail" class="snapshot-detail-panel">
+                  <div class="snapshot-detail-head">
+                    <strong>{{ selectedSnapshotDetail.note || selectedSnapshotDetail.source || '快照详情' }}</strong>
+                    <button class="text-link" @click="selectedSnapshotDetail = null">关闭</button>
+                  </div>
+                  <div class="list-row-meta">
+                    <span>{{ formatDateTime(selectedSnapshotDetail.createdAt || selectedSnapshotDetail.created_at) }}</span>
+                    <span>{{ selectedSnapshotDetail.archived_slice_count || 0 }} 个归档切片</span>
+                  </div>
+                  <div v-if="!(selectedSnapshotDetail.archived_slices || []).length" class="snapshot-empty">
+                    这个快照没有归档切片。
+                  </div>
+                  <div v-else class="snapshot-archive-list">
+                    <div v-for="slice in selectedSnapshotDetail.archived_slices" :key="slice.id" class="snapshot-archive-item">
+                      <div class="snapshot-archive-title">{{ slice.title }}</div>
+                      <div class="list-row-meta">
+                        <span>{{ formatDuration(slice.total_duration || 0) }}</span>
+                        <span>{{ formatSliceRanges(slice.ranges || []) }}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -378,6 +404,7 @@ import {
   exportProjectInterchange,
   exportProjectSliceXmlBundle,
   exportProjectVideo,
+  getProjectSnapshot,
   getProjectSlice,
   listProjectAgentRunEvents,
   getProjectAgentSession,
@@ -423,6 +450,8 @@ const project = ref(null);
 const timeline = ref(null);
 const projectEditState = ref(null);
 const snapshots = ref([]);
+const selectedSnapshotDetail = ref(null);
+const loadingSnapshotId = ref('');
 const activeSidebarTab = ref('assets');
 const selectedAssetId = ref('');
 const assetWordsMap = ref({});
@@ -978,6 +1007,20 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatSliceRanges(ranges = []) {
+  const normalized = (Array.isArray(ranges) ? ranges : [])
+    .map((range) => ({
+      start: Number(range.start || 0),
+      end: Number(range.end || 0)
+    }))
+    .filter((range) => range.end - range.start > 0.001);
+  if (!normalized.length) return '无时间范围';
+  return normalized
+    .slice(0, 2)
+    .map((range) => `${formatDuration(range.start)}-${formatDuration(range.end)}`)
+    .join(' / ');
+}
+
 function isAssetProcessing(asset) {
   return ['processing', 'pending', 'provided'].includes(String(asset?.asr_status || '').trim());
 }
@@ -1476,6 +1519,10 @@ function syncEditorWithProjectTimeline(options = {}) {
 }
 
 function buildProjectKeepRanges() {
+  if (isSliceTimelineDisplay.value) {
+    return selectedSliceRanges.value;
+  }
+
   const allWords = (editorStore.words || []).map((word, index) => ({ ...word, index }));
   const deletedWords = editorStore.deletedWords;
   const deletedGaps = editorStore.deletedGaps;
@@ -2903,6 +2950,25 @@ async function handleExportMenuSliceXmlBundle() {
 
 async function loadSnapshots() {
   snapshots.value = await listProjectSnapshots(projectId.value);
+  if (selectedSnapshotDetail.value?.id) {
+    const stillExists = snapshots.value.some((snapshot) => snapshot.id === selectedSnapshotDetail.value.id);
+    if (!stillExists) {
+      selectedSnapshotDetail.value = null;
+    }
+  }
+}
+
+async function openSnapshotDetail(snapshot) {
+  const snapshotId = String(snapshot?.id || '').trim();
+  if (!snapshotId) return;
+  loadingSnapshotId.value = snapshotId;
+  try {
+    selectedSnapshotDetail.value = await getProjectSnapshot(projectId.value, snapshotId);
+  } catch (snapshotError) {
+    window.alert(snapshotError.response?.data?.error || snapshotError.message || '读取快照失败');
+  } finally {
+    loadingSnapshotId.value = '';
+  }
 }
 
 async function saveSnapshot() {
@@ -3675,9 +3741,55 @@ onBeforeUnmount(() => {
 .list-row-meta {
   margin-top: 6px;
   display: flex;
+  gap: 8px;
   justify-content: space-between;
+  align-items: center;
   font-size: 10px;
   color: #7b91a2;
+}
+
+.snapshot-detail-panel {
+  margin-top: 10px;
+  border: 1px solid #24445a;
+  background: #081019;
+  padding: 10px;
+}
+
+.snapshot-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.snapshot-detail-head strong {
+  min-width: 0;
+  color: #edf5fb;
+  font-size: 12px;
+}
+
+.snapshot-empty {
+  margin-top: 10px;
+  color: #8197a7;
+  font-size: 11px;
+}
+
+.snapshot-archive-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.snapshot-archive-item {
+  border: 1px solid #1d2c39;
+  background: #0b1219;
+  padding: 8px;
+}
+
+.snapshot-archive-title {
+  color: #edf5fb;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .editor-panel {

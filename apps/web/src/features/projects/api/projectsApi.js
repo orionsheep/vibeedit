@@ -93,6 +93,11 @@ export async function listProjectSnapshots(projectId) {
   return response.data.snapshots || [];
 }
 
+export async function getProjectSnapshot(projectId, snapshotId) {
+  const response = await axios.get(`${API_BASE}/${projectId}/timeline/snapshots/${snapshotId}`);
+  return response.data.snapshot;
+}
+
 export async function createProjectSnapshot(projectId, payload = {}) {
   const response = await axios.post(`${API_BASE}/${projectId}/timeline/snapshot`, payload);
   return response.data.snapshot;

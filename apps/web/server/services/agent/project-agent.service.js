@@ -685,14 +685,19 @@ export function shouldUseDeterministicLiveSlicing({ mode = 'custom', prompt = ''
   const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.replace(/\s+/g, '');
   if (!text) return false;
   if (/^(执行|生成|创建|直接生成|直接创建)?直播切片$/.test(text)) return true;
+  if (/(重新)?切片(?:成|为|到)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})/.test(text) || /重新切片/.test(text)) return true;
   return /(执行|生成|创建|直接|落地|新建|切成|切几条|拆条|出片|做成).{0,12}(直播切片|切片|短视频|片段|高光|候选切片)/i.test(text) ||
     /(直播切片|切片|短视频|片段|高光).{0,12}(执行|生成|创建|直接|落地|新建|切成|切几条|拆条|出片|做成)/i.test(text);
 }
 
 export function buildDeterministicLiveSlicingArgs({ prompt = '', topic = '', targetMinutes = 0 } = {}) {
   const text = `${String(prompt || '').trim()} ${String(topic || '').trim()}`.trim();
-  const countMatch = text.match(/(?:给我|生成|创建|切成|切|拆成|出)\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支)?/) ||
-    text.match(/(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支)\s*(?:直播切片|切片|短视频|片段|高光)?/);
+  const countPatterns = [
+    /(?:重新)?切片(?:成|为|到)?\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支|片)?/,
+    /(?:给我|生成|创建|切成|切为|切到|切|拆成|分成|出)\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支|片)?/,
+    /(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个|条|段|支|片)\s*(?:直播切片|切片|短视频|片段|高光)?/
+  ];
+  const countMatch = countPatterns.map((pattern) => text.match(pattern)).find(Boolean);
   const requestedCount = countMatch
     ? (/^\d+$/.test(countMatch[1]) ? Number(countMatch[1]) : parseChineseInteger(countMatch[1]))
     : 0;
@@ -709,14 +714,53 @@ export function buildDeterministicLiveSlicingArgs({ prompt = '', topic = '', tar
   };
 }
 
-export function isReplaceableLiveSlicingSlice(slice = {}) {
-  const generatedBy = String(slice.generated_by || slice.generatedBy || '').trim();
-  if (['deterministic_live_slicing', 'heuristic_suggester'].includes(generatedBy)) {
-    return true;
-  }
+function roundArchiveTime(value = 0) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.round(number * 1000) / 1000;
+}
 
-  const title = String(slice.title || slice.name || '').replace(/\s+/g, ' ').trim();
-  return /^切片\s*\d+\s*·/.test(title);
+export function buildArchivedLiveSlicingSlices(slices = []) {
+  return (Array.isArray(slices) ? slices : [])
+    .map((slice, index) => {
+      const clips = (Array.isArray(slice?.clips) ? slice.clips : []).map((clip, clipIndex) => ({
+        id: String(clip.id || ''),
+        asset_id: String(clip.asset_id || clip.assetId || ''),
+        asset_title: String(clip.asset_title || clip.assetTitle || ''),
+        label: String(clip.label || ''),
+        source_start: roundArchiveTime(clip.source_start ?? clip.sourceStart ?? clip.sourceStartSeconds ?? 0),
+        source_end: roundArchiveTime(clip.source_end ?? clip.sourceEnd ?? clip.sourceEndSeconds ?? 0),
+        timeline_start: roundArchiveTime(clip.timeline_start ?? clip.timelineStart ?? clip.timelineStartSeconds ?? 0),
+        timeline_end: roundArchiveTime(clip.timeline_end ?? clip.timelineEnd ?? clip.timelineEndSeconds ?? 0),
+        original_project_start: roundArchiveTime(clip.original_project_start ?? clip.originalProjectStart ?? clip.timeline_start ?? 0),
+        original_project_end: roundArchiveTime(clip.original_project_end ?? clip.originalProjectEnd ?? clip.timeline_end ?? 0),
+        sort_order: Number(clip.sort_order ?? clip.sortOrder ?? clipIndex + 1)
+      }));
+      const ranges = Array.isArray(slice?.ranges) && slice.ranges.length
+        ? slice.ranges.map((range) => ({
+            start: roundArchiveTime(range.start),
+            end: roundArchiveTime(range.end)
+          }))
+        : clips.map((clip) => ({
+            start: roundArchiveTime(clip.original_project_start),
+            end: roundArchiveTime(clip.original_project_end)
+          })).filter((range) => range.end - range.start > 0.001);
+      return {
+        id: String(slice?.id || ''),
+        title: String(slice?.title || slice?.name || `切片 ${index + 1}`).trim(),
+        color: String(slice?.color || '').trim(),
+        summary: String(slice?.summary || '').trim(),
+        query: String(slice?.query || '').trim(),
+        generated_by: String(slice?.generated_by || slice?.generatedBy || '').trim(),
+        total_duration: roundArchiveTime(slice?.total_duration ?? slice?.totalDuration ?? 0),
+        target_duration_seconds: roundArchiveTime(slice?.target_duration_seconds ?? slice?.targetDurationSeconds ?? 0),
+        created_at: slice?.created_at || slice?.createdAt || null,
+        updated_at: slice?.updated_at || slice?.updatedAt || null,
+        ranges,
+        clips
+      };
+    })
+    .filter((slice) => slice.id && slice.title);
 }
 
 function shouldBootstrapDeterministicAssemble({
@@ -1636,7 +1680,7 @@ async function runStructuredAssembleDeepeningFallback({
   };
 }
 
-function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult = {}, { deletedSliceCount = 0 } = {}) {
+function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult = {}, { archivedSliceCount = 0, deletedSliceCount = 0 } = {}) {
   if (!createdSlices.length) {
     return [
       '我已经执行直播切片流程，但当前没有找到满足时长和文本条件的可落地切片候选。',
@@ -1651,8 +1695,10 @@ function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult
     return `${index + 1}. ${change.slice_title || slice.title || `切片 ${index + 1}`} · ${durationText}`;
   });
   return [
-    deletedSliceCount > 0
-      ? `已替换上一轮自动直播切片，并创建 ${createdSlices.length} 个切片：`
+    archivedSliceCount > 0
+      ? `已归档 ${archivedSliceCount} 个旧切片，并创建 ${createdSlices.length} 个新切片：`
+      : deletedSliceCount > 0
+        ? `已替换上一轮直播切片，并创建 ${createdSlices.length} 个切片：`
       : `已按直播切片流程创建 ${createdSlices.length} 个切片：`,
     ...lines,
     '',
@@ -1730,8 +1776,8 @@ async function runDeterministicLiveSlicingFallback({
     ...listResult
   });
 
-  const replaceableExistingSlices = (Array.isArray(listResult?.slices) ? listResult.slices : [])
-    .filter(isReplaceableLiveSlicingSlice);
+  const existingSlices = Array.isArray(listResult?.slices) ? listResult.slices : [];
+  const archivedSlices = buildArchivedLiveSlicingSlices(existingSlices);
 
   await appendAgentEvent({
     sessionId,
@@ -1762,9 +1808,56 @@ async function runDeterministicLiveSlicingFallback({
   });
 
   const suggestions = Array.isArray(suggestionResult?.suggestions) ? suggestionResult.suggestions : [];
+  const creatableSuggestions = suggestions.filter((suggestion) => (
+    Array.isArray(suggestion?.ranges) && suggestion.ranges.length
+  ));
+  let archiveSnapshotChange = null;
+  if (creatableSuggestions.length && archivedSlices.length) {
+    const archiveArgs = {
+      note: `直播切片重切前归档 ${archivedSlices.length} 个旧切片`,
+      metadata: {
+        autoedit_archive_type: 'live_slicing_replace',
+        autoedit_archive_reason: 'deterministic_live_slicing_replace',
+        autoedit_archive_created_at: new Date().toISOString(),
+        requested_slice_count: Number(suggestionArgs.count || 0),
+        autoedit_archived_slices: archivedSlices
+      }
+    };
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_call',
+      step: 'save_snapshot',
+      message: '执行 save_snapshot',
+      payload: {
+        tool: 'save_snapshot',
+        args: archiveArgs
+      }
+    });
+    const archiveResult = await executeProjectAgentToolDirect(projectId, 'save_snapshot', archiveArgs, toolContext);
+    await appendAgentEvent({
+      sessionId,
+      runId,
+      type: 'tool_result',
+      step: 'save_snapshot',
+      message: archiveResult?.summary || '已保存旧切片归档快照。',
+      payload: {
+        tool: 'save_snapshot',
+        result: archiveResult
+      }
+    });
+    if (didAppliedChangeSucceed(archiveResult)) {
+      archiveSnapshotChange = {
+        tool: 'save_snapshot',
+        ...archiveResult
+      };
+      appliedChanges.push(archiveSnapshotChange);
+    }
+  }
+
   const createdSlices = [];
-  for (let index = 0; index < suggestions.length; index += 1) {
-    const suggestion = suggestions[index];
+  for (let index = 0; index < creatableSuggestions.length; index += 1) {
+    const suggestion = creatableSuggestions[index];
     const createArgs = {
       title: suggestion.title || `切片 ${index + 1}`,
       summary: suggestion.summary || '',
@@ -1773,7 +1866,6 @@ async function runDeterministicLiveSlicingFallback({
       target_duration_seconds: Number(suggestion.duration_seconds || 0),
       ranges: Array.isArray(suggestion.ranges) ? suggestion.ranges : []
     };
-    if (!createArgs.ranges.length) continue;
     await appendAgentEvent({
       sessionId,
       runId,
@@ -1808,8 +1900,9 @@ async function runDeterministicLiveSlicingFallback({
   }
 
   const deletedSlices = [];
-  if (createdSlices.length && replaceableExistingSlices.length) {
-    for (const slice of replaceableExistingSlices) {
+  const canDeleteArchivedSlices = createdSlices.length > 0 && createdSlices.length === creatableSuggestions.length;
+  if (canDeleteArchivedSlices && existingSlices.length) {
+    for (const slice of existingSlices) {
       const deleteArgs = {
         slice_id: slice.id
       };
@@ -1830,7 +1923,7 @@ async function runDeterministicLiveSlicingFallback({
         runId,
         type: 'tool_result',
         step: 'delete_project_slice',
-        message: deleteResult?.summary || '已删除上一轮自动直播切片。',
+        message: deleteResult?.summary || '已删除已归档的旧直播切片。',
         payload: {
           tool: 'delete_project_slice',
           result: deleteResult
@@ -1848,18 +1941,21 @@ async function runDeterministicLiveSlicingFallback({
   }
 
   const reply = buildDeterministicLiveSlicingReply(createdSlices, suggestionResult, {
+    archivedSliceCount: archiveSnapshotChange?.archived_slice_count || archivedSlices.length,
     deletedSliceCount: deletedSlices.length
   });
   const result = {
     ...(runRecord?.result || existingResult || {}),
     reply,
     summary: createdSlices.length
-      ? `已创建 ${createdSlices.length} 个直播切片${deletedSlices.length ? `，并替换 ${deletedSlices.length} 个上一轮自动切片` : ''}。`
+      ? `已创建 ${createdSlices.length} 个直播切片${archiveSnapshotChange?.archived_slice_count ? `，并归档 ${archiveSnapshotChange.archived_slice_count} 个旧切片` : ''}${deletedSlices.length ? `，删除 ${deletedSlices.length} 个旧切片` : ''}。`
       : '直播切片流程未找到可落地候选。',
     applied_changes: appliedChanges,
     deterministic_live_slicing: true,
     suggested_slice_count: suggestions.length,
     created_slice_count: createdSlices.length,
+    archived_slice_count: archiveSnapshotChange?.archived_slice_count || 0,
+    archive_snapshot_id: archiveSnapshotChange?.snapshot_id || '',
     deleted_slice_count: deletedSlices.length
   };
 
@@ -1876,11 +1972,13 @@ async function runDeterministicLiveSlicingFallback({
     type: 'complete',
     step: 'deterministic_live_slicing_complete',
     message: createdSlices.length
-      ? `确定性直播切片已完成，创建 ${createdSlices.length} 个切片${deletedSlices.length ? `，删除 ${deletedSlices.length} 个上一轮自动切片` : ''}。`
+      ? `确定性直播切片已完成，创建 ${createdSlices.length} 个切片${archiveSnapshotChange?.archived_slice_count ? `，归档 ${archiveSnapshotChange.archived_slice_count} 个旧切片` : ''}${deletedSlices.length ? `，删除 ${deletedSlices.length} 个旧切片` : ''}。`
       : '确定性直播切片已完成，但没有找到可创建的候选。',
     payload: {
       suggested_slice_count: suggestions.length,
       created_slice_count: createdSlices.length,
+      archived_slice_count: archiveSnapshotChange?.archived_slice_count || 0,
+      archive_snapshot_id: archiveSnapshotChange?.snapshot_id || '',
       deleted_slice_count: deletedSlices.length
     }
   });

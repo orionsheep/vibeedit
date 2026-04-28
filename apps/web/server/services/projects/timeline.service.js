@@ -475,7 +475,30 @@ export async function saveProjectCaptionOverride(projectId, assetId, { transcrip
   });
 }
 
-export async function createTimelineSnapshot(projectId, { source = 'system', note = null, timelineId = '' } = {}) {
+function readSnapshotArchivedSlices(snapshot = {}) {
+  const otio = snapshot?.otio && typeof snapshot.otio === 'object' ? snapshot.otio : {};
+  const metadata = otio.metadata && typeof otio.metadata === 'object' ? otio.metadata : {};
+  return Array.isArray(metadata.autoedit_archived_slices) ? metadata.autoedit_archived_slices : [];
+}
+
+function mapTimelineSnapshot(snapshot = {}) {
+  const archivedSlices = readSnapshotArchivedSlices(snapshot);
+  return {
+    id: snapshot.id,
+    projectId: snapshot.projectId,
+    project_id: snapshot.projectId,
+    timelineId: snapshot.timelineId,
+    timeline_id: snapshot.timelineId,
+    source: snapshot.source,
+    note: snapshot.note,
+    createdAt: snapshot.createdAt,
+    created_at: snapshot.createdAt,
+    archived_slice_count: archivedSlices.length,
+    has_archived_slices: archivedSlices.length > 0
+  };
+}
+
+export async function createTimelineSnapshot(projectId, { source = 'system', note = null, timelineId = '', metadata = {} } = {}) {
   return withDatabase(async (db) => {
     const project = await db.project.findUnique({ where: { id: projectId } });
     const timeline = await db.timeline.findFirst({
@@ -499,6 +522,12 @@ export async function createTimelineSnapshot(projectId, { source = 'system', not
     }
 
     const otio = serializeOtioTimeline(project, timeline, timeline.clips);
+    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      otio.metadata = {
+        ...(otio.metadata || {}),
+        ...metadata
+      };
+    }
 
     return db.timelineSnapshot.create({
       data: {
@@ -513,16 +542,54 @@ export async function createTimelineSnapshot(projectId, { source = 'system', not
 }
 
 export async function listTimelineSnapshots(projectId) {
-  return withDatabase((db) => db.timelineSnapshot.findMany({
-    where: { projectId },
-    orderBy: { createdAt: 'desc' },
-    take: 30,
-    select: {
-      id: true,
-      source: true,
-      note: true,
-      createdAt: true,
-      timelineId: true
+  return withDatabase(async (db) => {
+    const snapshots = await db.timelineSnapshot.findMany({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      select: {
+        id: true,
+        projectId: true,
+        source: true,
+        note: true,
+        createdAt: true,
+        timelineId: true,
+        otio: true
+      }
+    });
+    return snapshots.map(mapTimelineSnapshot);
+  });
+}
+
+export async function getTimelineSnapshot(projectId, snapshotId) {
+  return withDatabase(async (db) => {
+    const snapshot = await db.timelineSnapshot.findFirst({
+      where: {
+        id: snapshotId,
+        projectId
+      },
+      select: {
+        id: true,
+        projectId: true,
+        source: true,
+        note: true,
+        createdAt: true,
+        timelineId: true,
+        otio: true
+      }
+    });
+    if (!snapshot) {
+      throw new Error('Timeline snapshot not found');
     }
-  }));
+    const base = mapTimelineSnapshot(snapshot);
+    const otio = snapshot.otio && typeof snapshot.otio === 'object' ? snapshot.otio : {};
+    const metadata = otio.metadata && typeof otio.metadata === 'object' ? otio.metadata : {};
+    return {
+      ...base,
+      archived_slices: readSnapshotArchivedSlices(snapshot),
+      archive_type: metadata.autoedit_archive_type || '',
+      archive_reason: metadata.autoedit_archive_reason || '',
+      otio
+    };
+  });
 }

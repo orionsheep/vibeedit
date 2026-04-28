@@ -3230,18 +3230,31 @@ export async function toolDeleteProjectSlice(projectId, { slice_id: sliceId = ''
   };
 }
 
-export async function toolSaveSnapshot(projectId, { note = 'Agent snapshot' } = {}) {
+export async function toolSaveSnapshot(projectId, { note = 'Agent snapshot', metadata = {}, archived_slices: archivedSlices = [] } = {}) {
+  const snapshotMetadata = {
+    ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {})
+  };
+  if (Array.isArray(archivedSlices) && archivedSlices.length) {
+    snapshotMetadata.autoedit_archived_slices = archivedSlices;
+  }
   const snapshot = await createTimelineSnapshot(projectId, {
     source: 'agent',
-    note
+    note,
+    metadata: snapshotMetadata
   });
+  const archivedSliceCount = Array.isArray(snapshotMetadata.autoedit_archived_slices)
+    ? snapshotMetadata.autoedit_archived_slices.length
+    : 0;
 
   return {
     success: true,
     changed: true,
     change: 'save_snapshot',
-    summary: '已保存时间线快照。',
-    snapshot_id: snapshot.id
+    summary: archivedSliceCount
+      ? `已保存时间线快照，并归档 ${archivedSliceCount} 个旧切片。`
+      : '已保存时间线快照。',
+    snapshot_id: snapshot.id,
+    archived_slice_count: archivedSliceCount
   };
 }
 

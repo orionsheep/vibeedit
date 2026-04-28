@@ -5,7 +5,7 @@ import path from 'path';
 import { withDatabase } from '../services/core/database.service.js';
 import { listJobsByProject } from '../services/core/job.service.js';
 import { createProject, deleteProject, getProjectById, listProjectCategories, listProjects, addAssetToProject, reorderProjectAssets, removeAssetFromProject } from '../services/projects/project.service.js';
-import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, listTimelineSnapshots, removeTimelineClip, replaceTimelineClips } from '../services/projects/timeline.service.js';
+import { appendAssetToTimeline, createTimelineSnapshot, getProjectTimeline, getTimelineSnapshot, listTimelineSnapshots, removeTimelineClip, replaceTimelineClips } from '../services/projects/timeline.service.js';
 import { getProjectEditState, realignProjectEditState, saveProjectEditState } from '../services/projects/project-edit-state.service.js';
 import { listProjectEditHistories, recordProjectEditHistory } from '../services/projects/project-edit-history.service.js';
 import { queueProjectTimelineVideoExport } from '../services/projects/project-export.service.js';
@@ -407,6 +407,15 @@ router.get('/:projectId/timeline/snapshots', async (req, res) => {
     res.json({ success: true, snapshots });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:projectId/timeline/snapshots/:snapshotId', async (req, res) => {
+  try {
+    const snapshot = await getTimelineSnapshot(req.params.projectId, req.params.snapshotId);
+    res.json({ success: true, snapshot });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
   }
 });
 
