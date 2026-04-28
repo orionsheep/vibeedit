@@ -709,6 +709,16 @@ export function buildDeterministicLiveSlicingArgs({ prompt = '', topic = '', tar
   };
 }
 
+export function isReplaceableLiveSlicingSlice(slice = {}) {
+  const generatedBy = String(slice.generated_by || slice.generatedBy || '').trim();
+  if (['deterministic_live_slicing', 'heuristic_suggester'].includes(generatedBy)) {
+    return true;
+  }
+
+  const title = String(slice.title || slice.name || '').replace(/\s+/g, ' ').trim();
+  return /^切片\s*\d+\s*·/.test(title);
+}
+
 function shouldBootstrapDeterministicAssemble({
   prompt = '',
   topic = '',
@@ -1626,7 +1636,7 @@ async function runStructuredAssembleDeepeningFallback({
   };
 }
 
-function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult = {}) {
+function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult = {}, { deletedSliceCount = 0 } = {}) {
   if (!createdSlices.length) {
     return [
       '我已经执行直播切片流程，但当前没有找到满足时长和文本条件的可落地切片候选。',
@@ -1641,7 +1651,9 @@ function buildDeterministicLiveSlicingReply(createdSlices = [], suggestionResult
     return `${index + 1}. ${change.slice_title || slice.title || `切片 ${index + 1}`} · ${durationText}`;
   });
   return [
-    `已按直播切片流程创建 ${createdSlices.length} 个切片：`,
+    deletedSliceCount > 0
+      ? `已替换上一轮自动直播切片，并创建 ${createdSlices.length} 个切片：`
+      : `已按直播切片流程创建 ${createdSlices.length} 个切片：`,
     ...lines,
     '',
     '这些切片已写入项目左侧切片列表，可逐条打开文稿、预览或导出。'
@@ -1694,6 +1706,37 @@ async function runDeterministicLiveSlicingFallback({
     sessionId,
     runId,
     type: 'tool_call',
+    step: 'list_project_slices',
+    message: '执行 list_project_slices',
+    payload: {
+      tool: 'list_project_slices',
+      args: {}
+    }
+  });
+  const listResult = await executeProjectAgentToolDirect(projectId, 'list_project_slices', {}, toolContext);
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_result',
+    step: 'list_project_slices',
+    message: listResult?.summary || '已读取现有直播切片。',
+    payload: {
+      tool: 'list_project_slices',
+      result: listResult
+    }
+  });
+  appliedChanges.push({
+    tool: 'list_project_slices',
+    ...listResult
+  });
+
+  const replaceableExistingSlices = (Array.isArray(listResult?.slices) ? listResult.slices : [])
+    .filter(isReplaceableLiveSlicingSlice);
+
+  await appendAgentEvent({
+    sessionId,
+    runId,
+    type: 'tool_call',
     step: 'suggest_project_slices',
     message: '执行 suggest_project_slices',
     payload: {
@@ -1726,6 +1769,7 @@ async function runDeterministicLiveSlicingFallback({
       title: suggestion.title || `切片 ${index + 1}`,
       summary: suggestion.summary || '',
       query: suggestionArgs.query || '',
+      generated_by: 'deterministic_live_slicing',
       target_duration_seconds: Number(suggestion.duration_seconds || 0),
       ranges: Array.isArray(suggestion.ranges) ? suggestion.ranges : []
     };
@@ -1763,17 +1807,60 @@ async function runDeterministicLiveSlicingFallback({
     }
   }
 
-  const reply = buildDeterministicLiveSlicingReply(createdSlices, suggestionResult);
+  const deletedSlices = [];
+  if (createdSlices.length && replaceableExistingSlices.length) {
+    for (const slice of replaceableExistingSlices) {
+      const deleteArgs = {
+        slice_id: slice.id
+      };
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_call',
+        step: 'delete_project_slice',
+        message: '执行 delete_project_slice',
+        payload: {
+          tool: 'delete_project_slice',
+          args: deleteArgs
+        }
+      });
+      const deleteResult = await executeProjectAgentToolDirect(projectId, 'delete_project_slice', deleteArgs, toolContext);
+      await appendAgentEvent({
+        sessionId,
+        runId,
+        type: 'tool_result',
+        step: 'delete_project_slice',
+        message: deleteResult?.summary || '已删除上一轮自动直播切片。',
+        payload: {
+          tool: 'delete_project_slice',
+          result: deleteResult
+        }
+      });
+      if (didAppliedChangeSucceed(deleteResult)) {
+        const change = {
+          tool: 'delete_project_slice',
+          ...deleteResult
+        };
+        deletedSlices.push(change);
+        appliedChanges.push(change);
+      }
+    }
+  }
+
+  const reply = buildDeterministicLiveSlicingReply(createdSlices, suggestionResult, {
+    deletedSliceCount: deletedSlices.length
+  });
   const result = {
     ...(runRecord?.result || existingResult || {}),
     reply,
     summary: createdSlices.length
-      ? `已创建 ${createdSlices.length} 个直播切片。`
+      ? `已创建 ${createdSlices.length} 个直播切片${deletedSlices.length ? `，并替换 ${deletedSlices.length} 个上一轮自动切片` : ''}。`
       : '直播切片流程未找到可落地候选。',
     applied_changes: appliedChanges,
     deterministic_live_slicing: true,
     suggested_slice_count: suggestions.length,
-    created_slice_count: createdSlices.length
+    created_slice_count: createdSlices.length,
+    deleted_slice_count: deletedSlices.length
   };
 
   await updateAgentRunRecord(runId, {
@@ -1789,11 +1876,12 @@ async function runDeterministicLiveSlicingFallback({
     type: 'complete',
     step: 'deterministic_live_slicing_complete',
     message: createdSlices.length
-      ? `确定性直播切片已完成，创建 ${createdSlices.length} 个切片。`
+      ? `确定性直播切片已完成，创建 ${createdSlices.length} 个切片${deletedSlices.length ? `，删除 ${deletedSlices.length} 个上一轮自动切片` : ''}。`
       : '确定性直播切片已完成，但没有找到可创建的候选。',
     payload: {
       suggested_slice_count: suggestions.length,
-      created_slice_count: createdSlices.length
+      created_slice_count: createdSlices.length,
+      deleted_slice_count: deletedSlices.length
     }
   });
   await appendAgentMessage({

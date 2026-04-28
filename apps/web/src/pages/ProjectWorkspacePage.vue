@@ -359,6 +359,12 @@ import {
   normalizeDocumentBlocks
 } from '../features/workspace/utils/documentPreview.js';
 import { clamp, formatDuration, mergeRanges, roundTime, subtractRanges } from '../features/workspace/utils/rangeMath.js';
+import {
+  displayTimeToOriginalTime as mapSliceDisplayTimeToOriginal,
+  normalizeSliceDisplayRanges,
+  originalTimeToDisplayTime as mapOriginalTimeToSliceDisplay,
+  remapWordsToSliceDisplayTimeline
+} from '../features/workspace/utils/sliceTimeMapping.js';
 import { useEditorStore } from '../features/editor/stores/editorStore';
 import { getLibraryAssetWords, retranscribeLibraryAsset } from '../features/library/api/libraryApi';
 import {
@@ -683,6 +689,18 @@ const fullProjectDuration = computed(() => {
 const selectedAsset = computed(() => orderedProjectAssets.value.find((asset) => asset.id === selectedAssetId.value) || null);
 
 const currentContextAsset = computed(() => {
+  if (isSliceTimelineDisplay.value) {
+    const current = Number(editorStore.currentTime || 0);
+    const activeClip = activePreviewClips.value.find((clip, index) => {
+      const start = Number(clip.project_start || 0);
+      const end = Number(clip.project_end || start);
+      const isLast = index === activePreviewClips.value.length - 1;
+      return current >= start && (isLast ? current <= end : current < end);
+    });
+    if (activeClip?.asset_id) {
+      return orderedProjectAssets.value.find((asset) => asset.id === activeClip.asset_id) || null;
+    }
+  }
   const range = findClipRangeAtTime(Number(editorStore.currentTime || 0));
   if (range) {
     return orderedProjectAssets.value.find((asset) => asset.id === range.asset_id) || null;
@@ -710,6 +728,12 @@ const selectedSliceRanges = computed(() => {
     }))
     .filter((range) => Number(range.end || 0) - Number(range.start || 0) > 0.05);
 });
+const selectedSliceDisplayRanges = computed(() => (
+  isLiveSlicingMode.value && selectedSliceRanges.value.length
+    ? normalizeSliceDisplayRanges(selectedSliceRanges.value)
+    : []
+));
+const isSliceTimelineDisplay = computed(() => selectedSliceDisplayRanges.value.length > 0);
 const selectedSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(selectedSliceRanges.value));
 const activePreviewClips = computed(() => (
   isLiveSlicingMode.value && selectedSlicePreviewClips.value.length
@@ -717,7 +741,11 @@ const activePreviewClips = computed(() => (
     : projectPreviewClips.value
 ));
 const currentPreviewDuration = computed(() => Number(activePreviewClips.value[activePreviewClips.value.length - 1]?.project_end || 0));
-const currentPreviewTime = computed(() => originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value));
+const currentPreviewTime = computed(() => (
+  isSliceTimelineDisplay.value
+    ? Number(editorStore.currentTime || 0)
+    : originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value)
+));
 const activeExportTimelineId = computed(() => (isLiveSlicingMode.value ? String(selectedSliceId.value || '').trim() : ''));
 const activeExportTargetLabel = computed(() => {
   if (activeExportTimelineId.value && selectedSlice.value) {
@@ -783,8 +811,16 @@ const manualSliceSelectionRanges = computed(() => {
   groups.push(current);
 
   return mergeRanges(groups.map((group) => ({
-    start: Number(allWords[group.startIndex]?.start_time || 0),
-    end: Number(allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0)
+    start: Number(
+      isSliceTimelineDisplay.value
+        ? (allWords[group.startIndex]?.original_start_time ?? mapSliceDisplayTimeToOriginal(allWords[group.startIndex]?.start_time || 0, selectedSliceDisplayRanges.value))
+        : allWords[group.startIndex]?.start_time || 0
+    ),
+    end: Number(
+      isSliceTimelineDisplay.value
+        ? (allWords[group.endIndex]?.original_end_time ?? mapSliceDisplayTimeToOriginal(allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0, selectedSliceDisplayRanges.value))
+        : allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0
+    )
   })));
 });
 const manualSliceSelectionDuration = computed(() => manualSliceSelectionRanges.value.reduce((sum, range) => sum + Math.max(0, Number(range.end || 0) - Number(range.start || 0)), 0));
@@ -1190,7 +1226,9 @@ function syncPreviewToCurrentTime({ preservePlayback = isPreviewPlaybackActive()
     previewPlayerRef.value?.pausePlayback?.();
     return;
   }
-  const currentTime = originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value);
+  const currentTime = isSliceTimelineDisplay.value
+    ? Number(editorStore.currentTime || 0)
+    : originalProjectTimeToPreviewTime(Number(editorStore.currentTime || 0), activePreviewClips.value);
   seekPreviewToProjectTime(currentTime, preservePlayback);
 }
 
@@ -1321,6 +1359,10 @@ function buildProjectWordStream() {
     }
   }
 
+  if (isSliceTimelineDisplay.value) {
+    return remapWordsToSliceDisplayTimeline(merged, selectedSliceDisplayRanges.value);
+  }
+
   return {
     words: merged,
     duration: Number(fullProjectDuration.value || 0)
@@ -1411,13 +1453,22 @@ function captureEditorSignature() {
   });
 }
 
-function syncEditorWithProjectTimeline() {
+function syncEditorWithProjectTimeline(options = {}) {
   const currentProjectTime = Number(editorStore.currentTime || 0);
   const stream = buildProjectWordStream();
+  const requestedCurrentTime = Number.isFinite(Number(options.currentTime))
+    ? Number(options.currentTime)
+    : isSliceTimelineDisplay.value
+      ? (
+          currentProjectTime <= Number(stream.duration || 0)
+            ? clamp(currentProjectTime, 0, Number(stream.duration || 0))
+            : mapOriginalTimeToSliceDisplay(currentProjectTime, selectedSliceDisplayRanges.value)
+        )
+      : currentProjectTime;
   editorStore.loadExternalWords({
     words: stream.words,
     duration: stream.duration,
-    currentTime: currentProjectTime,
+    currentTime: requestedCurrentTime,
     deletedWordIndices: buildDeletedWordIndicesFromEditState(stream.words),
     deletedGapIndices: buildDeletedGapIndicesFromEditState(stream.words)
   });
@@ -1460,15 +1511,25 @@ function buildProjectKeepRanges() {
 }
 
 function buildPersistedDeletedWordKeys() {
-  return (editorStore.words || [])
+  const visibleKeys = new Set((editorStore.words || []).map((word) => String(word.word_key || word.id || '')).filter(Boolean));
+  const existingOutsideVisible = isSliceTimelineDisplay.value
+    ? (projectEditState.value?.deleted_word_keys || []).filter((key) => !visibleKeys.has(String(key || '')))
+    : [];
+  const visibleDeleted = (editorStore.words || [])
     .flatMap((word, index) => (editorStore.deletedWords.has(index) ? [String(word.word_key || word.id || '')] : []))
     .filter(Boolean);
+  return [...new Set([...existingOutsideVisible, ...visibleDeleted])];
 }
 
 function buildPersistedDeletedGapKeys() {
-  return (editorStore.words || [])
+  const visibleKeys = new Set((editorStore.words || []).map((word) => String(word.gap_key_after || '')).filter(Boolean));
+  const existingOutsideVisible = isSliceTimelineDisplay.value
+    ? (projectEditState.value?.deleted_gap_keys || []).filter((key) => !visibleKeys.has(String(key || '')))
+    : [];
+  const visibleDeleted = (editorStore.words || [])
     .flatMap((word, index) => (editorStore.deletedGaps.has(index) ? [String(word.gap_key_after || '')] : []))
     .filter(Boolean);
+  return [...new Set([...existingOutsideVisible, ...visibleDeleted])];
 }
 
 function buildTimelinePayloadFromRanges(ranges = []) {
@@ -1627,6 +1688,9 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
   if (hasSelected) {
     await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
     preloadSliceDetails(nextSlices.map((slice) => slice.id));
+    if (isLiveSlicingMode.value) {
+      syncEditorWithProjectTimeline();
+    }
     return nextSlices;
   }
 
@@ -1648,7 +1712,9 @@ async function refreshProjectSlices({ preserveSelection = true, skipFetch = fals
   }
 
   preloadSliceDetails(nextSlices.map((slice) => slice.id));
-  syncEditorWithProjectTimeline();
+  syncEditorWithProjectTimeline({
+    currentTime: isLiveSlicingMode.value ? 0 : undefined
+  });
   return nextSlices;
 }
 
@@ -1660,7 +1726,7 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   const animateSliceJump = async (range) => {
     if (!jumpToSliceStart || !range) return;
     await nextTick();
-    subtitlePanelRef.value?.scrollToTime?.(Number(range.start || 0), {
+    subtitlePanelRef.value?.scrollToTime?.(isSliceTimelineDisplay.value ? 0 : Number(range.start || 0), {
       behavior: 'smooth',
       highlight: true
     });
@@ -1668,20 +1734,22 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   if (jumpToSliceStart) {
     const firstRange = immediateRanges[0] || null;
     if (firstRange) {
-      editorStore.setCurrentTime(Number(firstRange.start || 0));
+      editorStore.setCurrentTime(isSliceTimelineDisplay.value ? 0 : Number(firstRange.start || 0));
       syncPreviewToCurrentTime({ preservePlayback: false });
       animateSliceJump(firstRange).catch(() => {});
     }
   }
   const detail = await ensureSelectedSliceDetail(targetId, { force: false });
-  syncEditorWithProjectTimeline();
+  syncEditorWithProjectTimeline({
+    currentTime: jumpToSliceStart && isSliceTimelineDisplay.value ? 0 : undefined
+  });
   if (jumpToSliceStart) {
     const resolvedRanges = Array.isArray(detail?.ranges) && detail.ranges.length
       ? mergeRanges(detail.ranges)
       : immediateRanges;
     const firstRange = resolvedRanges[0] || null;
     if (firstRange) {
-      editorStore.setCurrentTime(Number(firstRange.start || 0));
+      editorStore.setCurrentTime(isSliceTimelineDisplay.value ? 0 : Number(firstRange.start || 0));
       await animateSliceJump(firstRange);
     }
   }
@@ -2349,7 +2417,10 @@ function selectAsset(assetId) {
   if (firstClipIndex !== -1) {
     const clip = activePreviewClips.value[firstClipIndex];
     seekPreviewToProjectTime(Number(clip.project_start || 0), false);
-    editorStore.setCurrentTime(Number(clip.original_project_start || 0));
+    editorStore.setCurrentTime(isSliceTimelineDisplay.value
+      ? Number(clip.project_start || 0)
+      : Number(clip.original_project_start || 0)
+    );
     return;
   }
 
@@ -2405,11 +2476,17 @@ async function reloadTimeline() {
 
 function handleProjectSeek(projectTime) {
   editorStore.setCurrentTime(projectTime);
-  seekPreviewToProjectTime(originalProjectTimeToPreviewTime(projectTime, activePreviewClips.value), false);
+  seekPreviewToProjectTime(
+    isSliceTimelineDisplay.value ? Number(projectTime || 0) : originalProjectTimeToPreviewTime(projectTime, activePreviewClips.value),
+    false
+  );
 }
 
 function handlePreviewProjectTimeUpdate(projectTime) {
-  editorStore.setCurrentTime(previewTimeToOriginalProjectTime(projectTime, activePreviewClips.value));
+  editorStore.setCurrentTime(isSliceTimelineDisplay.value
+    ? Number(projectTime || 0)
+    : previewTimeToOriginalProjectTime(projectTime, activePreviewClips.value)
+  );
 }
 
 function handlePreviewClipChange(clip) {
@@ -3107,6 +3184,9 @@ watch(workspaceMode, async (mode) => {
     await selectSlice(projectSlices.value[0].id, { jumpToSliceStart: false });
     return;
   }
+  syncEditorWithProjectTimeline({
+    currentTime: mode === 'live_slicing' && selectedSliceId.value ? 0 : undefined
+  });
   await nextTick();
   syncPreviewToCurrentTime({ preservePlayback: false });
 });
@@ -3118,6 +3198,9 @@ watch(projectSlices, (slices) => {
     return;
   }
   if (selectedSliceId.value && slices.some((slice) => slice.id === selectedSliceId.value)) {
+    if (isLiveSlicingMode.value) {
+      syncEditorWithProjectTimeline();
+    }
     return;
   }
   if (isLiveSlicingMode.value && slices.length) {

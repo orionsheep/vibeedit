@@ -3184,13 +3184,16 @@ export async function toolCreateProjectSlice(
     summary = '',
     query = '',
     target_duration_seconds = 0,
-    ranges = []
+    ranges = [],
+    generated_by: generatedBy = '',
+    generatedBy: generatedByCamel = ''
   } = {}
 ) {
   const slice = await createProjectSlice(projectId, {
     title,
     summary,
     query,
+    generatedBy: String(generatedBy || generatedByCamel || 'agent').trim() || 'agent',
     target_duration_seconds,
     ranges
   });

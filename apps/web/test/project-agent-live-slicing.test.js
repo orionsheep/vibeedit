@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildDeterministicLiveSlicingArgs,
   isCandidateOnlyLiveSlicingRequest,
+  isReplaceableLiveSlicingSlice,
   shouldUseDeterministicLiveSlicing
 } from '../server/services/agent/project-agent.service.js';
 
@@ -41,4 +42,23 @@ test('deterministic live slicing args parse count and target duration', () => {
   assert.equal(args.max_duration, 90);
   assert.ok(args.min_duration >= 12);
   assert.ok(args.min_duration < args.max_duration);
+});
+
+test('deterministic live slicing replaces only automatic slice outputs', () => {
+  assert.equal(isReplaceableLiveSlicingSlice({
+    generated_by: 'deterministic_live_slicing',
+    title: '自定义标题'
+  }), true);
+  assert.equal(isReplaceableLiveSlicingSlice({
+    generatedBy: 'heuristic_suggester',
+    title: '候选切片'
+  }), true);
+  assert.equal(isReplaceableLiveSlicingSlice({
+    generated_by: 'manual',
+    title: '切片 3 · 内容开头'
+  }), true);
+  assert.equal(isReplaceableLiveSlicingSlice({
+    generated_by: 'manual',
+    title: '雅思阅读四大逻辑与对比段落入门'
+  }), false);
 });

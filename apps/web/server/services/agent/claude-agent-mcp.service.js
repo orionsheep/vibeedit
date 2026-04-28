@@ -340,6 +340,8 @@ export const TOOL_DEFINITIONS = {
       title: z.string().optional(),
       summary: z.string().optional(),
       query: z.string().optional(),
+      generated_by: z.string().optional(),
+      generatedBy: z.string().optional(),
       target_duration_seconds: z.number().optional(),
       ranges: z.array(z.object({
         start: z.number(),
