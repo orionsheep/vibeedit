@@ -61,3 +61,20 @@ test('all-slice display ranges preserve separate slice order and metadata', () =
     ['slice-4', 30, 35, 25, 30]
   ]);
 });
+
+test('slice word remapping preserves active slice markers', () => {
+  const ranges = normalizeSliceDisplayRanges([
+    { slice_id: 'slice-1', start: 40, end: 50 },
+    { slice_id: 'slice-2', start: 10, end: 20 }
+  ], { merge: false });
+
+  const result = remapWordsToSliceDisplayTimeline([
+    { id: 'a', word_key: 'a', text: '一', start_time: 12, end_time: 13, slice_active: false },
+    { id: 'b', word_key: 'b', text: '二', start_time: 42, end_time: 43, slice_active: true }
+  ], ranges);
+
+  assert.deepEqual(result.words.map((word) => [word.word_key, word.slice_active, word.start_time]), [
+    ['b', true, 2],
+    ['a', false, 12]
+  ]);
+});

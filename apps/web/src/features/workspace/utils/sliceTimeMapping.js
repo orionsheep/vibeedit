@@ -82,10 +82,12 @@ export function remapWordsToSliceDisplayTimeline(words = [], displayRanges = [])
         original_start_time: roundTime(overlapStart),
         original_end_time: roundTime(overlapEnd),
         slice_display: true,
-        slice_active: true
+        slice_active: typeof word.slice_active === 'boolean' ? word.slice_active : true
       });
     }
   }
+
+  mappedWords.sort((left, right) => Number(left.start_time || 0) - Number(right.start_time || 0));
 
   return {
     words: mappedWords,

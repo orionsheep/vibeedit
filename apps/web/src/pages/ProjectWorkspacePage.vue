@@ -772,7 +772,6 @@ const selectedSliceDisplayRanges = computed(() => (
     ? normalizeSliceDisplayRanges(selectedSliceRanges.value)
     : []
 ));
-const isSliceTimelineDisplay = computed(() => selectedSliceDisplayRanges.value.length > 0);
 const allCurrentSliceRanges = computed(() => (
   projectSlices.value.flatMap((slice, sliceIndex) => (
     sliceRangesFromTimelineItem(getHydratedSliceTimeline(slice)).map((range, rangeIndex) => ({
@@ -788,6 +787,12 @@ const allCurrentSliceDisplayRanges = computed(() => (
     ? normalizeSliceDisplayRanges(allCurrentSliceRanges.value, { merge: false })
     : []
 ));
+const editorSliceDisplayRanges = computed(() => (
+  isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length
+    ? allCurrentSliceDisplayRanges.value
+    : selectedSliceDisplayRanges.value
+));
+const isSliceTimelineDisplay = computed(() => editorSliceDisplayRanges.value.length > 0);
 const selectedSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(selectedSliceRanges.value));
 const allCurrentSlicePreviewClips = computed(() => buildPreviewClipsFromRanges(allCurrentSliceRanges.value));
 const activePreviewClips = computed(() => (
@@ -910,12 +915,12 @@ const manualSliceSelectionRanges = computed(() => {
   return mergeRanges(groups.map((group) => ({
     start: Number(
       isSliceTimelineDisplay.value
-        ? (allWords[group.startIndex]?.original_start_time ?? mapSliceDisplayTimeToOriginal(allWords[group.startIndex]?.start_time || 0, selectedSliceDisplayRanges.value))
+        ? (allWords[group.startIndex]?.original_start_time ?? mapSliceDisplayTimeToOriginal(allWords[group.startIndex]?.start_time || 0, editorSliceDisplayRanges.value))
         : allWords[group.startIndex]?.start_time || 0
     ),
     end: Number(
       isSliceTimelineDisplay.value
-        ? (allWords[group.endIndex]?.original_end_time ?? mapSliceDisplayTimeToOriginal(allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0, selectedSliceDisplayRanges.value))
+        ? (allWords[group.endIndex]?.original_end_time ?? mapSliceDisplayTimeToOriginal(allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0, editorSliceDisplayRanges.value))
         : allWords[group.endIndex]?.end_time || allWords[group.startIndex]?.start_time || 0
     )
   })));
@@ -1327,22 +1332,41 @@ function previewTimeToOriginalProjectTime(previewTime, clips = activePreviewClip
   return roundTime(Number(clips[clips.length - 1]?.original_project_end || 0));
 }
 
-function mapSelectedSliceDisplayToCompositionPreviewTime(displayTime) {
-  const originalTime = mapSliceDisplayTimeToOriginal(displayTime, selectedSliceDisplayRanges.value);
+function mapOriginalTimeToEditorDisplayTime(originalTime, sliceId = '') {
+  const target = Number(originalTime || 0);
+  const preferredSliceId = String(sliceId || '').trim();
+
+  if (isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length) {
+    if (preferredSliceId) {
+      const preferredRanges = allCurrentSliceDisplayRanges.value.filter((range) => String(range.slice_id || '') === preferredSliceId);
+      for (const range of preferredRanges) {
+        const start = Number(range.start || 0);
+        const end = Number(range.end || start);
+        if (target >= start && target <= end) {
+          return roundTime(Number(range.display_start || 0) + Math.max(0, target - start));
+        }
+      }
+    }
+    return mapOriginalTimeToSliceDisplay(target, allCurrentSliceDisplayRanges.value);
+  }
+
+  if (selectedSliceDisplayRanges.value.length) {
+    return mapOriginalTimeToSliceDisplay(target, selectedSliceDisplayRanges.value);
+  }
+
+  return roundTime(target);
+}
+
+function mapEditorDisplayToCompositionPreviewTime(displayTime) {
+  const target = Number(displayTime || 0);
+  if (isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length) {
+    return roundTime(target);
+  }
+
+  const originalTime = mapSliceDisplayTimeToOriginal(target, editorSliceDisplayRanges.value);
   if (!allCurrentSliceDisplayRanges.value.length) {
     return roundTime(originalTime);
   }
-
-  const selectedId = String(selectedSliceId.value || '');
-  const selectedRanges = allCurrentSliceDisplayRanges.value.filter((range) => String(range.slice_id || '') === selectedId);
-  for (const range of selectedRanges) {
-    const start = Number(range.start || 0);
-    const end = Number(range.end || start);
-    if (originalTime >= start && originalTime <= end) {
-      return roundTime(Number(range.display_start || 0) + Math.max(0, originalTime - start));
-    }
-  }
-
   return mapOriginalTimeToSliceDisplay(originalTime, allCurrentSliceDisplayRanges.value);
 }
 
@@ -1359,7 +1383,7 @@ function syncPreviewToCurrentTime({ preservePlayback = isPreviewPlaybackActive()
   }
   if (isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length) {
     const nextTime = clamp(
-      mapSelectedSliceDisplayToCompositionPreviewTime(Number(editorStore.currentTime || 0)),
+      mapEditorDisplayToCompositionPreviewTime(Number(editorStore.currentTime || 0)),
       0,
       Number(compositionPreviewDuration.value || 0)
     );
@@ -1402,10 +1426,18 @@ function sliceRangesFromTimelineItem(timelineItem) {
 function getHydratedSliceTimeline(slice) {
   const sliceId = String(slice?.id || '').trim();
   if (!sliceId) return slice;
-  if (selectedSliceDetail.value?.id === sliceId) {
+  if (selectedSliceDetail.value?.id === sliceId && hasSliceTimelineRanges(selectedSliceDetail.value)) {
     return selectedSliceDetail.value;
   }
-  return sliceDocumentCache.value[sliceId] || slice;
+  const cached = sliceDocumentCache.value[sliceId];
+  return hasSliceTimelineRanges(cached) ? cached : slice;
+}
+
+function hasSliceTimelineRanges(slice) {
+  return Boolean(
+    (Array.isArray(slice?.ranges) && slice.ranges.length)
+    || (Array.isArray(slice?.clips) && slice.clips.length)
+  );
 }
 
 function getCachedSliceDetail(sliceId) {
@@ -1516,7 +1548,11 @@ function buildMergedProjectWords() {
 function buildProjectWordStream() {
   const merged = buildMergedProjectWords();
 
-  if (isSliceTimelineDisplay.value) {
+  if (isLiveSlicingMode.value && allCurrentSliceDisplayRanges.value.length) {
+    return remapWordsToSliceDisplayTimeline(merged, allCurrentSliceDisplayRanges.value);
+  }
+
+  if (selectedSliceDisplayRanges.value.length) {
     return remapWordsToSliceDisplayTimeline(merged, selectedSliceDisplayRanges.value);
   }
 
@@ -1643,7 +1679,7 @@ function syncEditorWithProjectTimeline(options = {}) {
       ? (
           currentProjectTime <= Number(stream.duration || 0)
             ? clamp(currentProjectTime, 0, Number(stream.duration || 0))
-            : mapOriginalTimeToSliceDisplay(currentProjectTime, selectedSliceDisplayRanges.value)
+            : mapOriginalTimeToEditorDisplayTime(currentProjectTime)
         )
       : currentProjectTime;
   editorStore.loadExternalWords({
@@ -1839,7 +1875,7 @@ function preloadSliceDetails(sliceIds = []) {
   if (!uniqueIds.length) return;
 
   uniqueIds.forEach((sliceId) => {
-    if (getCachedSliceDetail(sliceId)?.id === sliceId) return;
+    if (hasSliceTimelineRanges(getCachedSliceDetail(sliceId))) return;
     if (sliceDetailRequestMap.has(sliceId)) return;
     const request = getProjectSlice(projectId.value, sliceId)
       .then((detail) => {
@@ -1911,7 +1947,7 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   const animateSliceJump = async (range) => {
     if (!jumpToSliceStart || !range) return;
     await nextTick();
-    subtitlePanelRef.value?.scrollToTime?.(isSliceTimelineDisplay.value ? 0 : Number(range.start || 0), {
+    subtitlePanelRef.value?.scrollToTime?.(mapOriginalTimeToEditorDisplayTime(Number(range.start || 0), targetId), {
       behavior: 'smooth',
       highlight: true
     });
@@ -1919,23 +1955,25 @@ async function selectSlice(sliceId, { jumpToSliceStart = true } = {}) {
   if (jumpToSliceStart) {
     const firstRange = immediateRanges[0] || null;
     if (firstRange) {
-      editorStore.setCurrentTime(isSliceTimelineDisplay.value ? 0 : Number(firstRange.start || 0));
+      editorStore.setCurrentTime(mapOriginalTimeToEditorDisplayTime(Number(firstRange.start || 0), targetId));
       syncPreviewToCurrentTime({ preservePlayback: false });
       animateSliceJump(firstRange).catch(() => {});
     }
   }
   const detail = await ensureSelectedSliceDetail(targetId, { force: false });
+  const resolvedRanges = Array.isArray(detail?.ranges) && detail.ranges.length
+    ? mergeRanges(detail.ranges)
+    : immediateRanges;
+  const firstResolvedRange = resolvedRanges[0] || null;
   syncEditorWithProjectTimeline({
-    currentTime: jumpToSliceStart && isSliceTimelineDisplay.value ? 0 : undefined
+    currentTime: jumpToSliceStart && firstResolvedRange
+      ? mapOriginalTimeToEditorDisplayTime(Number(firstResolvedRange.start || 0), targetId)
+      : undefined
   });
   if (jumpToSliceStart) {
-    const resolvedRanges = Array.isArray(detail?.ranges) && detail.ranges.length
-      ? mergeRanges(detail.ranges)
-      : immediateRanges;
-    const firstRange = resolvedRanges[0] || null;
-    if (firstRange) {
-      editorStore.setCurrentTime(isSliceTimelineDisplay.value ? 0 : Number(firstRange.start || 0));
-      await animateSliceJump(firstRange);
+    if (firstResolvedRange) {
+      editorStore.setCurrentTime(mapOriginalTimeToEditorDisplayTime(Number(firstResolvedRange.start || 0), targetId));
+      await animateSliceJump(firstResolvedRange);
     }
   }
   await nextTick();
@@ -2124,7 +2162,7 @@ async function loadWorkspace() {
     if (!selectedAssetId.value && orderedProjectAssets.value.length) {
       selectedAssetId.value = clipTimelineRanges.value[0]?.asset_id || orderedProjectAssets.value[0].id;
     }
-    await refreshProjectSlices({ preserveSelection: true, skipFetch: true });
+    await refreshProjectSlices({ preserveSelection: true, skipFetch: false });
     syncEditorWithProjectTimeline();
     await nextTick();
     syncPreviewToCurrentTime({ preservePlayback: false });
@@ -2676,7 +2714,11 @@ function handleOverviewTimelineSeek(projectTime) {
 
 function handlePreviewProjectTimeUpdate(projectTime) {
   if (isLiveSlicingMode.value) {
-    compositionPreviewTime.value = clamp(Number(projectTime || 0), 0, Number(compositionPreviewDuration.value || 0));
+    const nextTime = clamp(Number(projectTime || 0), 0, Number(compositionPreviewDuration.value || 0));
+    compositionPreviewTime.value = nextTime;
+    if (isSliceTimelineDisplay.value) {
+      editorStore.setCurrentTime(nextTime);
+    }
     return;
   }
   editorStore.setCurrentTime(isSliceTimelineDisplay.value
@@ -3402,12 +3444,19 @@ watch(compositionPreviewClips, (clips) => {
   });
 }, { deep: true });
 
+watch(allCurrentSliceDisplayRanges, async (ranges) => {
+  if (!isLiveSlicingMode.value || !projectSlices.value.length || !ranges.length) return;
+  syncEditorWithProjectTimeline();
+  await nextTick();
+  syncPreviewToCurrentTime();
+}, { deep: true });
+
 watch(workspaceMode, async (mode) => {
-  if (mode === 'live_slicing' && !selectedSliceId.value && projectSlices.value.length) {
-    await selectSlice(projectSlices.value[0].id, { jumpToSliceStart: false });
-    return;
-  }
   if (mode === 'live_slicing' && projectSlices.value.length) {
+    if (!selectedSliceId.value) {
+      selectedSliceId.value = projectSlices.value[0].id;
+      await ensureSelectedSliceDetail(selectedSliceId.value, { force: false });
+    }
     preloadSliceDetails(projectSlices.value.map((slice) => slice.id));
   }
   syncEditorWithProjectTimeline({
